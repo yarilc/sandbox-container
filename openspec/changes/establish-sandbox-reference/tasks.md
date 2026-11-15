@@ -31,7 +31,7 @@
 
 - [x] 5.1 Create `sandbox-container.sh` from `claude-container.sh` (`git mv`) and apply design decisions 5 and 6: profile names, Bash command with forwarded arguments, `--container-shell` as a no-op, YOLO/optional-traffic/API-key code removed, provider rejected, offline default with the early protected-installation check; verify `bash -n` and that help lists only `SANDBOX_CONTAINER_*` variables.
 - [x] 5.2 Rewrite `tests/test_wrapper.py` for the shell: offline default, unrestricted, provider rejection, missing-installation guidance before engine queries, argument/stdin forwarding to Bash, `--container-shell` equivalence, delegation only with unrestricted in both state modes, state layout and `HISTFILE`, CA, budgets, lifetime, worktree, toolchains, cleanup and signals; verify `bash tests/run-runtime.sh --wrapper` passes.
-- [ ] 5.3 Update the README sections for usage, modes, state, delegation, CA, worktree, hardening and toolchains, and update `AGENTS.md` to the reference role and file ownership; verify every documented `SANDBOX_CONTAINER_*` variable is listed in help (alignment test) and no Claude usage remains outside history notes.
+- [x] 5.3 Update the README sections for usage, modes, state, delegation, CA, worktree, hardening and toolchains, and update `AGENTS.md` to the reference role and file ownership; verify every documented `SANDBOX_CONTAINER_*` variable is listed in help (alignment test) and no Claude usage remains outside history notes.
 
 ## 6. Runtime and setup acceptance
 

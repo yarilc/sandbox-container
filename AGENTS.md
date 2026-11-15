@@ -2,25 +2,32 @@
 
 ## Project Structure & Module Organization
 
-This repository contains a small, self-contained Podman wrapper for running
-Claude Code:
+This repository is the reference sandbox: a Podman wrapper that opens an
+air-gapped (offline by default) Bash shell with every sandbox feature, and the
+source of the shared components adopted by the Claude, Codex, OpenCode, Pi and
+Antigravity wrappers:
 
-- `claude-container.sh` is the entry-point script and owns argument parsing,
+- `sandbox-container.sh` is the entry-point script and owns argument parsing,
   volume mounts, user mapping, and Podman socket validation.
-- `Containerfile` defines the Claude Code runtime image and its shell/tooling
-  baseline, including `nano` with `EDITOR` and `VISUAL` set to it. The image
-  disables nano's history log in `/etc/nanorc`, because the home directory is
-  read-only.
+- `Containerfile` defines the shell image on the same pinned base and package
+  baseline as the agent wrappers, with the pinned OpenSpec CLI and no agent CLI,
+  including `nano` with `EDITOR` and `VISUAL` set to it. The image disables
+  nano's history log in `/etc/nanorc`, because the home directory is read-only.
 - `README.md` documents setup, usage, persistence, and security boundaries.
 - `openspec/` holds the OpenSpec project: `specs/` for the durable capability
   specs (for example `host-ca-trust`) and `changes/` for in-flight changes.
   Archived changes live in `changes/archive/`.
 - `tests/` contains synthetic wrapper checks and opt-in rootless runtime checks.
 - `docs/validation.md` records verified environments and unavailable checks.
-- `agent/profile.json` is the single source of Claude-specific values used by
+- `agent/profile.json` is the single source of wrapper-specific values used by
   shared code: wrapper and variable names, images, labels, installation/state
-  names, native home/command/configuration variables, authentication methods
-  and their required provider hosts. `agent/policies/` holds the provider policies.
+  names and the native home/command/configuration variable. The reference
+  profile declares no authentication method and no approval-bypass variable, so
+  `agent/policies/default.json` declares no policy profiles and provider mode
+  is unavailable.
+- `tests/fixtures/` holds the agent-neutral fixture profiles (`agent/` with two
+  synthetic `.test` methods, `shell-agent/` without methods) that the shared
+  tests use instead of the checkout's profile; see `tests/sandbox_profile.py`.
 - `network/` contains preflight/snapshot validation, the profile loader,
   the restricted session helper (`session.py`: `prepare`, `start`,
   `agent-args`, `stop`), the standalone CONNECT proxy image, native IPC
@@ -34,17 +41,24 @@ Claude Code:
 ## Shared and agent-specific files
 
 `network/`, `setup/` and the shared tests listed in `tests/test_alignment.py`
-are copied unchanged between the Claude, Codex, Antigravity, OpenCode and Pi
-wrappers. Never add an agent identifier (any of the profile's `identifiers`) to
+are written here and copied unchanged to the Claude, Codex, Antigravity,
+OpenCode and Pi wrappers. Never add an agent identifier (any of the profile's `identifiers`) to
 them. Read agent-specific values from the profile, or pass them from host code
 to in-container helpers. In-container paths are neutral: `/opt/sandbox-egress`,
 `/run/sandbox-egress`, `/tmp/sandbox-runtime` and `sandbox-egress-guard`.
 
-These files are per agent:
-- `agent/`, `claude-container.sh`, `Containerfile` and `.containerignore`;
-- the end-to-end tests: `test_wrapper.py`, `test_runtime.py`,
+These files are per wrapper:
+- `agent/`, `sandbox-container.sh`, `Containerfile` and `.containerignore`;
+- the end-to-end tests: `test_wrapper.py`, `test_setup_wrapper.py` (setup
+  checks that launch this wrapper), `test_runtime.py`,
   `test_network_runtime.py` with `network_tls_fixture.py`,
-  `test_setup_runtime.py`, `run-runtime.sh` and `image-smoke.sh`.
+  `test_setup_runtime.py`, `test_image_pins.py`, `run-runtime.sh` and
+  `image-smoke.sh`.
+
+Shared tests exercise the shared modules only with the fixture profiles; a
+shared test must not read this checkout's profile, except the checkout checks
+in `test_agent_profile.py`/`test_alignment.py` and the qualification gate run
+through the real wrapper in `test_qualification.py`.
 
 When a shared component needs a new agent-specific value, extend the profile
 schema in `network/agent_profile.py` here first. Then tag the result and
@@ -61,10 +75,10 @@ and wrapper/profile consistency, and `tests/test_propagate.py` covers the tool.
 Run these commands from the repository root:
 
 ```bash
-CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 ./claude-container.sh --container-build
-CLAUDE_CONTAINER_NETWORK=unrestricted ./claude-container.sh
-CLAUDE_CONTAINER_NETWORK=unrestricted ./claude-container.sh --container-shell
-bash -n claude-container.sh              # Validate Bash syntax
+SANDBOX_CONTAINER_NETWORK=unrestricted SANDBOX_CONTAINER_MAINTENANCE=1 ./sandbox-container.sh --container-build
+SANDBOX_CONTAINER_NETWORK=unrestricted ./sandbox-container.sh
+SANDBOX_CONTAINER_NETWORK=unrestricted ./sandbox-container.sh -c 'git status'
+bash -n sandbox-container.sh             # Validate Bash syntax
 git diff --check                         # Detect whitespace errors
 ```
 
@@ -72,28 +86,30 @@ Configured launches require host Podman and its launch engine must verify as
 Linux and rootless. Unrestricted local use requires no API socket with delegation off; explicit same-host
 Unix `CONTAINER_HOST` use verifies that launch service regardless of delegation.
 Reject named connections and TCP/SSH contexts. Delegation requires the exact value
-`CLAUDE_CONTAINER_PODMAN=1`. Select its endpoint by explicit
-`CLAUDE_CONTAINER_PODMAN_SOCKET`, Unix `CONTAINER_HOST`, then
+`SANDBOX_CONTAINER_PODMAN=1`. Select its endpoint by explicit
+`SANDBOX_CONTAINER_PODMAN_SOCKET`, Unix `CONTAINER_HOST`, then
 `${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. Verify that exact endpoint
 before image operations, requiring rootless `true` and an absolute reported host
 socket path; bind the latter when the wrapper sees a remapped socket.
 
-Setup is the mandatory first step for new users. Ordinary launches require a
-nonempty `CLAUDE_CONTAINER_NETWORK`, explicitly set by the operator or supplied
-by the validated managed launcher. Unset/empty modes must stop with setup
-guidance before runtime checks, engine queries or state creation; explicit empty
-overrides must not restore saved defaults. Help, setup and standalone fixed
-qualification retain their dedicated checks. Qualification alone keeps its
-offline default and never admits a supplied application command. Maintenance
-consent does not select a runtime mode. Offline cannot reach the Claude API.
+Setup is the mandatory first step for offline use. An unset or empty
+`SANDBOX_CONTAINER_NETWORK` selects `offline`; `unrestricted` must be explicit
+(operator or validated managed launcher); `provider` is refused because the
+profile declares no authentication method. An offline launch without a protected
+installation (no guard manifest in `network/bin`) must stop with setup guidance
+before engine queries or state creation; explicit empty overrides apply the
+offline default and must not restore a saved mode. Help, setup and standalone
+fixed qualification retain their dedicated checks. Qualification never admits a
+supplied command. Maintenance consent does not select a runtime mode.
 Restricted sessions must use the static ABI-3
 Landlock/additive-seccomp bootstrap before any application code. Keep fail-closed
 per-session checks; never restore the superseded IP-only path.
 Restricted modes require a verified
 same-host Unix launch service with rootless Netavark/Podman >= 4.9, host Python 3,
-and protected installed code outside all agent-writable mounts. Provider mode
-requires a protected versioned policy/profile, private native host-path runtime
-directory and immutable proxy image ID/digest. Never silently broaden support or
+and protected installed code outside all session-writable mounts. Provider mode
+(shared code, agent wrappers only) requires a protected versioned policy/profile,
+private native host-path runtime directory and immutable proxy image ID/digest;
+the shared tests exercise it with the fixture profile. Never silently broaden support or
 fall back to unrestricted networking. Exact maintenance opt-in is separate from
 runtime policy and does not constrain host image pulls or build RUN traffic.
 Native Linux and WSL2 x86_64 require usable Landlock ABI >= 3 and current protected
@@ -113,15 +129,16 @@ arrays for commands with user-controlled arguments. Keep functions small and
 fail with actionable messages. Use four-space indentation within Bash blocks,
 lower-case `snake_case` for local variables, and upper-case names for
 environment/configuration variables. Keep image and file names descriptive and
-lowercase (`Containerfile`, `claude-container.sh`). Write documentation, code
+lowercase (`Containerfile`, `sandbox-container.sh`). Write documentation, code
 comments, help text, and user-facing messages in English.
 
 ## Testing Guidelines
 
 Run `python3 -m unittest discover -s tests -p test_wrapper.py -v`, `bash -n`
 on changed shell scripts, and `git diff --check`. Run `test_image_pins.py`
-after any `Containerfile` or `tested.cli` change; image inputs stay pinned and
-change only through the maintenance procedure in `docs/validation.md`. Every
+after any `Containerfile` change; image inputs stay pinned, the image installs
+no agent CLI, and inputs change only through the maintenance procedure in
+`docs/validation.md`. Every
 agent container drops capabilities and receives memory/CPU/process budgets in
 all modes; never add a capability, and never drop a budget the engine can enforce
 to make a tool work. A budget whose cgroup v2 controller the rootless engine does
@@ -136,8 +153,8 @@ unittest discover -s tests -p test_runtime.py -v` or `bash tests/run-runtime.sh`
 The latter uses disposable native state and same-host Unix service access;
 `--wrapper` runs wrapper tests there if host Python is unavailable. Verify both
 state modes, privacy failures, escaped symlinks, exact disabled socket values,
-endpoint precedence/remapping, shell/build/worktree composition, all four
-YOLO/socket combinations, engine errors, argument/stdin forwarding, name races,
+endpoint precedence/remapping, shell/build/worktree composition, the socket
+opt-in in both state modes, engine errors, argument/stdin forwarding, name races,
 exit codes, signals, and owned cleanup. Disabled delegation skips separate
 endpoint checks, not mandatory launch-engine verification. Record runtime and
 internal sandbox checks as passed, failed, or unavailable with versions.
@@ -145,10 +162,11 @@ internal sandbox checks as passed, failed, or unavailable with versions.
 Run `bash tests/run-runtime.sh --network-feasibility`, `--network-policy`, and
 `--network` for the isolated topology, trusted policy/proxy tests, and production
 wrapper acceptance. Use disposable native storage with protected ancestors for
-policy path tests; do not weaken path checks for `/tmp`, `/codex-home`, or `/mnt/d`
+policy path tests; do not weaken path checks for `/tmp`, `/sandbox-home`, or `/mnt/d`
 permissions. Existing runtime regressions explicitly select unrestricted mode
-and maintenance authorization. Authenticated API/account tests are separate from
-automated synthetic state and require explicit credential/model-call approval.
+and maintenance authorization. The reference has no provider mode, so
+`--network` drives `network/session.py` directly from a protected fixture
+installation; authenticated checks belong to the agent wrappers.
 
 `bash tests/run-runtime.sh --guard` builds/tests the static native bootstrap using
 a prepared immutable toolchain image; see `network/README.md`. Link-time syscall
@@ -175,9 +193,9 @@ Keep help independent of setup preferences, strict declarative JSON outside all
 writable mounts, exact maintenance consent and last-working-release rollback.
 
 Changes to host CA handling must also verify both modes: with
-`CLAUDE_CONTAINER_TRUST_HOST_CA` unset, no CA mount or CA variables are
+`SANDBOX_CONTAINER_TRUST_HOST_CA` unset, no CA mount or CA variables are
 present; with it set to `1`, the bundle is mounted read-only at
-`/claude-home/ca/bundle.pem` and the four CA variables point at it.
+`/sandbox-home/ca/bundle.pem` and the four CA variables point at it.
 
 Without Podman, stub `podman` on `PATH` and run a copy of the script to check
 the assembled arguments and the validation errors. `/tmp` may be mounted
@@ -192,25 +210,27 @@ security or mount changes, and update `README.md` when usage changes.
 
 ## Security & Configuration
 
-Treat `~/.claude` and the Podman socket as sensitive. Do not copy credentials
+Treat the shell configuration directory (`~/.config/sandbox-container`, with
+the Bash history) and the Podman socket as sensitive. Do not copy credentials
 into the image, broaden mounts unnecessarily, or add `--privileged`. Preserve
 the host workspace's absolute path so containers launched by the host Podman
-service can resolve child bind mounts correctly. Claude configuration is
-intentionally writable because it contains its credentials and session state.
+service can resolve child bind mounts correctly. The shell configuration
+directory is intentionally writable because it holds the session history.
 
-Expose the host Podman API socket only with `CLAUDE_CONTAINER_PODMAN=1` and
-explicit `CLAUDE_CONTAINER_NETWORK=unrestricted`. Reject exact socket opt-in
-in offline/provider modes before image/resource operations.
+Expose the host Podman API socket only with `SANDBOX_CONTAINER_PODMAN=1` and
+explicit `SANDBOX_CONTAINER_NETWORK=unrestricted`. Reject exact socket opt-in
+in offline mode, including the default, before image/resource operations.
 This grants control over containers, volumes, and additional host bind mounts
 available to the service user, beyond the selected workspace.
 
 Host CA trust is opt-in. Mount only the selected CA bundle file, read-only, at
-`/claude-home/ca/bundle.pem`. Never mount the host certificate directory
+`/sandbox-home/ca/bundle.pem`. Never mount the host certificate directory
 (`/etc/ssl/certs/`), and never make it writable from the container.
 
-Keep `~/.claude`/`CLAUDE_CONFIG_DIR` and shared host OpenSpec configuration as
-the default. Nonempty `CLAUDE_CONTAINER_STATE_DIR` selects an isolated writable
-home and conflicts with nonempty host `CLAUDE_CONFIG_DIR`. Create private state,
+Keep `~/.config/sandbox-container`/`SANDBOX_CONTAINER_CONFIG_DIR` and shared
+host OpenSpec configuration as the default. Nonempty
+`SANDBOX_CONTAINER_STATE_DIR` selects an isolated writable home and conflicts
+with nonempty host `SANDBOX_CONTAINER_CONFIG_DIR`. Create private state,
 validate ownership/access/modes, and reject isolated configuration paths escaping
 that home. Do not recursively repair permissions or import credentials. Keep
 `noexec` tmpfs and standard seccomp/SELinux policy; do not automatically relabel
@@ -231,7 +251,7 @@ timeouts without unchecked fallback. Require `tls-clienthello-sni-v2` (defined o
 `network/revisions.py`) in protected
 manifest/readiness identities; old images must fail before agent execution.
 Preserve end-to-end certificate validation. This does not prove exclusive
-Anthropic application access: encrypted HTTP Host, shared services and provider
+provider application access: encrypted HTTP Host, shared services and provider
 forwarding remain opaque, and allowed services can receive data. Run parser and
 proxy suites (`test_tls_client_hello.py`, `test_tls_proxy.py`), then controlled
 shared-address TLS acceptance through the production guard, relay and proxy.
