@@ -28,6 +28,7 @@ SHARED_TESTS = (
     'tests/mux_fault_boundary.py', 'tests/network_fixture.py', 'tests/proxy_budget_fixture.py',
     'tests/tls_binding_fixture.py', 'tests/test_session.py', 'tests/test_toolchains.py',
     'tests/fixtures/agent/profile.json', 'tests/fixtures/agent/policies/default.json',
+    'tests/fixtures/shell-agent/profile.json', 'tests/fixtures/shell-agent/policies/default.json',
 )
 FIXTURE_FILES = 'tests/fixtures/'
 SKIPPED_PARTS = ('__pycache__', 'bin')

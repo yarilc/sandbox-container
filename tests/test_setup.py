@@ -18,7 +18,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sandbox_profile import GUARD, PROFILE, ROOT, env as name, test_setting
+from sandbox_profile import GUARD, PROFILE, ROOT, SHELL_FIXTURE, env as name, fixture_root, test_setting
 sys.path.insert(0, str(ROOT / 'setup'))
 import common
 import diagnostics
@@ -1397,6 +1397,98 @@ exec python3 -c 'import os,signal; print(os.getpid(),flush=True); signal.pause()
         compile_call = next(c for c in calls if c['args'][0] == 'run')
         self.assertIn('--network=none', compile_call['args'])
         self.assertEqual([c['args'][-1] for c in calls if c['args'][0] == 'rm'], ['d' * 64])
+
+
+SHELL_HARNESS = r'''
+import builtins, importlib.util, json, os, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / 'setup'))
+import common
+spec = importlib.util.spec_from_file_location('sandbox_setup', root / 'setup/setup.py')
+setup = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(setup)
+request = json.loads(sys.argv[2])
+result = {}
+value = common.defaults(Path(request['installation']))
+result['defaults'] = value
+result['modes'] = list(setup.NETWORK_MODES)
+errors = {}
+for name, change in request['invalid'].items():
+    try:
+        common.validate(value | change)
+    except common.SetupError as error:
+        errors[name] = str(error)
+result['errors'] = errors
+env = common.runtime_environment(value | {'network': 'unrestricted'}, root, overrides=False)
+result['env'] = sorted(k for k in env if k.startswith(common.PROFILE.env_prefix + '_') or k.startswith('FIXTURE'))
+answers = iter(request['answers'])
+prompts = []
+def ask(prompt):
+    prompts.append(prompt)
+    return next(answers)
+builtins.input = ask
+setup.SOURCE = root
+printed = []
+builtins.print = lambda *args, **kwargs: printed.append(' '.join(map(str, args)))
+chosen, old = setup.questionnaire()
+result['prompts'] = prompts
+result['chosen'] = chosen
+result['printed'] = printed
+result['auth_status'] = setup.authenticate(chosen | {'network': 'unrestricted'}, root)
+sys.stdout = sys.__stdout__
+sys.__stdout__.write(json.dumps(result))
+'''
+
+
+class ProfileWithoutMethodsSetupTests(unittest.TestCase):
+    """Setup for a profile without authentication methods or permission bypass."""
+    def setUp(self):
+        self.root = fixture_root(SHELL_FIXTURE)
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.home = self.root / 'home'
+        self.home.mkdir(mode=0o700)
+
+    def run_harness(self, answers):
+        request = {'installation': str(self.root / 'installed'), 'answers': answers,
+                   'invalid': {'provider': {'network': 'provider'}, 'yolo': {'yolo': True},
+                               'method': {'network': 'unrestricted', 'auth': 'api'}}}
+        result = subprocess.run([sys.executable, '-I', '-c', SHELL_HARNESS, str(self.root), json.dumps(request)],
+                                env={'PATH': os.environ['PATH'], 'HOME': str(self.home)},
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_offline_default_without_authentication_or_bypass_questions(self):
+        # installation, network (refused provider, then default), state, config dir, delegation, worktree,
+        # four budgets, CA trust, command, endpoint
+        # A provider answer is refused and asked again.
+        answers = [str(self.root / 'installed'), 'provider', '', 'shared', '', 'no', 'no', '', '', '', '', 'no',
+                   str(self.root / 'bin/command'), 'default']
+        result = self.run_harness(answers)
+        self.assertEqual(result['modes'], ['offline', 'unrestricted'])
+        self.assertEqual((result['defaults']['network'], result['defaults']['auth']), ('offline', 'none'))
+        self.assertEqual(result['chosen']['network'], 'offline')
+        self.assertEqual(result['chosen']['auth'], 'none')
+        self.assertIs(result['chosen']['yolo'], False)
+        prompts = '\n'.join(result['prompts'])
+        self.assertEqual(prompts.count('Network mode [offline]'), 2)
+        self.assertIn('Choose one of: offline, unrestricted', result['printed'])
+        for absent in ('Authentication method', 'permission bypass', 'Acknowledge', 'provider/'):
+            self.assertNotIn(absent, prompts)
+        self.assertTrue(any('provider mode is unavailable' in line for line in result['printed']))
+        self.assertEqual(result['auth_status'], 'not applicable')
+
+    def test_preferences_and_launch_environment(self):
+        answers = [str(self.root / 'installed'), 'unrestricted', 'shared', '', 'no', 'no', '', '', '', '', 'no',
+                   str(self.root / 'bin/command'), 'local']
+        result = self.run_harness(answers)
+        self.assertEqual(result['chosen']['network'], 'unrestricted')
+        self.assertEqual(result['chosen']['auth'], 'none')
+        self.assertEqual(set(result['errors']), {'provider', 'yolo', 'method'})
+        for suffix in ('NETWORK_PROFILE', 'NETWORK_POLICY', 'NETWORK_RUNTIME_DIR', 'EGRESS_IMAGE', 'YOLO'):
+            self.assertNotIn('FIXTURE_SHELL_' + suffix, result['env'])
+        self.assertIn('FIXTURE_SHELL_NETWORK', result['env'])
 
 
 if __name__ == '__main__':

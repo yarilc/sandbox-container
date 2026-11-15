@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sandbox_profile import AGENT_FIXTURE, NETWORK, NO_METHODS, PROFILE, REAL_POLICY_FILE, REAL_ROOT, ROOT, test_setting
+from sandbox_profile import AGENT_FIXTURE, NETWORK, SHELL_FIXTURE, NO_METHODS, PROFILE, REAL_POLICY_FILE, REAL_ROOT, ROOT, test_setting
 import agent_profile
 import policy
 
@@ -65,7 +65,6 @@ class ProfileSchemaTests(unittest.TestCase):
             lambda v: v['native'].update(approval_bypass_env=v['native']['config_dir_env']),
             lambda v: v['auth'].update(none=copy.deepcopy(v['auth'][method])),
             lambda v: v['auth'].update(custom=copy.deepcopy(v['auth'][method])),
-            lambda v: v['auth'].clear(),
             lambda v: v['auth'][method].update(unknown=True),
             lambda v: v['auth'][method].update(hosts=[]),
             lambda v: v['auth'][method].update(hosts=['127.0.0.1']),
@@ -249,6 +248,35 @@ class RealProfileTests(unittest.TestCase):
         value = copy.deepcopy(self.policy)
         value['profiles'].pop(item['policy_profile'])
         self.assertEqual(missing_base_profiles(self.profile, value), [method])
+
+
+class ProfileWithoutMethodsTests(unittest.TestCase):
+    """A profile may declare no authentication method and no approval bypass."""
+    def setUp(self):
+        self.value = json.loads((SHELL_FIXTURE / 'profile.json').read_text())
+        self.policy = json.loads((SHELL_FIXTURE / 'policies/default.json').read_text())
+
+    def test_profile_and_empty_policy_load(self):
+        profile = agent_profile.validate(copy.deepcopy(self.value))
+        self.assertEqual(profile.auth, {})
+        self.assertIsNone(profile.approval_bypass_env)
+        self.assertEqual(profile.credential_envs, ())
+        self.assertEqual(profile.policy_rules(), {'methods': {}, 'base_profiles': {}})
+        policy.validate(copy.deepcopy(self.policy), profile.policy_rules())
+
+    def test_empty_policy_is_refused_when_methods_exist(self):
+        value = copy.deepcopy(self.policy)
+        with self.assertRaises(policy.PolicyError):
+            policy.validate(value, PROFILE.policy_rules())
+        with self.assertRaises(policy.PolicyError):
+            policy.validate(copy.deepcopy(self.policy))
+
+    def test_approval_bypass_name_is_still_validated(self):
+        for bad in ('lower', self.value['native']['config_dir_env'], self.value['env_prefix'] + '_NETWORK'):
+            value = copy.deepcopy(self.value)
+            value['native']['approval_bypass_env'] = bad
+            with self.subTest(bad=bad), self.assertRaises(agent_profile.ProfileError):
+                agent_profile.validate(value)
 
 
 class FixtureProfileTests(unittest.TestCase):

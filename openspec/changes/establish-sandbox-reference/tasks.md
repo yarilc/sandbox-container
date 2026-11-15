@@ -15,11 +15,11 @@
 
 ## 3. Profiles without authentication methods (shared code)
 
-- [ ] 3.1 Add `tests/fixtures/shell-agent/` (`fixture-shell`, `auth: {}`, no `approval_bypass_env`, `profiles: {}`) and loader tests; verify they fail before the code change.
-- [ ] 3.2 Relax `network/agent_profile.py` (0–8 methods, optional `approval_bypass_env`, `None` handling in the distinct-name check) and `network/policy.py` (empty profiles only without methods); verify the 3.1 tests pass and an empty policy with methods still fails.
-- [ ] 3.3 Make `session.py`, `qualify.py`/`qualification_records.py` and `setup/toolchains.py` handle a missing bypass variable and refuse provider without methods with `profile declares no authentication method`, before any image, proxy or container operation; verify with fixture-shell tests in `test_session`, `test_qualification` and `test_toolchains`.
-- [ ] 3.4 Make `setup/common.py` and `setup/setup.py` follow design decision 4 (offline/unrestricted only, offline default, no auth/residual/login/bypass questions, `not applicable` authentication, no bypass or provider variables in the launch environment); verify with fixture-shell questionnaire, defaults, validation and environment tests in `test_setup`, plus the unchanged fixture-agent tests.
-- [ ] 3.5 Update `network/README.md` for the relaxed schema and the provider refusal; verify unit discovery and `bash tests/run-runtime.sh --setup` pass.
+- [x] 3.1 Add `tests/fixtures/shell-agent/` (`fixture-shell`, `auth: {}`, no `approval_bypass_env`, `profiles: {}`) and loader tests; verify they fail before the code change.
+- [x] 3.2 Relax `network/agent_profile.py` (0–8 methods, optional `approval_bypass_env`, `None` handling in the distinct-name check) and `network/policy.py` (empty profiles only without methods); verify the 3.1 tests pass and an empty policy with methods still fails.
+- [x] 3.3 Make `session.py`, `qualify.py`/`qualification_records.py` and `setup/toolchains.py` handle a missing bypass variable and refuse provider without methods with `profile declares no authentication method`, before any image, proxy or container operation; verify with fixture-shell tests in `test_session`, `test_qualification` and `test_toolchains`.
+- [x] 3.4 Make `setup/common.py` and `setup/setup.py` follow design decision 4 (offline/unrestricted only, offline default, no auth/residual/login/bypass questions, `not applicable` authentication, no bypass or provider variables in the launch environment); verify with fixture-shell questionnaire, defaults, validation and environment tests in `test_setup`, plus the unchanged fixture-agent tests.
+- [x] 3.5 Update `network/README.md` for the relaxed schema and the provider refusal; verify unit discovery and `bash tests/run-runtime.sh --setup` pass.
 
 ## 4. Reference profile and image
 
