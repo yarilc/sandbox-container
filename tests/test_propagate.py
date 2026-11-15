@@ -13,7 +13,7 @@ ALIGNMENT = """SHARED_DIRECTORIES = ('network', 'setup')
 SHARED_TESTS = ('tests/test_alignment.py', 'tests/test_shared.py'{extra})
 """
 # Same structure as a wrapper's tests/test_reference_copy.py.
-MANIFEST_HEAD = '''"""Per-agent check that the shared components equal the Claude reference copy."""
+MANIFEST_HEAD = '''"""Per-agent check that the shared components equal the sandbox-container reference copy."""
 import hashlib
 REFERENCE_TAG = '{tag}'
 REFERENCE_COMMIT = '{commit}'

@@ -3,7 +3,7 @@
 
 Usage: python3 -I tools/propagate.py <target> <old-tag> <new-tag> [--apply]
 
-Reference-only: this tool lives in claude-container and is never copied.
+Reference-only: this tool lives in sandbox-container and is never copied.
 It reads the tags from this checkout, verifies that the target is a clean,
 unforked adopter of <old-tag>, and prints (dry run) or applies the changes:
 shared files, the tests/test_reference_copy.py manifest and the tag/commit
@@ -126,7 +126,7 @@ def plan(target, old, new):
         expected = git(REFERENCE, 'show', f'{old}:{path}', data=True)
         local = target / path
         if not local.is_file() or local.read_bytes() != expected:
-            raise PropagationError(f'{path} differs from {old} in {target}; a fork must be fixed in claude-container first')
+            raise PropagationError(f'{path} differs from {old} in {target}; a fork must be fixed in sandbox-container first')
     complete_directories = {d for d in directories
                             if {p for p in old_shared if p.startswith(d + '/')} <= set(adopted)}
     complete_tests = old_tests <= set(adopted)
@@ -249,14 +249,14 @@ def report(result, applied):
     copied = result['modified'] + result['added']
     out += ['', 'Validation record template (docs/validation.md):', '',
             f"## Adoption of `{result['new']}`: {datetime.date.today().isoformat()}", '',
-            f"Copied from `claude-container` tag `{result['new']}` (commit `{result['new_commit'][:7]}`): "
+            f"Copied from `sandbox-container` tag `{result['new']}` (commit `{result['new_commit'][:7]}`): "
             + (', '.join(f'`{p}`' for p in copied) or 'no files') + '.'
             + (' Removed: ' + ', '.join(f'`{p}`' for p in result['removed']) + '.' if result['removed'] else ''),
             'The `tests/test_reference_copy.py` manifest moved to the tag.', '',
             '| Check | Result |', '| --- | --- |']
     out += [f"| `{m if m.startswith('python3') else 'bash tests/run-runtime.sh ' + m}` | <fill in> |" for m in result['modes']]
     out += ['', 'Commit message:', '', f"Adopt {result['new']}", '',
-            f"Copy the changed shared files from claude-container {result['new']} and move",
+            f"Copy the changed shared files from sandbox-container {result['new']} and move",
             'the reference manifest and the current-state references to the tag.']
     print('\n'.join(out))
 
