@@ -1,11 +1,12 @@
-"""Credential-free checks that the runtime image inputs are pinned (B05)."""
-import json
+"""Credential-free checks that the reference image inputs are pinned (B05)."""
 from pathlib import Path
 import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGES = ('@anthropic-ai/claude-code', '@fission-ai/openspec')
+PACKAGES = ('@fission-ai/openspec',)
+# The reference image is a shell: no agent CLI may be installed.
+AGENT_CLIS = ('@anthropic-ai/claude-code', '@openai/codex', 'opencode-ai', '@mariozechner/pi-coding-agent')
 VERSION = re.compile(r'\d+\.\d+\.\d+')
 
 
@@ -32,7 +33,7 @@ def pins(recipe):
     return bases[0], args, installs
 
 
-def violations(recipe, tested_cli):
+def violations(recipe):
     found = []
     base, args, installs = pins(recipe)
     if not re.fullmatch(r'[a-z0-9./:-]+@sha256:[a-f0-9]{64}', base):
@@ -49,10 +50,9 @@ def violations(recipe, tested_cli):
     for package in PACKAGES:
         if package not in seen:
             found.append('required package is not installed with a pinned version: ' + package)
-    tested = re.match(r'(\d+\.\d+\.\d+)\b', tested_cli)
-    cli = seen.get(PACKAGES[0], '')
-    if not tested or tested[1] != cli:
-        found.append(f'pinned CLI {cli or "(none)"} differs from policy tested.cli {tested_cli!r}')
+    for package in AGENT_CLIS:
+        if package in seen or package in recipe:
+            found.append('agent CLI installed in the reference image: ' + package)
     return found
 
 
@@ -114,13 +114,13 @@ def workdir_violations(recipe):
 class ImagePinTests(unittest.TestCase):
     def setUp(self):
         self.recipe = (ROOT / 'Containerfile').read_text()
-        self.tested_cli = json.loads((ROOT / 'agent/policies/default.json').read_text())['tested']['cli']
 
-    def test_shipped_recipe_is_pinned_and_matches_policy(self):
-        self.assertEqual(violations(self.recipe, self.tested_cli), [])
-        _, args, _ = pins(self.recipe)
-        self.assertEqual(args['CLAUDE_CODE_VERSION'], self.tested_cli.split()[0])
-        self.assertRegex(self.recipe, r'(?m)^\s+DISABLE_AUTOUPDATER=1$')
+    def test_shipped_recipe_is_pinned_and_starts_bash(self):
+        self.assertEqual(violations(self.recipe), [])
+        _, args, installs = pins(self.recipe)
+        self.assertEqual(installs, ['@fission-ai/openspec@' + args['OPENSPEC_VERSION']])
+        self.assertIn('ENTRYPOINT ["bash"]', self.recipe)
+        self.assertRegex(self.recipe, r'(?m)^\s+HOME=/sandbox-home$')
 
     def test_mutated_recipes_are_rejected(self):
         digest = re.search(r'@sha256:[a-f0-9]{64}', self.recipe)
@@ -128,23 +128,24 @@ class ImagePinTests(unittest.TestCase):
             'tag-only base': self.recipe.replace(digest[0], '') if digest else self.recipe,
             'latest package': self.recipe.replace('"@fission-ai/openspec@${OPENSPEC_VERSION}"',
                                                   '@fission-ai/openspec@latest'),
-            'unversioned package': self.recipe.replace('"@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"',
-                                                       '@anthropic-ai/claude-code'),
+            'unversioned package': self.recipe.replace('"@fission-ai/openspec@${OPENSPEC_VERSION}"',
+                                                       '@fission-ai/openspec'),
             'version range': self.recipe.replace('ARG OPENSPEC_VERSION=1.16.0', 'ARG OPENSPEC_VERSION=^1.16.0'),
-            'diverging cli': self.recipe.replace('ARG CLAUDE_CODE_VERSION=2.1.316', 'ARG CLAUDE_CODE_VERSION=2.1.317'),
+            'agent cli': self.recipe.replace('"@fission-ai/openspec@${OPENSPEC_VERSION}"',
+                                             '"@fission-ai/openspec@${OPENSPEC_VERSION}" @anthropic-ai/claude-code@2.1.316'),
         }
         for name, recipe in cases.items():
             with self.subTest(name=name):
                 self.assertNotEqual(recipe, self.recipe)
-                self.assertTrue(violations(recipe, self.tested_cli))
-        message = violations(cases['diverging cli'], self.tested_cli)
-        self.assertTrue(any('2.1.317' in item and '2.1.316' in item for item in message), message)
+                self.assertTrue(violations(recipe))
+        message = violations(cases['agent cli'])
+        self.assertTrue(any('agent CLI' in item for item in message), message)
 
 
     def test_workdir_exists_in_the_image(self):
         self.assertEqual(workdir_violations(self.recipe), [])
         self.assertIn('WORKDIR /workspace', self.recipe)
-        mutated = self.recipe.replace('mkdir -p /claude-home /workspace', 'mkdir -p /claude-home')
+        mutated = self.recipe.replace('mkdir -p /sandbox-home /workspace', 'mkdir -p /sandbox-home')
         self.assertNotEqual(mutated, self.recipe)
         self.assertEqual(workdir_violations(mutated), ['WORKDIR is not created by a build step: /workspace'])
         self.assertTrue(workdir_violations('FROM x@sha256:' + 'a' * 64 + '\nRUN mkdir -p /other\nWORKDIR /workspace\n'))

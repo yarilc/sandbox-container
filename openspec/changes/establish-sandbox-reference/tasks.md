@@ -23,9 +23,9 @@
 
 ## 4. Reference profile and image
 
-- [ ] 4.1 Replace `agent/profile.json` and `agent/policies/default.json` with the reference values (design decision 1, empty policy profiles with a `sandbox-container-…` revision); verify `test_agent_profile` real-profile checks pass and method checks are reported as skipped.
-- [ ] 4.2 Rewrite `Containerfile` and `.containerignore` (design decision 7: no agent CLI, OpenSpec pinned, `HOME=/sandbox-home`, `SANDBOX_CONTAINER_CONFIG_DIR`, `HISTFILE`, `/sandbox-home` and `/workspace` in a layer, relay/mux copied, `bash` entrypoint); update `test_image_pins.py` (OpenSpec pin, base digest, no agent CLI, CLI/policy test removed); verify `test_image_pins` passes.
-- [ ] 4.3 Build the image with explicit maintenance authorization; verify `openspec --version` reports 1.16.0, `bash` is the entrypoint, `claude` is absent and the Debian sources use HTTPS (`tests/image-smoke.sh` updated accordingly).
+- [x] 4.1 Replace `agent/profile.json` and `agent/policies/default.json` with the reference values (design decision 1, empty policy profiles with a `sandbox-container-…` revision); verify `test_agent_profile` real-profile checks pass and method checks are reported as skipped.
+- [x] 4.2 Rewrite `Containerfile` and `.containerignore` (design decision 7: no agent CLI, OpenSpec pinned, `HOME=/sandbox-home`, `SANDBOX_CONTAINER_CONFIG_DIR`, `HISTFILE`, `/sandbox-home` and `/workspace` in a layer, relay/mux copied, `bash` entrypoint); update `test_image_pins.py` (OpenSpec pin, base digest, no agent CLI, CLI/policy test removed); verify `test_image_pins` passes.
+- [x] 4.3 Build the image with explicit maintenance authorization; verify `openspec --version` reports 1.16.0, `bash` is the entrypoint, `claude` is absent and the Debian sources use HTTPS (`tests/image-smoke.sh` updated accordingly).
 
 ## 5. Shell launcher
 

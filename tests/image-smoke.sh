@@ -2,19 +2,20 @@
 # Run through wrapper shell mode with synthetic state and the standard policy.
 set -Eeuo pipefail
 [[ $(id -u) != 0 ]]
-for tool in claude openspec bash git python3 bwrap podman rg nano curl jq \
+for tool in openspec bash git python3 bwrap podman rg nano curl jq \
     tar bzip2 zip unzip file ps find patch diff awk xz sed grep less; do
     command -v "$tool" >/dev/null
 done
-claude --version
-claude --help >/dev/null
+# The reference image is a shell: no agent CLI is installed.
+! command -v claude >/dev/null
 openspec --version
 python3 --version
 bwrap --version
 nano --version >/dev/null
 [[ "$EDITOR" == nano && "$VISUAL" == nano ]]
-[[ "$HOME" == /claude-home && "$CLAUDE_CONFIG_DIR" == /claude-home/.claude ]]
-[[ -w "$CLAUDE_CONFIG_DIR" && -w /tmp && ! -w /usr ]]
+[[ "$HOME" == /sandbox-home && "$SANDBOX_CONTAINER_CONFIG_DIR" == /sandbox-home/.config/sandbox-container ]]
+[[ "$HISTFILE" == "$SANDBOX_CONTAINER_CONFIG_DIR/bash_history" ]]
+[[ -w "$SANDBOX_CONTAINER_CONFIG_DIR" && -w /tmp && ! -w /usr ]]
 findmnt --noheadings --output OPTIONS --target / | grep -Eq '(^|,)ro(,|$)'
 for path in /tmp /run /var/tmp; do
     options=$(findmnt --noheadings --output OPTIONS --target "$path")
@@ -32,5 +33,5 @@ if grep -Ev '^URIs:([[:space:]]+https://[^[:space:]]+)+[[:space:]]*$' <<< "$uris
 fi
 [[ ! -e /tmp/apt-bootstrap-ca.pem ]]
 [[ -s /etc/ssl/certs/ca-certificates.crt ]]
-touch /tmp/claude-image-smoke
+touch /tmp/sandbox-image-smoke
 printf 'Image smoke checks passed.\n'
