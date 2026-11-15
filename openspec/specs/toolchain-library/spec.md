@@ -6,12 +6,11 @@ Let the operator supply extra toolchains to agent sessions from a host library s
 
 ## Requirements
 
-
 ### Requirement: Shared operator-managed library
-The toolchain library SHALL be one host directory shared by all wrappers, `${XDG_DATA_HOME:-$HOME/.local/share}/sandbox-toolchains` unless `CLAUDE_CONTAINER_TOOLCHAINS_DIR` names another absolute path. It SHALL be caller-owned and private (`0700`), and SHALL NOT be, contain or lie inside the workspace, a state directory or the installation. Only the operator's `--container-toolchain` command SHALL change it.
+The toolchain library SHALL be one host directory shared by all wrappers, `${XDG_DATA_HOME:-$HOME/.local/share}/sandbox-toolchains` unless `SANDBOX_CONTAINER_TOOLCHAINS_DIR` names another absolute path. It SHALL be caller-owned and private (`0700`), and SHALL NOT be, contain or lie inside the workspace, a state directory or the installation. Only the operator's `--container-toolchain` command SHALL change it.
 
 #### Scenario: Default location
-- **WHEN** neither `XDG_DATA_HOME` nor `CLAUDE_CONTAINER_TOOLCHAINS_DIR` is set
+- **WHEN** neither `XDG_DATA_HOME` nor `SANDBOX_CONTAINER_TOOLCHAINS_DIR` is set
 - **THEN** the library is `$HOME/.local/share/sandbox-toolchains` for every wrapper
 
 #### Scenario: Unsafe library rejected
@@ -44,10 +43,10 @@ A toolchain SHALL be described by an operator recipe with a name, a version, one
 - **THEN** its files belong to the caller, keep their executable bits, and have no setuid or setgid bit
 
 ### Requirement: Toolchain command on the host
-`--container-toolchain` SHALL be used alone with `add <recipe>`, `list`, `remove <name>` or `verify [<name>]`. It SHALL run on the host without starting an agent session. `add` with an image source SHALL require exact `CLAUDE_CONTAINER_MAINTENANCE=1` when the image must be pulled. Changes SHALL be serialized by a library lock and applied atomically, so that a reader sees either the previous or the new toolchain and index, never a partial one.
+`--container-toolchain` SHALL be used alone with `add <recipe>`, `list`, `remove <name>` or `verify [<name>]`. It SHALL run on the host without starting a session. `add` with an image source SHALL require exact `SANDBOX_CONTAINER_MAINTENANCE=1` when the image must be pulled. Changes SHALL be serialized by a library lock and applied atomically, so that a reader sees either the previous or the new toolchain and index, never a partial one.
 
 #### Scenario: Pull without maintenance
-- **WHEN** `add` needs to pull an image and `CLAUDE_CONTAINER_MAINTENANCE` is not exactly `1`
+- **WHEN** `add` needs to pull an image and `SANDBOX_CONTAINER_MAINTENANCE` is not exactly `1`
 - **THEN** the command fails naming the maintenance variable, without pulling
 
 #### Scenario: Concurrent changes
@@ -93,10 +92,10 @@ The library SHALL contain a generated `toolchains.md` and `index.json`, and each
 - **THEN** `toolchains.md` shows them in that toolchain's entry
 
 ### Requirement: Read-only session mount with live updates
-Every session SHALL mount the library at `/toolchains` read-only with `nosuid` and `nodev`, unless `CLAUDE_CONTAINER_TOOLCHAINS=0` is set. The launcher SHALL create the library privately when it is missing. A toolchain added or removed on the host SHALL become visible to running sessions without a restart. The mount SHALL add no network, IPC or socket access.
+Every session SHALL mount the library at `/toolchains` read-only with `nosuid` and `nodev`, unless `SANDBOX_CONTAINER_TOOLCHAINS=0` is set. The launcher SHALL create the library privately when it is missing. A toolchain added or removed on the host SHALL become visible to running sessions without a restart. The mount SHALL add no network, IPC or socket access.
 
 #### Scenario: Toolchain added during a session
-- **WHEN** the operator adds a toolchain while a provider-mode session is running
+- **WHEN** the operator adds a toolchain while an offline session is running
 - **THEN** the session can run its check command through `env.sh` without a restart, under the same network restrictions
 
 #### Scenario: Library is read-only for the agent
@@ -104,7 +103,7 @@ Every session SHALL mount the library at `/toolchains` read-only with `nosuid` a
 - **THEN** the operation fails
 
 #### Scenario: Mount disabled
-- **WHEN** `CLAUDE_CONTAINER_TOOLCHAINS=0` is set
+- **WHEN** `SANDBOX_CONTAINER_TOOLCHAINS=0` is set
 - **THEN** the session has no `/toolchains` mount and no toolchain environment
 
 ### Requirement: Default toolchain environment for new sessions
@@ -147,7 +146,7 @@ A toolchain SHALL NOT set a variable that the session or a wrapper owns. Profile
 
 #### Scenario: Agent variable in a recipe
 
-- **WHEN** a recipe sets a variable that the profile declares as an agent variable, or one that starts with a declared agent prefix, for example `CLAUDE_CODE_USE_BEDROCK` or `ANTHROPIC_BASE_URL` in Claude
+- **WHEN** a recipe sets a variable that the profile declares as an agent variable, or one that starts with a declared agent prefix, for example `FIXTURE_AGENT_MODEL` with the shared fixture profile
 - **THEN** `add` fails naming the variable as protected, and the library is unchanged
 
 #### Scenario: XDG variable in a recipe
@@ -177,11 +176,11 @@ A toolchain SHALL NOT set a variable that the session or a wrapper owns. Profile
 
 ### Requirement: Agent variables are declared in the profile
 
-The agent profile SHALL be able to declare the variables and variable prefixes that the agent reads, as an optional list. The profile loader SHALL reject an entry that is not a valid variable name or prefix, a duplicate, or an entry that names a neutral protected variable. A profile without the list SHALL keep the previous protection.
+The agent profile SHALL be able to declare the variables and variable prefixes that the agent reads, as an optional list. The profile loader SHALL reject an entry that is not a valid variable name or prefix, a duplicate, or an entry that names a neutral protected variable. A profile without the list, such as the reference profile, SHALL keep only the neutral and derived protection.
 
 #### Scenario: Valid declaration
 
-- **WHEN** a profile declares `CLAUDE_CODE_` and `DISABLE_TELEMETRY`
+- **WHEN** a profile declares `FIXTURE_AGENT_` and `DISABLE_TELEMETRY`
 - **THEN** the profile loads, and both are profile variables for the toolchain library
 
 #### Scenario: Invalid declaration

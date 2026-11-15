@@ -6,33 +6,6 @@ Constrain network egress and external IPC independently of Claude and its tools,
 
 ## Requirements
 
-### Requirement: Operator-selected runtime modes
-The wrapper SHALL accept `CLAUDE_CONTAINER_NETWORK=offline|provider|unrestricted` from explicit operator configuration or validated managed preferences. An ordinary launch with an unset or empty effective mode SHALL stop with setup guidance before runtime preparation. Other values SHALL fail before image operations. Only explicit `unrestricted` SHALL remove the runtime destination boundary. Agent-writable configuration SHALL NOT select or broaden the outer policy.
-
-#### Scenario: Default and invalid selection
-- **WHEN** an ordinary invocation leaves the effective mode unset or empty
-- **THEN** it receives missing-setup guidance rather than starting an implicitly offline session
-- **AND** an unknown nonempty mode fails with the existing invalid-mode diagnostic without image operations or agent startup
-
-#### Scenario: Policy cannot escalate itself
-- **WHEN** workspace settings, application state, or commands request a broader policy or remove proxy variables
-- **THEN** the running session retains its operator-selected outer boundary
-
-#### Scenario: Explicit offline operation
-- **WHEN** an operator explicitly chooses offline mode or a validated managed launcher supplies saved offline mode
-- **THEN** the wrapper applies all existing restricted platform, protected-installation, guard and qualification requirements
-- **AND** the resulting session cannot reach external services, including the Claude API
-
-#### Scenario: Explicit provider or unrestricted operation
-- **WHEN** an operator explicitly chooses provider or unrestricted mode, or the validated managed launcher supplies that saved choice
-- **THEN** the mode retains its existing policy, authority, prerequisite and separate maintenance requirements
-- **AND** failed restricted preparation never falls back to unrestricted networking
-
-#### Scenario: Qualification is not an ordinary session
-- **WHEN** the standalone fixed qualification operation is invoked with no effective network mode
-- **THEN** its existing offline qualification default and protected-fixture checks remain available
-- **AND** neither that operation nor its internal probe admits an arbitrary application command or bypasses enforcement
-
 ### Requirement: Restricted sessions have no direct external path
 Offline sessions SHALL have only their own loopback services. Provider sessions SHALL additionally reach only the trusted proxy frontend. Restricted sessions SHALL have no direct Internet route or secondary unrestricted attachment and SHALL deny host, LAN, metadata, other sessions, and proxy administration access. Unsupported enforcement SHALL stop startup before the agent runs.
 
@@ -50,7 +23,7 @@ Offline sessions SHALL have only their own loopback services. Provider sessions 
 - **THEN** startup fails with a diagnostic and cleans up owned resources without starting the agent
 
 ### Requirement: Mandatory inherited IPC enforcement
-Restricted sessions SHALL admit qualifying native Linux and WSL2 x86_64 installations with usable Landlock ABI >= 3, using filesystem confinement plus an additional restrictive in-process seccomp filter before agent code. Restrictions SHALL survive descendants. The standard OCI seccomp profile and any active SELinux/AppArmor policy SHALL remain active. Compatibility with SELinux/AppArmor SHALL NOT be guaranteed; their enabled status alone SHALL NOT reject preparation. No ABI-9 feature or kernel upgrade SHALL be required.
+Restricted sessions SHALL admit qualifying native Linux and WSL2 x86_64 installations with usable Landlock ABI >= 3, using filesystem confinement plus an additional restrictive in-process seccomp filter before session code. Restrictions SHALL survive descendants. The standard OCI seccomp profile and any active SELinux/AppArmor policy SHALL remain active. Compatibility with SELinux/AppArmor SHALL NOT be guaranteed; their enabled status alone SHALL NOT reject preparation. No ABI-9 feature or kernel upgrade SHALL be required.
 
 #### Scenario: Target WSL kernel
 - **WHEN** the measured WSL x86_64 target provides usable ABI 3 and permits both required enforcement layers
@@ -59,12 +32,12 @@ Restricted sessions SHALL admit qualifying native Linux and WSL2 x86_64 installa
 
 #### Scenario: Unsupported or blocked kernel features
 - **WHEN** ABI is below 3, required Landlock rules or the additional filter cannot install, or the syscall architecture is unsupported
-- **THEN** startup fails before Claude, Bash, relay or application initialization
+- **THEN** startup fails before Bash, a session command, the relay or application initialization
 - **AND** no privilege addition, replacement/weakened OCI profile, automatic kernel change or unrestricted retry occurs
 
 #### Scenario: Native approvals cannot remove confinement
-- **WHEN** a session forks, execs, creates threads or uses native permission bypass
-- **THEN** all agent-controlled descendants retain both enforcement layers and cannot acquire unfiltered external peers
+- **WHEN** a session forks, execs, creates threads or starts a nested Bubblewrap sandbox
+- **THEN** all session-controlled descendants retain both enforcement layers and cannot acquire unfiltered external peers
 - **AND** another session sharing file state does not gain access to its IPC
 
 #### Scenario: Native Linux with active security modules
@@ -258,39 +231,16 @@ Any local-provider or optional-service exception SHALL be operator-approved and 
 - **THEN** access is denied with an actionable policy diagnostic and the policy remains unchanged
 
 ### Requirement: Client compatibility does not establish enforcement
-Provider mode SHALL set consistent uppercase/lowercase HTTP/HTTPS proxy values and narrowly scoped loopback bypasses, clearing conflicting inherited and image defaults including alternate proxy variables. Unsetting or ignoring them SHALL NOT create a direct route. TLS trust SHALL preserve the existing single-file opt-in host CA contract.
+In provider mode, the shared session helper SHALL set consistent uppercase/lowercase HTTP/HTTPS proxy values and narrowly scoped loopback bypasses, clearing conflicting inherited and image defaults including alternate proxy variables. Unsetting or ignoring them SHALL NOT create a direct route. TLS trust SHALL preserve the existing single-file opt-in host CA contract in every mode.
 
 #### Scenario: Client bypass and incompatible transport
 - **WHEN** a command clears proxy variables, uses a wildcard bypass, or requires an unsupported transport
 - **THEN** direct egress still fails and no automatic direct fallback or TLS relaxation occurs
 
 #### Scenario: Host CA off and on
-- **WHEN** provider mode runs with host CA trust unset and then enabled with `1`
+- **WHEN** an offline session runs with host CA trust unset and then enabled with `1`
 - **THEN** the first run has no host CA mount or wrapper CA variables
-- **AND** the second has only the read-only bundle at `/claude-home/ca/bundle.pem` and the four existing CA variables pointing there
-
-### Requirement: Separate Claude authentication profiles
-Provider mode SHALL require a named protected profile. `anthropic-api` SHALL allow only `api.anthropic.com:443` as its base destination; `anthropic-account` SHALL separately authorize only the measured account hosts needed inside the container. SSO, optional features, third-party clouds, and gateways SHALL require distinct explicit additions or profiles with dated inventories.
-
-#### Scenario: API and account inventories
-- **WHEN** API authentication is selected
-- **THEN** account login and unrelated development/feature hosts are denied
-- **AND** the account profile allows exactly `api.anthropic.com` and `platform.claude.com` on 443, with SSO destinations only for its selected login method
-
-#### Scenario: Removed account hosts are denied
-- **WHEN** an account-profile session opens a CONNECT tunnel to `claude.ai` or `claude.com`
-- **THEN** the proxy denies it with a policy reason and records only the sanitized host, port and reason
-- **AND** no policy is extended automatically
-
-#### Scenario: Operator needs a removed host
-- **WHEN** an operator needs `claude.ai` or `claude.com` in a session
-- **THEN** that requires a separately named profile in an operator policy
-- **AND** the exact base `anthropic-account` profile cannot be extended in place
-
-#### Scenario: Account credentials without an API key
-- **WHEN** provider mode selects the account profile with usable existing account credentials and no ANTHROPIC_API_KEY
-- **THEN** the wrapper does not require an API key to start that account session
-- **AND** the same outer destination and IPC restrictions apply
+- **AND** the second has only the read-only bundle at `/sandbox-home/ca/bundle.pem` and the four existing CA variables pointing there
 
 ### Requirement: Optional traffic remains opt-in
 Provider profiles SHALL disable unnecessary telemetry, updates, connectors, artifact/documentation lookups, and runtime plugin downloads using settings supported by the tested CLI. A missing supported disable control SHALL NOT broaden the allowlist. Shell and native permission-bypass modes SHALL retain the same outer restrictions.
@@ -407,10 +357,10 @@ Protected denial logs SHALL distinguish TLS identity rejection, malformed or uns
 - **AND** diagnostic processing does not allocate from unchecked lengths or inject log records
 
 ### Requirement: Accurate provider identity documentation
-Provider help, setup guidance, security documentation and the network contract SHALL distinguish CONNECT authorization, SNI binding of the initial and retried TLS 1.3 ClientHellos, and encrypted application routing. They SHALL state that matching SNI does not prove exclusive Anthropic communication or prevent encrypted Host changes, shared-service routing, provider-side forwarding or sending data to allowed services. They SHALL name uninspected TLS 1.2 renegotiation as an accepted limitation.
+The network contract and the provider documentation of every profile with authentication methods SHALL distinguish CONNECT authorization, SNI binding of the initial and retried TLS 1.3 ClientHellos, and encrypted application routing. They SHALL state that matching SNI does not prove exclusive communication with the provider or prevent encrypted Host changes, shared-service routing, provider-side forwarding or sending data to allowed services. They SHALL name uninspected TLS 1.2 renegotiation as an accepted limitation.
 
 #### Scenario: Operator reviews provider guarantees
-- **WHEN** an operator chooses or reads about provider mode
+- **WHEN** an operator reads the network contract or an agent wrapper's provider documentation
 - **THEN** the effective initial and retried ClientHello guarantee and remaining application-level limits are visible
 - **AND** ECH/GREASE and unsupported-client failures require explicit compatibility guidance without automatic policy relaxation
 
@@ -419,7 +369,7 @@ Provider help, setup guidance, security documentation and the network contract S
 - **THEN** TLS 1.2 renegotiation is identified as uninspected, with the reason and the absence of TLS decryption stated
 
 ### Requirement: Destination-binding acceptance evidence
-Closing N15–N17 SHALL require tracked documentation and controlled positive/negative destination-binding evidence through the production guard, relay and proxy on the supported WSL ABI-3 target. Parser tests and historical transport passes SHALL remain separate from production acceptance. Real authenticated checks SHALL require separate authorization, and unavailable checks SHALL be labeled unavailable.
+The reference SHALL keep controlled positive/negative destination-binding evidence through the production guard, relay and proxy on the supported WSL ABI-3 target, driven through the shared session helper with the fixture profile. Parser tests and historical transport passes SHALL remain separate from production acceptance. Real authenticated checks belong to the agent wrappers and SHALL require separate authorization; unavailable checks SHALL be labeled unavailable.
 
 #### Scenario: Controlled shared-address regression
 - **WHEN** acceptance exercises two controlled TLS hostnames at one address with certificates valid for the respective names
@@ -427,15 +377,13 @@ Closing N15–N17 SHALL require tracked documentation and controlled positive/ne
 - **AND** a controlled unfiltered positive control demonstrates that the alternate hostname is otherwise reachable at that address
 
 #### Scenario: Regression and compatibility matrix
-- **WHEN** the change is assessed for completion
+- **WHEN** a change to the proxy, relay, guard or session helper is assessed before tagging
 - **THEN** evidence covers malformed/missing/duplicate/conflicting SNI, non-TLS, ECH, fragmentation, inspection limits/deadlines, concurrency, direct multiplex use, channel/proxy failure, and old-proxy rejection
-- **AND** controlled TLS/streaming tests cover both API and account inventories, bad-certificate rejection, CA off/on, and existing long-lived/WebSocket transport
-- **AND** current real authentication results are distinguished from historical evidence and synthetic compatibility without accessing real credentials automatically
+- **AND** controlled TLS/streaming tests cover the narrow and wide fixture profiles, bad-certificate rejection, CA off/on, and long-lived/WebSocket transport, without real credentials
 
 #### Scenario: Historical observation provenance
-- **WHEN** documentation records the 2026-11-07 approved Anthropic CONNECT followed by Cloudflare SNI and HTTP 403
-- **THEN** it identifies the observation as reported historical evidence and records available versions and reproduction details without inventing missing metadata
-- **AND** it distinguishes that observation from new controlled regression results and makes no claim of arbitrary application-content access
+- **WHEN** the validation record mentions earlier Claude-specific observations, such as the 2026-11-07 CONNECT followed by Cloudflare SNI and HTTP 403
+- **THEN** they stay recorded as history of the imported repository and are not presented as evidence of the reference shell
 
 ### Requirement: Capability-based restricted platform prerequisites
 Restricted preparation SHALL require Linux x86_64, rootless Podman server >= 4.9 with Netavark over a verified same-host Unix service, host Python 3, usable Landlock ABI >= 3 and standard OCI seccomp. Exact kernel/server pins and upper version bounds SHALL NOT determine admission. Effective enforcement, protected assets and the local qualification gate SHALL remain mandatory.
@@ -508,11 +456,11 @@ Each Internet-facing session proxy SHALL have a limit of 128 processes and 256 M
 - **AND** other sessions retain their independent proxy resources and budgets
 
 ### Requirement: Single protected agent profile
-All agent-specific values used by the shared network sandbox and setup components SHALL come from one data-only agent profile and its provider policy file. Examples are wrapper and variable names, images, labels, installation and state names, native configuration and credential variables, authentication assistance and policy profiles. The profile SHALL be schema-validated, trusted-path checked and outside agent-writable mounts.
+All agent-specific values used by the shared network sandbox and setup components SHALL come from one data-only agent profile and its policy file. Examples are wrapper and variable names, images, labels, installation and state names, native configuration and credential variables, authentication assistance and policy profiles. The profile SHALL be schema-validated, trusted-path checked and outside session-writable mounts.
 
 #### Scenario: Invalid or unprotected profile
 - **WHEN** the profile is missing, malformed, has duplicate or unknown keys, fails field validation, or is reachable through a writable workspace or state mount or an escaped symlink
-- **THEN** setup, qualification and restricted startup fail before the agent runs, identify the profile, and do not fall back to built-in defaults
+- **THEN** setup, qualification and restricted startup fail before the session runs, identify the profile, and do not fall back to built-in defaults
 
 #### Scenario: Profile not taken from the workspace
 - **WHEN** the current workspace contains a file with the profile's name or layout
@@ -611,12 +559,16 @@ Host-side guard probes run by restricted-session preparation and qualification S
 - **THEN** the caller stops with a message that names the guard probe, its status and the Landlock ABI or standard I/O requirement, instead of failing without output
 
 ### Requirement: Residual exfiltration disclosure
-Provider help, setup guidance, README and the network contract SHALL state that destination and SNI binding cannot distinguish the operator's credentials from attacker-supplied ones. Each allowed host can therefore receive workspace data sent with a foreign API key or account. The documentation SHALL name the hosts of each base profile and SHALL NOT present the disclosure or the host reduction as preventing this channel.
+For every profile that declares authentication methods, provider help, setup guidance, the README and the network contract SHALL state that destination and SNI binding cannot distinguish the operator's credentials from attacker-supplied ones, so each allowed host can receive workspace data sent with a foreign key or account. They SHALL name the hosts of each base profile and SHALL NOT present the disclosure or a host reduction as preventing this channel.
 
 #### Scenario: Operator reads the provider limits
-- **WHEN** an operator reads the provider help, README or network contract
-- **THEN** the foreign-credential channel is described for `api.anthropic.com` and every other allowed host of the selected profile
+- **WHEN** an operator reads the provider help, README or network contract of a wrapper whose profile declares authentication methods
+- **THEN** the foreign-credential channel is described for every allowed host of the selected profile
 - **AND** the text states that only offline mode removes the channel
+
+#### Scenario: Reference without provider mode
+- **WHEN** an operator reads the reference README or network contract
+- **THEN** it states that the reference offers no provider mode and that the channel is described by each agent wrapper
 
 ### Requirement: Credential-injecting interception remains unimplemented
 The network contract SHALL describe credential-injecting TLS interception as a separately evaluated option only. In that option the proxy holds the credentials and the agent never sees them. The contract SHALL state that it conflicts with the no-decryption guarantee, and that it requires an explicit operator decision and its own change before implementation. The proxy SHALL NOT decrypt, terminate or re-sign provider TLS.
@@ -625,18 +577,6 @@ The network contract SHALL describe credential-injecting TLS interception as a s
 - **WHEN** an operator reads the network contract
 - **THEN** the option, its trade-offs (TLS termination, a local CA, credential custody and a larger trusted proxy) and its unimplemented status are stated
 - **AND** provider tunnels still forward TLS end-to-end without decryption
-
-### Requirement: Authenticated account-profile reduction evidence
-An account-profile host reduction SHALL count as accepted only after operator-run checks pass through the restricted wrapper. These are a fresh isolated login, an ordinary request and a refresh after expiry, with the narrowed profile and no other change. The sanitized denial records SHALL be reviewed. Automated tests SHALL NOT use real credentials.
-
-#### Scenario: Narrowed profile passes
-- **WHEN** login, an ordinary request and a refresh succeed under the narrowed profile with no denial of an Anthropic host
-- **THEN** the validation record stores the CLI version, policy revision, results and the absence of denials, without credentials, URLs or bodies
-
-#### Scenario: Narrowed profile fails
-- **WHEN** any check fails or a denial names a removed host
-- **THEN** the measured denials are recorded
-- **AND** the account profile is restored to its previous host set under a new revision instead of being broadened automatically at runtime
 
 ### Requirement: Provider upstream connection tolerates unsupported address families
 When an approved name resolves to several validated addresses, the provider proxy SHALL skip any address whose family the kernel does not support and try the next one. It SHALL never connect to an unvalidated address or resolve the name a second time. When no address yields a connection, it SHALL reject the tunnel.
@@ -679,3 +619,45 @@ Every container that local enforcement qualification starts from the runtime ima
 #### Scenario: Probe behavior unchanged
 - **WHEN** the control probe, peer and security probe run in `/`
 - **THEN** they reach their fixtures by absolute paths and produce the same evidence as before
+
+### Requirement: Runtime modes with an offline default
+The wrapper SHALL accept `SANDBOX_CONTAINER_NETWORK=offline|unrestricted` and apply `offline` when it is unset or empty. `provider` SHALL be accepted only for a profile that declares authentication methods. Other values SHALL fail before image operations. Only explicit `unrestricted` SHALL remove the destination boundary; session-writable configuration SHALL NOT select or broaden it.
+
+#### Scenario: Default and invalid selection
+- **WHEN** an ordinary invocation leaves the effective mode unset or empty
+- **THEN** it starts an offline session, subject to every offline prerequisite
+- **AND** `provider` or an unknown nonempty mode fails with an invalid-mode diagnostic without image operations or session startup
+
+#### Scenario: Policy cannot escalate itself
+- **WHEN** workspace settings, application state, or commands request a broader policy or remove proxy variables
+- **THEN** the running session retains its operator-selected outer boundary
+
+#### Scenario: Offline operation
+- **WHEN** offline mode applies by default, by explicit operator choice or from a validated managed launcher
+- **THEN** the wrapper applies all existing restricted platform, protected-installation, guard and qualification requirements
+- **AND** the resulting session cannot reach external services
+
+#### Scenario: Explicit unrestricted operation
+- **WHEN** an operator explicitly chooses unrestricted mode, or the validated managed launcher supplies that saved choice
+- **THEN** the mode retains its existing authority, prerequisite and separate maintenance requirements
+- **AND** failed restricted preparation never falls back to unrestricted networking
+
+#### Scenario: Qualification is not an ordinary session
+- **WHEN** the standalone fixed qualification operation is invoked with no effective network mode
+- **THEN** its existing offline qualification default and protected-fixture checks remain available
+- **AND** neither that operation nor its internal probe admits an arbitrary application command or bypasses enforcement
+
+### Requirement: Profiles without authentication methods
+The profile loader SHALL accept a profile with no authentication method and without an approval-bypass variable. Its policy file SHALL then declare no policy profiles. For such a profile, the shared session helper, setup and qualification SHALL refuse provider mode before any image, proxy or container operation, naming the absence of authentication methods.
+
+#### Scenario: Reference profile loads
+- **WHEN** the reference profile declares `"auth": {}` and no `approval_bypass_env`, with a policy whose `profiles` is empty
+- **THEN** the profile and policy load and offline and unrestricted sessions can start
+
+#### Scenario: Provider requested without methods
+- **WHEN** provider mode reaches the session helper, setup or qualification with such a profile
+- **THEN** the operation fails before image, proxy or container operations and the diagnostic states that the profile declares no authentication method
+
+#### Scenario: Empty policy with declared methods
+- **WHEN** a profile declares authentication methods and its policy file declares no profiles
+- **THEN** policy validation fails as before

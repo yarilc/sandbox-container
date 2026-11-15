@@ -39,44 +39,23 @@ The runtime image SHALL set the `EDITOR` and `VISUAL` environment variables to `
 - **THEN** the container still sets `EDITOR` and `VISUAL` to `nano`
 
 ### Requirement: Runtime image inputs are pinned
-The image recipe SHALL install exact versions of `@anthropic-ai/claude-code` and `@fission-ai/openspec` recorded in the repository. It SHALL reference the base image by registry digest. No floating tag, `latest` specifier or version range SHALL select an image input. Agent self-update SHALL NOT change the installed version inside a session.
+The image recipe SHALL install the exact version of `@fission-ai/openspec` recorded in the repository and no agent CLI. It SHALL reference the base image by registry digest, using the same pinned base as the agent wrappers. No floating tag, `latest` specifier or version range SHALL select an image input.
 
 #### Scenario: Build uses recorded versions
 - **WHEN** the image is built under explicit maintenance authorization
-- **THEN** `claude --version` and `openspec --version` in the resulting image report exactly the recorded versions
+- **THEN** `openspec --version` in the resulting image reports exactly the recorded version
 - **AND** the base layer comes from the recorded digest
 
 #### Scenario: Unpinned input is rejected by tests
 - **WHEN** the recipe names a package without an exact version, uses `@latest`, or references the base image without a digest
 - **THEN** the credential-free unit suite fails
 
-### Requirement: Pinned CLI matches the tested policy version
-The pinned Claude Code version SHALL equal the CLI version recorded in the protected network policy's tested metadata. A version change SHALL update both in the same change and record the tested version in the validation record.
-
-#### Scenario: Versions diverge
-- **WHEN** the pinned CLI version differs from the version in the policy's tested CLI field
-- **THEN** the credential-free unit suite fails and names both versions
-
-### Requirement: Version updates follow explicit maintenance
-Documentation SHALL describe the update procedure:
-- change the recorded versions or base digest;
-- rebuild with exact `CLAUDE_CONTAINER_MAINTENANCE=1`;
-- revalidate the endpoint inventory when the CLI changes;
-- rerun setup or qualification;
-- record the outcome in the validation record.
-
-Runtime sessions SHALL NOT update the pinned inputs.
-
-#### Scenario: Maintainer updates the CLI
-- **WHEN** a maintainer follows the documented procedure to move to a new CLI version
-- **THEN** the procedure requires maintenance authorization for the build, a dated validation entry and requalification of restricted installations
-
 ### Requirement: Image package sources use verified HTTPS
 The runtime image recipe SHALL fetch Debian packages only from `https://` sources, with TLS peer verification enabled for every fetch. The build SHALL NOT require outbound port 80 and SHALL NOT fall back to plain HTTP. The built image SHALL keep HTTPS Debian sources.
 
 #### Scenario: Host blocks outbound port 80
 - **WHEN** the runtime image is built under maintenance authorization on a host where outbound TCP 80 is blocked and HTTPS to the Debian, npm and container registries is reachable
-- **THEN** the build completes and the image reports the recorded Claude Code and OpenSpec versions
+- **THEN** the build completes and the image reports the recorded OpenSpec version
 
 #### Scenario: Built image keeps HTTPS sources
 - **WHEN** a user inspects the Debian source configuration inside a container started from the runtime image
@@ -116,3 +95,27 @@ Every `WORKDIR` in the runtime image recipe SHALL name a directory that an earli
 #### Scenario: Missing directory is rejected by tests
 - **WHEN** the recipe declares a `WORKDIR` that no earlier build step creates
 - **THEN** the credential-free unit suite fails naming the directory
+
+### Requirement: Pinned input updates follow explicit maintenance
+Documentation SHALL describe the update procedure:
+- change the recorded versions or base digest;
+- rebuild with exact `SANDBOX_CONTAINER_MAINTENANCE=1`;
+- rerun setup or qualification;
+- record the outcome in the validation record.
+
+Runtime sessions SHALL NOT update the pinned inputs.
+
+#### Scenario: Maintainer updates a pinned input
+- **WHEN** a maintainer follows the documented procedure to move to a new OpenSpec version or base digest
+- **THEN** the procedure requires maintenance authorization for the build, a dated validation entry and requalification of restricted installations
+
+### Requirement: The runtime image starts Bash
+The runtime image SHALL use `bash` as its entrypoint and SHALL contain no agent CLI. Its home SHALL be `/sandbox-home`, created in a layer with the `/workspace` working directory.
+
+#### Scenario: Image entrypoint
+- **WHEN** a container is started from the runtime image without a command
+- **THEN** Bash runs with `HOME=/sandbox-home`
+
+#### Scenario: No agent CLI
+- **WHEN** the unit suite inspects the image recipe
+- **THEN** it finds no agent CLI package such as `@anthropic-ai/claude-code`

@@ -2514,7 +2514,7 @@ server 4.9.3 (rootless, same-host Unix service), runtime image
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
 | `tools/propagate.py` dry run against a clone of `codex-container` (`sandbox-ref-18` to a local tag) | Passed: 16 modified and 4 added shared files, documents and runner checklist listed |
 | `git diff --check`, `bash -n sandbox-container.sh` | Passed |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator-reported, 2026-11-15), managed launch from a project included; `main` and `sandbox-ref-19` pushed. The newer WSL host needed host CA trust (VPN with TLS inspection), so setup there used a non-default answer and imported the host CA bundle |
 
 Every agent wrapper must adopt `sandbox-ref-19` in its own change; the shared
 test ownership moves with it.

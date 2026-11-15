@@ -36,7 +36,7 @@
 ## 6. Runtime and setup acceptance
 
 - [x] 6.1 Adapt `tests/test_runtime.py`, `tests/test_setup_runtime.py` and `tests/run-runtime.sh` (image and variable names, guard toolchain image, shell application, no YOLO grid); verify `bash tests/run-runtime.sh` (default mode) and `--setup-runtime` pass.
-- [ ] 6.2 Update `docs/setup.md` for the shell questionnaire and managed launcher; run `--container-setup` on this host with offline mode; verify setup reports locally qualified, authentication not applicable, and the managed launcher opens an offline shell with persistent history.
+- [x] 6.2 Update `docs/setup.md` for the shell questionnaire and managed launcher; run `--container-setup` on this host with offline mode; verify setup reports locally qualified, authentication not applicable, and the managed launcher opens an offline shell with persistent history.
 - [x] 6.3 Run `bash tests/run-runtime.sh --qualification` and `--guard`; verify both pass with the reference installation and the fixture installations.
 
 ## 7. Network runtime through the session helper
@@ -53,7 +53,7 @@
 
 - [x] 9.1 Run unit discovery and every runner mode (`--setup`, `--setup-runtime`, `--qualification`, `--guard`, `--network`, `--network-policy`, `--network-feasibility`, `--wrapper`, default), plus `git diff --check`; verify they all pass.
 - [x] 9.2 Add the `sandbox-ref-19` section to `docs/validation.md` with each mode's result and environment, noting that earlier entries were recorded for the Claude wrapper; verify every mode from 9.1 is listed.
-- [ ] 9.3 Commit, merge into `main`, and create the annotated tag `sandbox-ref-19` on the merge commit; verify `git describe --exact-match` on `main` prints `sandbox-ref-19`.
+- [x] 9.3 Commit, merge into `main`, and create the annotated tag `sandbox-ref-19` on the merge commit; verify `git describe --exact-match` on `main` prints `sandbox-ref-19`.
 
 ## Workflow follow-up
 

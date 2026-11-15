@@ -7,26 +7,26 @@ Control access from wrapper-launched Claude and shell sessions to the host Podma
 ## Requirements
 
 ### Requirement: Podman API access requires the exact opt-in value
-The wrapper SHALL grant access to the host Podman API only when `CLAUDE_CONTAINER_PODMAN` equals the exact string `1` and the operator explicitly selects unrestricted runtime networking. Exact socket opt-in in offline or provider mode SHALL fail before delegation-endpoint checks, image operations, or resource creation. An unset, empty, or different value SHALL disable that access, omit the socket mount, and ensure `CONTAINER_HOST` is absent from the launched container environment, including values supplied by image or engine defaults.
+The wrapper SHALL grant access to the host Podman API only when `SANDBOX_CONTAINER_PODMAN` equals the exact string `1` and the operator explicitly selects unrestricted runtime networking. Exact socket opt-in in offline mode, including the default mode, SHALL fail before delegation-endpoint checks, image operations, or resource creation. An unset, empty, or different value SHALL disable that access, omit the socket mount, and ensure `CONTAINER_HOST` is absent from the launched container environment, including values supplied by image or engine defaults.
 
 #### Scenario: Variable is unset
-- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN` unset
+- **WHEN** the wrapper starts with `SANDBOX_CONTAINER_PODMAN` unset
 - **THEN** it does not mount the host Podman socket and container `CONTAINER_HOST` is absent
 
 #### Scenario: Variable does not equal one
-- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN` empty or set to `0`, `true`, `yes`, `01`, or another value other than the exact string `1`
+- **WHEN** the wrapper starts with `SANDBOX_CONTAINER_PODMAN` empty or set to `0`, `true`, `yes`, `01`, or another value other than the exact string `1`
 - **THEN** it starts with Podman API access disabled without rejecting that value
 - **AND** it does not mount the host Podman socket and container `CONTAINER_HOST` is absent
 
 #### Scenario: Access is explicitly enabled
 - **GIVEN** unrestricted runtime networking is selected and the selected Unix socket serves a reachable engine that reports rootless operation and an absolute host-side socket path
-- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
+- **WHEN** the wrapper starts with `SANDBOX_CONTAINER_PODMAN=1`
 - **THEN** it mounts the service-reported host-side socket at `/run/podman/podman.sock`
 - **AND** it sets `CONTAINER_HOST=unix:///run/podman/podman.sock` in the container
 
 #### Scenario: Disabled delegation clears inherited defaults
 - **GIVEN** the image or engine defaults define a nonempty container `CONTAINER_HOST`
-- **WHEN** the wrapper launches Claude or shell mode with delegation disabled
+- **WHEN** the wrapper launches the shell with delegation disabled
 - **THEN** `CONTAINER_HOST` is absent from the container environment rather than merely empty
 - **AND** no delegation socket is mounted
 
@@ -42,7 +42,7 @@ The wrapper SHALL grant access to the host Podman API only when `CLAUDE_CONTAINE
 - **THEN** the container receives exactly `CONTAINER_HOST=unix:///run/podman/podman.sock`
 
 #### Scenario: Restricted mode rejects exact opt-in
-- **WHEN** offline or provider mode is selected with exact `CLAUDE_CONTAINER_PODMAN=1`
+- **WHEN** offline mode is selected, explicitly or by default, with exact `SANDBOX_CONTAINER_PODMAN=1`
 - **THEN** startup rejects the combination before querying the delegation endpoint or performing image/resource operations
 - **AND** the diagnostic explains that host API access bypasses network enforcement and requires explicit unrestricted mode
 
@@ -51,18 +51,18 @@ The wrapper SHALL validate the selected delegation socket only when Podman API a
 
 #### Scenario: Disabled access without an API socket
 - **GIVEN** the delegation socket does not exist and local host Podman can otherwise run containers
-- **WHEN** the wrapper starts without `CLAUDE_CONTAINER_PODMAN=1`
+- **WHEN** the wrapper starts without `SANDBOX_CONTAINER_PODMAN=1`
 - **THEN** socket absence does not prevent the wrapper from launching its container
 - **AND** the wrapper verifies the launch engine without querying the delegation service
 
 #### Scenario: Enabled access without a valid socket
 - **GIVEN** the selected socket path is missing, is not a Unix socket, or is inaccessible
-- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
+- **WHEN** the wrapper starts with `SANDBOX_CONTAINER_PODMAN=1`
 - **THEN** it exits with a nonzero status before image operations or starting the container
 - **AND** its error names the socket path and explains how to check or start the API service
 
 #### Scenario: Disabled values skip service verification
-- **WHEN** `CLAUDE_CONTAINER_PODMAN` is unset, empty, or any value other than the exact string `1`
+- **WHEN** `SANDBOX_CONTAINER_PODMAN` is unset, empty, or any value other than the exact string `1`
 - **THEN** the wrapper performs no separate delegation-endpoint verification and supplies neither the socket mount nor container `CONTAINER_HOST`
 - **AND** an invalid delegation-socket override is ignored
 
@@ -71,10 +71,10 @@ The wrapper SHALL validate the selected delegation socket only when Podman API a
 - **THEN** it verifies that launch engine but does not expose the launch socket inside the session
 
 ### Requirement: Access policy applies across launch modes
-The wrapper SHALL apply the same access policy in Claude and `--container-shell` modes, including when combined with `--container-build` or `--container-git-worktree`. Restricted modes SHALL reject exact socket opt-in in every composition, including YOLO/native permission settings. Host Podman SHALL remain required for image operations and launching the outer container regardless of the opt-in.
+The wrapper SHALL apply the same access policy with and without `--container-shell`, including when combined with `--container-build` or `--container-git-worktree`. Offline mode SHALL reject exact socket opt-in in every composition. Host Podman SHALL remain required for image operations and launching the outer container regardless of the opt-in.
 
 #### Scenario: Shell mode follows the opt-in
-- **WHEN** the caller selects unrestricted networking and launches with `--container-shell`, with and without `CLAUDE_CONTAINER_PODMAN=1`
+- **WHEN** the caller selects unrestricted networking and launches with `--container-shell`, with and without `SANDBOX_CONTAINER_PODMAN=1`
 - **THEN** only the enabled launch receives the socket mount and `CONTAINER_HOST`
 
 #### Scenario: Build and workspace options preserve the access policy
@@ -83,16 +83,16 @@ The wrapper SHALL apply the same access policy in Claude and `--container-shell`
 - **AND** only the enabled launch receives the socket mount and `CONTAINER_HOST`
 
 #### Scenario: Host Podman is missing
-- **WHEN** the wrapper starts without Podman installed on the host, regardless of `CLAUDE_CONTAINER_PODMAN`
+- **WHEN** the wrapper starts without Podman installed on the host, regardless of `SANDBOX_CONTAINER_PODMAN`
 - **THEN** it fails with the existing host Podman prerequisite error
 
 ### Requirement: Document the optional authority grant
-Wrapper help and README SHALL document exact `CLAUDE_CONTAINER_PODMAN=1`, the disabled default, endpoint selection, and remapped socket support. They SHALL distinguish launch-engine verification from delegation verification, explain that delegation permits host mounts beyond the workspace, and show migration for child-container workflows through explicit unrestricted mode. Documentation SHALL explain restricted-mode rejection and that delegated builds need a separately enforced environment or policy broker; child proxy variables alone are insufficient.
+Wrapper help and README SHALL document exact `SANDBOX_CONTAINER_PODMAN=1`, the disabled default, endpoint selection, and remapped socket support. They SHALL distinguish launch-engine verification from delegation verification, explain that delegation permits host mounts beyond the workspace, and show migration for child-container workflows through explicit unrestricted mode. Documentation SHALL explain restricted-mode rejection and that delegated builds need a separately enforced environment or policy broker; child proxy variables alone are insufficient.
 
 #### Scenario: Discover and enable access
 - **WHEN** a user reads wrapper help and README usage instructions
 - **THEN** the exact enabling value and disabled default are stated
-- **AND** the README shows `CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_PODMAN=1 ./claude-container.sh` and explains that delegation socket setup is needed only for enabled access
+- **AND** the README shows `SANDBOX_CONTAINER_NETWORK=unrestricted SANDBOX_CONTAINER_PODMAN=1 ./sandbox-container.sh` and explains that delegation socket setup is needed only for enabled access
 - **AND** it explains control over the service user's containers, volumes, and additional host bind mounts beyond the workspace
 
 #### Scenario: Explain enforced rootless verification
@@ -110,25 +110,25 @@ With API access enabled, the wrapper SHALL explicitly query the selected Unix en
 
 #### Scenario: Rootless service is verified
 - **GIVEN** the selected Unix socket exists and its service reports rootless `true` and an absolute host socket path
-- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
+- **WHEN** the wrapper starts with `SANDBOX_CONTAINER_PODMAN=1`
 - **THEN** verification succeeds before image operations and container startup
 - **AND** the service-reported socket mount and container `CONTAINER_HOST` are supplied
 
 #### Scenario: Rootful service is rejected
 - **GIVEN** the selected Unix socket exists and its service reports rootless operation as `false`
-- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
+- **WHEN** the wrapper starts with `SANDBOX_CONTAINER_PODMAN=1`
 - **THEN** it exits nonzero before image operations or container startup
 - **AND** the error identifies the socket and explains that a rootless service is required
 
 #### Scenario: Unreachable service is rejected
 - **GIVEN** the selected Unix socket exists but the service query fails
-- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
+- **WHEN** the wrapper starts with `SANDBOX_CONTAINER_PODMAN=1`
 - **THEN** it exits nonzero before image operations or container startup
 - **AND** the error identifies the socket and directs the user to check the service and access permissions
 
 #### Scenario: Unrecognized service result is rejected
 - **GIVEN** the service query succeeds but returns an empty or unexpected rootless result
-- **WHEN** the wrapper starts with `CLAUDE_CONTAINER_PODMAN=1`
+- **WHEN** the wrapper starts with `SANDBOX_CONTAINER_PODMAN=1`
 - **THEN** it exits nonzero before image operations or container startup because rootless operation was not confirmed
 - **AND** the error identifies the socket and explains the rootless requirement
 
@@ -138,7 +138,7 @@ With API access enabled, the wrapper SHALL explicitly query the selected Unix en
 - **THEN** verification explicitly queries the selected Unix endpoint and uses that service's result
 
 #### Scenario: Verification applies in all enabled launch modes
-- **WHEN** enabled access is used in Claude or shell mode, including with `--container-build` and `--container-git-worktree`
+- **WHEN** enabled access is used with or without `--container-shell`, including with `--container-build` and `--container-git-worktree`
 - **THEN** the same service verification gates image operations and container startup
 - **AND** a failed verification prevents even an explicitly requested image build
 
@@ -152,7 +152,7 @@ With API access enabled, the wrapper SHALL explicitly query the selected Unix en
 - **THEN** startup fails before image operations with a socket-specific diagnostic
 
 ### Requirement: Delegation endpoint selection
-When delegation is enabled, the wrapper SHALL select a nonempty `CLAUDE_CONTAINER_PODMAN_SOCKET` first, then an explicit Unix `CONTAINER_HOST`, then `${XDG_RUNTIME_DIR:-/run/user/<caller-uid>}/podman/podman.sock`. It SHALL require an absolute accessible socket path and resolve its physical path. Selection SHALL NOT retarget the engine used to launch the outer container.
+When delegation is enabled, the wrapper SHALL select a nonempty `SANDBOX_CONTAINER_PODMAN_SOCKET` first, then an explicit Unix `CONTAINER_HOST`, then `${XDG_RUNTIME_DIR:-/run/user/<caller-uid>}/podman/podman.sock`. It SHALL require an absolute accessible socket path and resolve its physical path. Selection SHALL NOT retarget the engine used to launch the outer container.
 
 #### Scenario: Explicit override wins
 - **WHEN** a socket override, Unix launch endpoint, and runtime directory are all configured

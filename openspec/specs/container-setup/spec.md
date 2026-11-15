@@ -7,15 +7,15 @@ Provide an interactive, repeatable host-side procedure that prepares a usable sa
 ## Requirements
 
 ### Requirement: Dedicated interactive setup invocation
-`--container-setup` SHALL run a dedicated setup operation before normal runtime preflight. It SHALL require an interactive terminal, reject combinations with launch options or Claude arguments, and never start an ordinary Claude session implicitly. Wrapper help SHALL remain side effect free and describe setup.
+`--container-setup` SHALL run a dedicated setup operation before normal runtime preflight. It SHALL require an interactive terminal, reject combinations with launch options or shell arguments, and never start an ordinary shell session implicitly. Wrapper help SHALL remain side effect free and describe setup.
 
 #### Scenario: Setup before runtime configuration exists
-- **WHEN** an interactive user requests setup with missing provider settings or an absent image
-- **THEN** the questionnaire and prerequisite diagnosis run without requiring those settings first
-- **AND** setup is not forwarded to Claude
+- **WHEN** an interactive user requests setup with no protected installation or an absent image
+- **THEN** the questionnaire and prerequisite diagnosis run without requiring those first
+- **AND** setup is not forwarded to Bash
 
 #### Scenario: Unattended or ambiguous invocation
-- **WHEN** setup has no interactive terminal or is combined with shell, build, worktree or Claude arguments
+- **WHEN** setup has no interactive terminal or is combined with shell, build, worktree or shell arguments
 - **THEN** it fails with usage guidance before mutations or image operations
 
 #### Scenario: Help takes precedence
@@ -23,28 +23,27 @@ Provide an interactive, repeatable host-side procedure that prepares a usable sa
 - **THEN** help succeeds without loading managed preferences, prompting or requiring Podman
 
 ### Requirement: Workflow questionnaire with explicit defaults
-Setup SHALL explain and collect network mode, provider authentication method when relevant, state sharing, installation paths, host CA trust, permission bypass and workspace scope. First-run defaults SHALL select provider networking, account authentication, shared state and disabled optional authority. Existing saved choices SHALL be offered for review on rerun.
+Setup SHALL explain and collect network mode, state sharing, installation paths, host CA trust and workspace scope. It SHALL offer `provider` and ask for an authentication method only when the profile declares authentication methods, and ask about permission bypass only when the profile declares an approval-bypass variable. First-run defaults SHALL select provider networking with the first method when methods exist, otherwise `offline`, with shared state and disabled optional authority. Saved choices SHALL be offered on rerun.
 
 #### Scenario: First setup choices
-- **WHEN** the user reviews first-run defaults
-- **THEN** network options distinguish offline, provider-restricted and unrestricted use, and provider questions distinguish account from API authentication
-- **AND** accepting the first-run network/authentication defaults selects provider/account without requiring an API key
-- **AND** shared host credentials, isolated fresh state, worktree-parent exposure and permission bypass are explained before selection
+- **WHEN** the user reviews first-run defaults with the reference profile, which declares no authentication method and no approval-bypass variable
+- **THEN** network options are only offline and unrestricted, and offline is proposed
+- **AND** no authentication, residual-exfiltration or permission-bypass question is asked
+- **AND** shared host state, isolated fresh state and worktree-parent exposure are explained before selection
 
 #### Scenario: Provider selected
-- **WHEN** the user chooses provider mode and account authentication without an API key
-- **THEN** setup selects the protected account policy profile without requiring an API key
-- **AND** API authentication instead selects the separate API profile
+- **WHEN** setup runs with a profile that declares authentication methods, as the shared tests do with the fixture profile
+- **THEN** network options also offer provider, the first-run default is provider with the first declared method, and choosing a method selects its protected policy profile without requiring an API key
 
 #### Scenario: Previously saved network mode
 - **WHEN** setup is rerun with a saved configuration, including explicit offline mode
-- **THEN** the saved network mode remains the proposed choice instead of the first-run provider default
+- **THEN** the saved network mode remains the proposed choice instead of the first-run default
 
 ### Requirement: Optional authority requires deliberate selection
-Setup SHALL explain and require explicit selection of unrestricted networking, Podman delegation, permission bypass, worktree-parent exposure and host CA trust. Delegation SHALL be available only with unrestricted networking. Enabling the host launch service SHALL NOT implicitly grant its socket to the application.
+Setup SHALL explain and require explicit selection of unrestricted networking, Podman delegation, permission bypass when the profile declares it, worktree-parent exposure and host CA trust. Delegation SHALL be available only with unrestricted networking. Enabling the host launch service SHALL NOT implicitly grant its socket to the application.
 
 #### Scenario: Restricted networking and delegation conflict
-- **WHEN** the user requests delegation while choosing offline or provider mode
+- **WHEN** the user requests delegation while choosing a restricted mode
 - **THEN** setup explains the conflict and requires an explicit compatible choice before proceeding
 - **AND** it never silently broadens networking
 
@@ -108,15 +107,15 @@ Setup SHALL prepare all files needed for the selected workflow in a native insta
 - **THEN** setup identifies the path and fails without modifying existing permissions or claiming completion
 
 ### Requirement: Mode-specific image and guard preparation
-Setup SHALL inspect or prepare the runtime image and the additional components required by the selected mode. Restricted modes SHALL receive a validated static guard and digest manifest; provider mode SHALL also receive a valid selected policy, private runtime directory and immutable proxy image identity. Existing suitable artifacts SHALL be reused unless refresh is approved.
+Setup SHALL inspect or prepare the runtime image and the additional components required by the selected mode. Restricted modes SHALL receive a validated static guard and digest manifest; provider mode, available only for profiles with authentication methods, SHALL also receive a valid selected policy, private runtime directory and immutable proxy image identity. Existing suitable artifacts SHALL be reused unless refresh is approved.
 
 #### Scenario: Fresh provider setup
-- **WHEN** provider setup is approved with no prepared artifacts
+- **WHEN** provider setup is approved with no prepared artifacts for a profile with authentication methods
 - **THEN** setup prepares the pinned build inputs, toolchain, runtime and proxy images, compiles the guard and validates its manifest and policy
 - **AND** launch preferences refer to an inspected immutable proxy image rather than an unresolved local tag
 
 #### Scenario: Offline or unrestricted setup
-- **WHEN** setup prepares offline mode
+- **WHEN** setup prepares offline mode, as the reference does by default
 - **THEN** it prepares the runtime and guard without requiring a provider proxy image or authentication
 - **AND** unrestricted setup requires neither the restricted guard nor provider proxy components
 
@@ -126,11 +125,11 @@ Setup SHALL inspect or prepare the runtime image and the additional components r
 - **AND** it does not substitute a different policy, toolchain or network mode
 
 ### Requirement: Persistent non-secret managed launch preferences
-Setup SHALL save versioned non-secret preferences and provide a managed launcher usable from another workspace without repeated exports. Preferences and launcher code SHALL remain outside application-writable mounts and be validated before use. The launcher SHALL preserve arguments, stdin, terminal handling and current-directory semantics. Direct wrapper invocation SHALL support explicit environment-based runtime modes; an unset or empty effective network mode SHALL receive missing-setup guidance instead of implicit offline launch.
+Setup SHALL save versioned non-secret preferences and provide a managed launcher usable from another workspace without repeated exports. Preferences and launcher code SHALL remain outside application-writable mounts and be validated before use. The launcher SHALL preserve arguments, stdin, terminal handling and current-directory semantics. Direct wrapper invocation SHALL support explicit environment-based runtime modes; an unset or empty effective network mode SHALL follow the wrapper's admission rule, which in the reference is the offline default.
 
 #### Scenario: New terminal and workspace
 - **WHEN** the user invokes the managed launcher in a new terminal from a separate workspace
-- **THEN** the saved network, profile, state, service, CA and approval choices apply without modifying shell startup files
+- **THEN** the saved network, state, service, CA and workspace-scope choices apply without modifying shell startup files
 - **AND** the current directory determines the mounted workspace and container working directory
 
 #### Scenario: Explicit environment overrides
@@ -153,14 +152,14 @@ Setup SHALL save versioned non-secret preferences and provide a managed launcher
 - **AND** setup atomically upgrades the recognized dispatcher without overwriting unrelated command files
 
 #### Scenario: Saved mode supplies launch configuration
-- **WHEN** a validated managed launcher supplies saved offline, provider or unrestricted mode and there is no network environment override
-- **THEN** the ordinary missing-setup check accepts the effective mode
+- **WHEN** a validated managed launcher supplies saved offline or unrestricted mode and there is no network environment override
+- **THEN** the wrapper uses that mode instead of its default
 - **AND** existing mode-specific readiness and qualification checks still determine whether an application can start
 
 #### Scenario: Empty network override is not replaced
-- **WHEN** an operator explicitly sets `CLAUDE_CONTAINER_NETWORK` to an empty value for an otherwise valid managed launch
-- **THEN** the empty value overrides the saved mode and the wrapper returns the missing-setup diagnostic
-- **AND** it does not silently restore the saved mode or select offline or unrestricted networking
+- **WHEN** an operator explicitly sets `SANDBOX_CONTAINER_NETWORK` to an empty value for a managed launch whose saved mode is unrestricted
+- **THEN** the empty value overrides the saved mode and the wrapper applies its offline default
+- **AND** it does not silently restore the saved unrestricted mode
 
 #### Scenario: Explicit direct operator workflow
 - **WHEN** an operator invokes the wrapper directly with a valid nonempty network mode and its required configuration
@@ -168,17 +167,21 @@ Setup SHALL save versioned non-secret preferences and provide a managed launcher
 - **AND** mode selection alone does not authorize maintenance, delegation or restricted qualification
 
 ### Requirement: Credential-preserving authentication assistance
-Setup SHALL support reusing selected shared account state or offering an explicit fresh login in isolated state. It SHALL NOT copy credentials, collect or persist API keys/tokens in setup preferences, or require an API key for account use. Authentication SHALL use the chosen installed sandbox and preserve its selected network and CA policies.
+When the profile declares authentication methods, setup SHALL support reusing selected shared account state or offering an explicit fresh login in isolated state; a profile without methods SHALL skip authentication entirely. It SHALL NOT copy credentials, collect or persist API keys/tokens in setup preferences, or require an API key for account use. Authentication SHALL use the chosen installed sandbox and preserve its selected network and CA policies.
 
 #### Scenario: Fresh account login
 - **WHEN** an account user chooses fresh isolated state and accepts login after sandbox validation
-- **THEN** setup invokes Claude's account login through the configured sandbox and lets Claude persist credentials in that state
+- **THEN** setup invokes the profile's login command through the configured sandbox and lets the application persist credentials in that state
 - **AND** setup records no token, authorization code or credential-bearing login URL
 
 #### Scenario: API key unavailable
 - **WHEN** API mode is selected but no API key is available
 - **THEN** sandbox preparation can complete with authentication explicitly pending and instructions for supplying the key through the existing runtime mechanism
 - **AND** no paid model request is made automatically
+
+#### Scenario: Reference profile has nothing to authenticate
+- **WHEN** setup completes with the reference profile
+- **THEN** it offers no login, asks for no key and reports authentication as not applicable
 
 ### Requirement: Verified readiness with separate authentication status
 Setup SHALL declare the selected sandbox ready only after installed-path checks, engine verification, artifact validation and a smoke launch succeed through the actual selected runtime path. Restricted candidates SHALL additionally pass the installation enforcement gate and publish its protected matching report before activation. Completion output SHALL separately report authentication as verified, pending or not applicable, provide the launch/rerun commands and identify PATH requirements.
@@ -187,6 +190,7 @@ Setup SHALL declare the selected sandbox ready only after installed-path checks,
 - **WHEN** the selected installation passes its smoke check
 - **THEN** setup reports sandbox readiness and the resolved managed launch command
 - **AND** a version or shell smoke check alone does not imply authenticated provider success
+- **AND** with the reference profile the authentication status is not applicable in every mode
 
 #### Scenario: Login or optional authentication check skipped
 - **WHEN** the sandbox is usable but authentication was skipped, unavailable or failed
@@ -253,11 +257,11 @@ Qualification SHALL produce a versioned non-secret report outside all applicatio
 - **AND** normal application execution cannot use that operation to bypass report validation
 
 ### Requirement: Agent profile in the protected installation
-Setup SHALL install the agent profile and its provider policy file together with the shared sandbox components, validate them in the native installation, and use them as qualification inputs. Rollback SHALL restore the profile matching the restored installation.
+Setup SHALL install the agent profile and its policy file, which declares no policy profiles when the agent profile declares no authentication methods, together with the shared sandbox components, validate them in the native installation, and use them as qualification inputs. Rollback SHALL restore the profile matching the restored installation.
 
 #### Scenario: Installation from a checkout
 - **WHEN** setup prepares a native installation from a checkout
-- **THEN** it copies and validates the profile and provider policy with the other protected inputs before candidate qualification and activation
+- **THEN** it copies and validates the profile and policy with the other protected inputs before candidate qualification and activation
 
 #### Scenario: Rollback after failed activation
 - **WHEN** setup restores a previous installation after a failed update
@@ -298,15 +302,15 @@ Setup SHALL ask for the agent memory, CPU and process budgets and the optional s
 - **THEN** those values are the proposed answers
 
 ### Requirement: Saved budgets govern managed launches and verification
-The managed launcher SHALL supply the saved budgets and lifetime through `CLAUDE_CONTAINER_MEMORY_LIMIT`, `CLAUDE_CONTAINER_CPU_LIMIT`, `CLAUDE_CONTAINER_PIDS_LIMIT` and `CLAUDE_CONTAINER_RUN_TIMEOUT` when these are absent from the launch environment. An explicitly present variable SHALL take precedence. Setup smoke and qualification SHALL use the saved values for every budget the engine can enforce.
+The managed launcher SHALL supply the saved budgets and lifetime through `SANDBOX_CONTAINER_MEMORY_LIMIT`, `SANDBOX_CONTAINER_CPU_LIMIT`, `SANDBOX_CONTAINER_PIDS_LIMIT` and `SANDBOX_CONTAINER_RUN_TIMEOUT` when these are absent from the launch environment. An explicitly present variable SHALL take precedence. Setup smoke and qualification SHALL use the saved values for every budget the engine can enforce.
 
 #### Scenario: Managed launch uses saved budgets
 - **WHEN** the user launches through the managed command with no budget variables exported
-- **THEN** the agent container receives the saved budgets and lifetime
+- **THEN** the shell container receives the saved budgets and lifetime
 - **AND** a restricted launch matches the qualification report produced by setup
 
 #### Scenario: Explicit override differs from qualified values
-- **WHEN** the user exports `CLAUDE_CONTAINER_MEMORY_LIMIT=16g` for a restricted managed launch qualified with `4g`
+- **WHEN** the user exports `SANDBOX_CONTAINER_MEMORY_LIMIT=16g` for a restricted managed launch qualified with `4g`
 - **THEN** the override is used and the qualification check stops the launch with requalification guidance
 
 #### Scenario: Smoke verifies saved values
@@ -344,22 +348,6 @@ When the installed-sandbox smoke launch exits nonzero or does not confirm readin
 #### Scenario: Hostile or oversized diagnostics
 - **WHEN** the smoke launch writes terminal control sequences, non-printable bytes or very long lines to standard error
 - **THEN** the excerpt contains no control characters, at most 5 lines and at most 2048 characters per line
-
-### Requirement: Profile-declared shared-directory privacy
-The optional boolean agent-profile field `native.private_shared_dirs` (default `false`) SHALL declare that the wrapper requires every shared directory to be private. When it is `true`, setup SHALL check each shared directory before image preparation, as it checks the configuration directory: caller-owned, private and accessible. Setup SHALL NOT report a shared directory as private unless it passed that check.
-
-#### Scenario: Pi or OpenCode shared directory with group or other permissions
-- **WHEN** the profile sets `private_shared_dirs: true` and an existing shared directory has group or other permissions
-- **THEN** setup fails before image preparation, names that directory and does not change its permissions
-
-#### Scenario: Claude shared tool settings
-- **WHEN** the profile leaves `private_shared_dirs` unset and an existing shared directory is accessible but not private
-- **THEN** setup accepts it as before: shared directories are created privately when missing and must be accessible
-- **AND** the setup summary does not call the directory private
-
-#### Scenario: Invalid profile field
-- **WHEN** `native.private_shared_dirs` is present but not a boolean
-- **THEN** profile validation fails and setup does not start
 
 ### Requirement: Actionable private-directory refusal
 When setup refuses an existing state directory as not private, the message SHALL name the path and state the reason found:
@@ -401,3 +389,19 @@ When the agent profile builds the runtime image through the wrapper and host CA 
 #### Scenario: Recipe-built runtime keeps the setup-side secret
 - **WHEN** setup prepares the runtime image from the recipe with host CA trust enabled
 - **THEN** setup passes the selected bundle to the recipe build as the `build-ca` build secret
+
+### Requirement: Shared-directory privacy is declared by the profile
+The optional boolean agent-profile field `native.private_shared_dirs` (default `false`) SHALL declare that the wrapper requires every shared directory to be private. When it is `true`, setup SHALL check each shared directory before image preparation, as it checks the configuration directory: caller-owned, private and accessible. Setup SHALL NOT report a shared directory as private unless it passed that check.
+
+#### Scenario: Private shared directory required by the profile
+- **WHEN** the profile sets `private_shared_dirs: true` and an existing shared directory has group or other permissions
+- **THEN** setup fails before image preparation, names that directory and does not change its permissions
+
+#### Scenario: Shared tool settings without the privacy flag
+- **WHEN** the profile leaves `private_shared_dirs` unset and an existing shared directory is accessible but not private
+- **THEN** setup accepts it as before: shared directories are created privately when missing and must be accessible
+- **AND** the setup summary does not call the directory private
+
+#### Scenario: Invalid profile field
+- **WHEN** `native.private_shared_dirs` is present but not a boolean
+- **THEN** profile validation fails and setup does not start
