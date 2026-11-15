@@ -1,4 +1,10 @@
-"""Opt-in production-wrapper network acceptance with synthetic state."""
+"""Opt-in network acceptance with synthetic state.
+
+Offline sessions run through this checkout's wrapper. The reference profile has
+no provider mode, so provider sessions run through tests/provider_session.py,
+which drives the shared session helper from a protected installation with the
+agent-neutral fixture profile and the production guard, relay and proxy.
+"""
 import json
 import os
 from pathlib import Path
@@ -14,10 +20,15 @@ import time
 import hashlib
 
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'network'))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sandbox_profile import (AGENT_FIXTURE, PROFILE as FIXTURE, REAL_PROFILE, REAL_ROOT as ROOT,  # noqa: E402
+                             env as fixture_env, fixture_root, real_env)
 from revisions import TLS_ENFORCEMENT  # noqa: E402
-IMAGE = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
+IMAGE = os.environ.get(real_env('IMAGE'), REAL_PROFILE.image('agent', 'latest'))
+HARNESS = ROOT / 'tests/provider_session.py'
+EGRESS_LABEL = FIXTURE.label('egress')
+# Variables that select a provider session; they never reach this wrapper.
+PROVIDER = {fixture_env(suffix) for suffix in ('NETWORK', 'NETWORK_POLICY', 'NETWORK_PROFILE', 'EGRESS_IMAGE')}
 
 
 @unittest.skipUnless(os.environ.get('SANDBOX_RUNTIME_TESTS') == '1', 'requires real rootless engine')
@@ -32,7 +43,7 @@ class NetworkRuntime(unittest.TestCase):
         cls.guard_output = tempfile.TemporaryDirectory(prefix='network-guard-', dir=os.environ.get('SANDBOX_TEST_STATE_ROOT'))
         cls.addClassCleanup(cls.guard_output.cleanup)
         result = subprocess.run(['bash', str(ROOT / 'network/build-guard.sh'), cls.guard_output.name],
-            env=os.environ | {'CLAUDE_CONTAINER_MAINTENANCE': '1'}, capture_output=True, text=True, timeout=60)
+            env=os.environ | {real_env('MAINTENANCE'): '1'}, capture_output=True, text=True, timeout=60)
         if result.returncode:
             raise RuntimeError(result.stdout + result.stderr)
 
@@ -47,8 +58,8 @@ class NetworkRuntime(unittest.TestCase):
         self.install = Path(self.guard_output.name) / 'installed' if self._shared_fixtures else self.base / 'installed'
         self.install.mkdir(mode=0o700, exist_ok=True)
         (self.install / 'network').mkdir(mode=0o700, exist_ok=True)
-        self.wrapper = self.install / 'claude-container.sh'
-        shutil.copyfile(ROOT / 'claude-container.sh', self.wrapper)
+        self.wrapper = self.install / REAL_PROFILE.wrapper
+        shutil.copyfile(ROOT / REAL_PROFILE.wrapper, self.wrapper)
         self.wrapper.chmod(0o700)
         for source in list((ROOT / 'network').glob('*.py')) + [ROOT / 'network/resolv.conf']:
             shutil.copyfile(source, self.install / 'network' / source.name)
@@ -70,20 +81,20 @@ class NetworkRuntime(unittest.TestCase):
         (self.base / 'home').mkdir(mode=0o700)
         self.env = {'PATH': os.environ['PATH'], 'HOME': str(self.base / 'home'),
                     'CONTAINER_HOST': os.environ['CONTAINER_HOST'],
-                    # Ordinary launches require explicit mode since N20.
-                    'CLAUDE_CONTAINER_NETWORK': 'offline',
-                    'CLAUDE_CONTAINER_STATE_DIR': str(self.base / 'state'),
-                    'CLAUDE_CONTAINER_IMAGE': IMAGE,
-                    'CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR': str(self.runtime)}
+                    real_env('NETWORK'): 'offline',
+                    real_env('STATE_DIR'): str(self.base / 'state'),
+                    real_env('IMAGE'): IMAGE}
         self._qualified = set()
+        self.provider_install = None
 
     def ensure_qualification(self, environment):
         values = self.env | environment
         # Prepare real reports on the same protected installation. Never copy or
         # fabricate receipts; both state modes are covered by each actual gate.
-        inputs = {key:value for key,value in values.items() if key.startswith('CLAUDE_CONTAINER_')
-                  and key not in ('CLAUDE_CONTAINER_STATE_DIR','CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR')}
-        for key in ('CLAUDE_CONTAINER_NETWORK_POLICY','CLAUDE_CONTAINER_CA_BUNDLE'):
+        prefix = REAL_PROFILE.env_prefix + '_'
+        inputs = {key:value for key,value in values.items() if key.startswith(prefix)
+                  and key != real_env('STATE_DIR')}
+        for key in (real_env('CA_BUNDLE'),):
             path = values.get(key)
             if path and Path(path).is_file():
                 inputs[key + '_sha256'] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -100,11 +111,22 @@ class NetworkRuntime(unittest.TestCase):
             self.assert_success(result)
         self._qualified.add(token)
 
+    def session_command(self, environment):
+        """The wrapper for offline sessions; the provider harness for fixture provider sessions."""
+        if environment.get(fixture_env('NETWORK')) == 'provider':
+            values = {key: value for key, value in environment.items() if key not in PROVIDER}
+            values |= {'PROVIDER_INSTALL': str(self.provider_install), 'PROVIDER_RUNTIME': str(self.runtime),
+                       'PROVIDER_IMAGE': IMAGE, 'PROVIDER_POLICY': environment[fixture_env('NETWORK_POLICY')],
+                       'PROVIDER_PROFILE': environment[fixture_env('NETWORK_PROFILE')],
+                       'PROVIDER_PROXY_IMAGE': environment[fixture_env('EGRESS_IMAGE')]}
+            return [sys.executable, '-I', str(HARNESS), '/bin/bash'], self.env | values
+        return [str(self.wrapper), '--container-shell'], self.env | environment
+
     def shell(self, script, qualify=True, **environment):
-        if qualify:
+        command, values = self.session_command(environment)
+        if qualify and command[0] == str(self.wrapper):
             self.ensure_qualification(environment)
-        return subprocess.run([str(self.wrapper), '--container-shell'], cwd=self.project,
-                              env=self.env | environment, input='set -Eeuo pipefail\n' + script,
+        return subprocess.run(command, cwd=self.project, env=values, input='set -Eeuo pipefail\n' + script,
                               text=True, capture_output=True, timeout=45)
 
     def assert_success(self, result):
@@ -115,7 +137,7 @@ class NetworkRuntime(unittest.TestCase):
         # Attribute resources to this disposable runtime, never to the role alone.
         owned = []
         for ident in self.podman('ps', '--all', '--no-trunc', '--filter',
-                                 'label=io.claude-container.egress', '--format', '{{.ID}}').splitlines():
+                                 'label=' + EGRESS_LABEL, '--format', '{{.ID}}').splitlines():
             result = subprocess.run(['podman', 'inspect', '--format', '{{json .Mounts}}', ident],
                                     capture_output=True, text=True, timeout=10)
             if result.returncode and ('no such' in result.stderr or 'not known' in result.stderr):
@@ -127,33 +149,27 @@ class NetworkRuntime(unittest.TestCase):
         return owned
 
     def test_restricted_delegation_grid_and_disabled_override(self):
-        for mode in ('offline', 'provider'):
-            for state in ('', self.env['CLAUDE_CONTAINER_STATE_DIR']):
-                for shell in (False, True):
-                    for yolo in ('0', '1'):
-                        result = subprocess.run([str(self.wrapper), *(['--container-shell'] if shell else ['--version'])],
-                            cwd=self.project, env=self.env | {'CLAUDE_CONTAINER_NETWORK':mode,
-                                'CLAUDE_CONTAINER_STATE_DIR':state, 'CLAUDE_YOLO':yolo,
-                                'CLAUDE_CONTAINER_PODMAN':'1'}, input='', capture_output=True, text=True, timeout=10)
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertIn('rejects CLAUDE_CONTAINER_PODMAN=1', result.stderr)
-        _, provider = self.provider_fixture()
-        for mode in ('offline', 'provider'):
-            for state in ('', self.env['CLAUDE_CONTAINER_STATE_DIR']):
-                environment = provider | {'CLAUDE_CONTAINER_NETWORK':mode}
-                result = self.shell('test ! -S /run/podman/podman.sock; test -z "${CONTAINER_HOST+x}"\n',
-                    **environment, CLAUDE_CONTAINER_STATE_DIR=state,
-                    CLAUDE_CONTAINER_PODMAN='true', CLAUDE_CONTAINER_PODMAN_SOCKET='/absent/disabled.sock')
-                self.assert_success(result)
+        for state in ('', self.env[real_env('STATE_DIR')]):
+            for arguments in ((), ('--container-shell',), ('-c', 'true')):
+                result = subprocess.run([str(self.wrapper), *arguments], cwd=self.project,
+                    env=self.env | {real_env('STATE_DIR'): state, real_env('PODMAN'): '1', 'CLAUDE_YOLO': '1'},
+                    input='', capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('rejects ' + real_env('PODMAN') + '=1', result.stderr)
+        for state in ('', self.env[real_env('STATE_DIR')]):
+            result = self.shell('test ! -S /run/podman/podman.sock; test -z "${CONTAINER_HOST+x}"\n',
+                **{real_env('STATE_DIR'): state, real_env('PODMAN'): 'true',
+                   real_env('PODMAN_SOCKET'): '/absent/disabled.sock'})
+            self.assert_success(result)
 
     def test_offline_defaults_and_delegation_rejection(self):
         result = self.shell("python3 - <<'PY'\nimport os,socket\nassert os.listdir('/sys/class/net') == ['lo']\nassert 'HTTP_PROXY' not in os.environ\ntry: socket.create_connection(('1.1.1.1',443),1)\nexcept OSError: pass\nelse: raise AssertionError('direct route')\nPY\n")
         self.assert_success(result)
         self.assertIn('mode=offline', result.stderr)
         self.assertFalse(list(self.runtime.iterdir()))
-        result = self.shell('true\n', qualify=False, CLAUDE_CONTAINER_PODMAN='1')
+        result = self.shell('true\n', qualify=False, **{real_env('PODMAN'): '1'})
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('rejects CLAUDE_CONTAINER_PODMAN=1', result.stderr)
+        self.assertIn('rejects ' + real_env('PODMAN') + '=1', result.stderr)
 
     def test_restricted_hardening_identity_and_proxy_readiness(self):
         _, provider = self.provider_fixture()
@@ -169,11 +185,10 @@ assert Path('owned-hardening-file').stat().st_uid==os.getuid()
 left,right=socket.socketpair(); left.sendall(b'ok'); assert right.recv(2)==b'ok'
 left.close(); right.close()
 """
-        for mode in ('offline', 'provider'):
-            for state in ('', self.env['CLAUDE_CONTAINER_STATE_DIR']):
+        cases = [('offline', state) for state in ('', self.env[real_env('STATE_DIR')])] + [('provider', '')]
+        for mode, state in cases:
                 with self.subTest(mode=mode, isolated=bool(state)):
-                    environment = provider | {'CLAUDE_CONTAINER_NETWORK': mode,
-                        'CLAUDE_CONTAINER_STATE_DIR': state}
+                    environment = (provider if mode == 'provider' else {}) | {real_env('STATE_DIR'): state}
                     script = ('EXPECTED_UID=' + str(os.getuid()) + " python3 - <<'PY'\n" + check
                               + "PY\nprintf 'network-ready\\n'; read -r marker; exit 0")
                     proc = self.start_session(script, environment)
@@ -183,7 +198,7 @@ left.close(); right.close()
                         self.assertTrue((session / 'transport/proxy.sock').is_socket())
                         self.assertIn('tls=' + TLS_ENFORCEMENT, (session / 'transport/ready').read_text())
                         proxy_id = self.podman('ps', '--no-trunc', '--filter',
-                            f'label=io.claude-container.egress={session.name}', '--format', '{{.ID}}')
+                            f'label={EGRESS_LABEL}={session.name}', '--format', '{{.ID}}')
                         self.assertEqual(len(proxy_id), 64)
                         status = self.podman('exec', proxy_id, 'cat', '/proc/1/status')
                         fields = dict(line.split(':', 1) for line in status.splitlines())
@@ -195,80 +210,87 @@ left.close(); right.close()
                     self.assertEqual(proc.returncode, 0, stdout + stderr)
                     self.assertFalse(list(self.runtime.iterdir()))
 
+    def provider_installation(self):
+        """A protected fixture-profile installation with the built guard, created once per test."""
+        if self.provider_install is None:
+            install = fixture_root(AGENT_FIXTURE, parent=str(self.base))
+            binary_dir = install / 'network/bin'
+            binary_dir.mkdir(mode=0o700, exist_ok=True)
+            for name in ('sandbox-egress-guard', 'sandbox-egress-guard.sha256'):
+                shutil.copyfile(Path(self.guard_output.name) / name, binary_dir / name)
+            # Copies from a permission-emulating checkout may carry group/other
+            # write bits; a protected installation must not.
+            for path in (install, *install.rglob('*')):
+                path.chmod(path.stat().st_mode & 0o755)
+            (binary_dir / 'sandbox-egress-guard').chmod(0o500)
+            self.provider_install = install
+        return self.provider_install
+
     def provider_fixture(self):
+        install = self.provider_installation()
+        hosts = sorted({host for item in FIXTURE.auth.values() for host in item['hosts']} | {'other.provider.test'})
         if self._shared_fixtures and type(self)._provider_cache:
             context, fixture_id, value = type(self)._provider_cache
-            policy_file = self.install/'test-policy.json'
-            policy_file.write_text(json.dumps(value)); policy_file.chmod(0o600)
-            self.policy_file = policy_file
-            shutil.copyfile(context/'cert.pem',self.project/'cert.pem')
-            return context, dict(CLAUDE_CONTAINER_NETWORK='provider',
-                CLAUDE_CONTAINER_NETWORK_POLICY=str(policy_file),CLAUDE_CONTAINER_NETWORK_PROFILE='controlled-test',
-                CLAUDE_CONTAINER_EGRESS_IMAGE=fixture_id)
-        context = (Path(self.guard_output.name) if self._shared_fixtures else self.base) / 'fixture'
-        context.mkdir(mode=0o700)
-        # Build production proxy from the checked-out source and pin the result
-        # by immutable image ID for this disposable operator policy invocation.
-        proxy_tag = 'localhost/claude-egress-test-' + uuid.uuid4().hex
-        cleanup = type(self).addClassCleanup if self._shared_fixtures else self.addCleanup
-        cleanup(self.podman, 'rmi', '--force', proxy_tag)
-        self.podman('build', '--pull=never', '--tag', proxy_tag, '--file',
-                    str(ROOT / 'network/Containerfile'), str(ROOT / 'network'))
-        proxy_id = self.podman('image', 'inspect', '--format', '{{.Id}}', proxy_tag)
-        self.podman('run', '--rm', '--network=none', '--userns=keep-id',
-                    '--user', f'{os.getuid()}:{os.getgid()}', '--volume', f'{context}:/fixture:rw',
-                    '--entrypoint', 'openssl', IMAGE, 'req', '-x509', '-newkey', 'rsa:2048',
-                    '-nodes', '-days', '1', '-subj', '/CN=localhost.localdomain', '-addext',
-                    'subjectAltName=DNS:localhost.localdomain,DNS:alternate.test,DNS:api.anthropic.com,DNS:claude.ai,DNS:claude.com,DNS:platform.claude.com', '-keyout', '/fixture/key.pem',
-                    '-out', '/fixture/cert.pem')
-        shutil.copyfile(ROOT / 'tests/network_tls_fixture.py', context / 'upstream.py')
-        (context / 'Containerfile').write_text(f'FROM {proxy_id}\nCOPY cert.pem key.pem upstream.py /test/\nENTRYPOINT ["python3", "/test/upstream.py"]\n')
-        # Synthetic key is world-readable inside only this disposable test image.
-        (context / 'key.pem').chmod(0o644)
-        fixture_tag = 'localhost/claude-tls-test-' + uuid.uuid4().hex
-        cleanup(self.podman, 'rmi', '--force', fixture_tag)
-        self.podman('build', '--pull=never', '--tag', fixture_tag, str(context))
-        fixture_id = self.podman('image', 'inspect', '--format', '{{.Id}}', fixture_tag)
-        value = json.loads((ROOT / 'agent/policies/default.json').read_text())
-        value['profiles']['controlled-test'] = {'authentication': 'custom', 'disable_optional_traffic': True,
-            'destinations': [{'host': 'localhost.localdomain', 'port': 8443, 'addresses': ['127.0.0.1', '::1']}]}
-        for authentication in ('api', 'account'):
-            profile = json.loads(json.dumps(value['profiles']['anthropic-' + authentication]))
-            for destination in profile['destinations']:
-                destination['addresses'] = ['127.0.0.1']
-            value['profiles']['controlled-' + authentication] = profile
-        policy_file = self.install / 'test-policy.json'
+        else:
+            context = (Path(self.guard_output.name) if self._shared_fixtures else self.base) / 'fixture'
+            context.mkdir(mode=0o700)
+            # Build production proxy from the checked-out source and pin the result
+            # by immutable image ID for this disposable operator policy invocation.
+            proxy_tag = 'localhost/sandbox-egress-test-' + uuid.uuid4().hex
+            cleanup = type(self).addClassCleanup if self._shared_fixtures else self.addCleanup
+            cleanup(self.podman, 'rmi', '--force', proxy_tag)
+            self.podman('build', '--pull=never', '--tag', proxy_tag, '--file',
+                        str(ROOT / 'network/Containerfile'), str(ROOT / 'network'))
+            proxy_id = self.podman('image', 'inspect', '--format', '{{.Id}}', proxy_tag)
+            names = ','.join('DNS:' + host for host in ('localhost.localdomain', 'alternate.test', *hosts))
+            self.podman('run', '--rm', '--network=none', '--userns=keep-id',
+                        '--user', f'{os.getuid()}:{os.getgid()}', '--volume', f'{context}:/fixture:rw',
+                        '--entrypoint', 'openssl', IMAGE, 'req', '-x509', '-newkey', 'rsa:2048',
+                        '-nodes', '-days', '1', '-subj', '/CN=localhost.localdomain', '-addext',
+                        'subjectAltName=' + names, '-keyout', '/fixture/key.pem', '-out', '/fixture/cert.pem')
+            shutil.copyfile(ROOT / 'tests/network_tls_fixture.py', context / 'upstream.py')
+            (context / 'Containerfile').write_text(f'FROM {proxy_id}\nCOPY cert.pem key.pem upstream.py /test/\nENTRYPOINT ["python3", "/test/upstream.py"]\n')
+            # Synthetic key is world-readable inside only this disposable test image.
+            (context / 'key.pem').chmod(0o644)
+            fixture_tag = 'localhost/sandbox-tls-test-' + uuid.uuid4().hex
+            cleanup(self.podman, 'rmi', '--force', fixture_tag)
+            self.podman('build', '--pull=never', '--tag', fixture_tag, str(context))
+            fixture_id = self.podman('image', 'inspect', '--format', '{{.Id}}', fixture_tag)
+            value = json.loads((install / 'agent/policies/default.json').read_text())
+            value['profiles']['controlled-test'] = {'authentication': 'custom', 'disable_optional_traffic': True,
+                'destinations': [{'host': 'localhost.localdomain', 'port': 8443, 'addresses': ['127.0.0.1', '::1']}]}
+            for method, item in FIXTURE.auth.items():
+                profile = json.loads(json.dumps(value['profiles'][item['policy_profile']]))
+                for destination in profile['destinations']:
+                    destination['addresses'] = ['127.0.0.1']
+                value['profiles']['controlled-' + method] = profile
+            print('controlled TLS evidence: proxy=' + proxy_id + ' fixture=' + fixture_id
+                  + ' enforcement=' + TLS_ENFORCEMENT, flush=True)
+            if self._shared_fixtures:
+                type(self)._provider_cache = (context, fixture_id, value)
+        policy_file = install / 'test-policy.json'
         policy_file.write_text(json.dumps(value))
-        shutil.copyfile(context / 'cert.pem', self.project / 'cert.pem')
-        environment = {'CLAUDE_CONTAINER_NETWORK': 'provider',
-                       'CLAUDE_CONTAINER_NETWORK_POLICY': str(policy_file),
-                       'CLAUDE_CONTAINER_NETWORK_PROFILE': 'controlled-test',
-                       'CLAUDE_CONTAINER_EGRESS_IMAGE': fixture_id}
-        import sys
-        sys.path.insert(0, str(ROOT / 'network'))
-        from policy import revision
-        print('controlled TLS evidence: proxy=' + proxy_id + ' fixture=' + fixture_id
-              + ' enforcement=' + TLS_ENFORCEMENT + ' policy=' + revision(value), flush=True)
+        policy_file.chmod(0o600)
         self.policy_file = policy_file
-        if self._shared_fixtures:
-            type(self)._provider_cache = (context, fixture_id, value)
-        return context, environment
+        shutil.copyfile(context / 'cert.pem', self.project / 'cert.pem')
+        return context, {fixture_env('NETWORK'): 'provider', fixture_env('NETWORK_POLICY'): str(policy_file),
+                         fixture_env('NETWORK_PROFILE'): 'controlled-test', fixture_env('EGRESS_IMAGE'): fixture_id}
 
     def test_tls_destination_binding_controlled_profiles(self):
         _, environment = self.provider_fixture()
         shutil.copyfile(ROOT / 'tests/tls_binding_fixture.py', self.project / 'binding.py')
-        for profile, hosts in (('controlled-test', 'localhost.localdomain'),
-                               ('controlled-api', 'api.anthropic.com'),
-                               ('controlled-account', 'api.anthropic.com,platform.claude.com')):
+        cases = [('controlled-test', 'localhost.localdomain')]
+        cases += [('controlled-' + method, ','.join(item['hosts'])) for method, item in sorted(FIXTURE.auth.items())]
+        for profile, hosts in cases:
             result = self.shell('python3 binding.py ' + hosts + '\n', **(environment | {
-                'CLAUDE_CONTAINER_NETWORK_PROFILE': profile}))
+                fixture_env('NETWORK_PROFILE'): profile}))
             self.assert_success(result)
             self.assertIn('tls-destination-binding-ok', result.stdout)
-        # N21: hosts removed from the account inventory are policy denials, even
-        # though the fixture resolver and certificate would still serve them.
+        # A host outside the method inventory is a policy denial, even though the
+        # fixture resolver and certificate would still serve it.
         result = self.shell("""python3 - <<'PY'
 import socket
-for host in ('claude.ai', 'claude.com'):
+for host in ('other.provider.test',):
     connection = socket.create_connection(('127.0.0.1', 18080), 5)
     connection.sendall(('CONNECT ' + host + ':443 HTTP/1.1\\r\\n\\r\\n').encode())
     response = connection.recv(64)
@@ -276,17 +298,17 @@ for host in ('claude.ai', 'claude.com'):
     connection.close()
 print('removed-account-hosts-denied')
 PY
-""", **(environment | {'CLAUDE_CONTAINER_NETWORK_PROFILE': 'controlled-account'}))
+""", **(environment | {fixture_env('NETWORK_PROFILE'): 'controlled-account'}))
         self.assert_success(result)
         self.assertIn('removed-account-hosts-denied', result.stdout)
         self.assertIn('policy-denied', result.stderr)
-        self.assertIn('claude.ai', result.stderr)
+        self.assertIn('other.provider.test', result.stderr)
 
     def test_provider_uses_real_proxy_and_cleans_resources(self):
         context, environment = self.provider_fixture()
         # An unrelated container with the same role label must survive cleanup.
         foreign = self.podman('create', '--network=none', '--label',
-            'io.claude-container.egress=unrelated-fixture', '--volume',
+            EGRESS_LABEL + '=unrelated-fixture', '--volume',
             f'{self.base}:/unrelated:ro', '--entrypoint', '/bin/true', IMAGE)
         self.addCleanup(self.podman, 'rm', '--force', '--ignore', foreign)
         result = self.shell("""test "$HTTP_PROXY" = http://127.0.0.1:18080
@@ -327,25 +349,24 @@ PY
         self.assertFalse(list(self.runtime.iterdir()), 'session transport/configuration leaked')
         self.assertIn('policy-denied', result.stderr)
         self.assertNotIn('fixture-secret-token', result.stderr)
-        ca_result = self.shell("""test "$SSL_CERT_FILE" = /claude-home/ca/bundle.pem
+        ca_result = self.shell("""test "$SSL_CERT_FILE" = /sandbox-home/ca/bundle.pem
 test "$REQUESTS_CA_BUNDLE" = "$SSL_CERT_FILE"
 test "$CURL_CA_BUNDLE" = "$SSL_CERT_FILE"
 test "$NODE_EXTRA_CA_CERTS" = "$SSL_CERT_FILE"
 test ! -w "$SSL_CERT_FILE"
 test "$(curl --fail --silent --show-error --max-time 10 https://localhost.localdomain:8443/)" = controlled-production-proxy-ok
-""", **environment, CLAUDE_CONTAINER_TRUST_HOST_CA='1',
-            CLAUDE_CONTAINER_CA_BUNDLE=str(context / 'cert.pem'))
+""", **environment, PROVIDER_CA=str(context / 'cert.pem'))
         self.assert_success(ca_result)
-        self.assertEqual((self.base / 'state/ca').stat().st_mode & 0o777, 0o700)
-        self.assertEqual((self.base / 'state/ca').stat().st_uid, os.getuid())
         self.assertFalse(list(self.runtime.iterdir()))
         self.assertEqual(self.owned_proxies(), [])
         self.podman('container', 'exists', foreign)
 
     def start_session(self, command, environment):
-        self.ensure_qualification(environment)
-        proc = subprocess.Popen([str(self.wrapper), '--container-shell'], cwd=self.project,
-                                env=self.env | environment, stdin=subprocess.PIPE,
+        arguments, values = self.session_command(environment)
+        if arguments[0] == str(self.wrapper):
+            self.ensure_qualification(environment)
+        proc = subprocess.Popen(arguments, cwd=self.project,
+                                env=values, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         def finish():
             if proc.poll() is None:
@@ -403,7 +424,7 @@ exit 0"""
     def test_documented_toolchain_examples_in_an_offline_session(self):
         examples = ROOT / 'docs/toolchains'
         sources = json.loads((examples / 'sources.json').read_text())
-        environment = self.env | {'CLAUDE_CONTAINER_MAINTENANCE': '1'}
+        environment = self.env | {real_env('MAINTENANCE'): '1'}
         rust_image = 'localhost/sandbox-rust-musl:example-' + uuid.uuid4().hex[:8]
         self.addCleanup(subprocess.run, ['podman', 'image', 'rm', '--force', '--ignore', rust_image],
                         capture_output=True, timeout=120)
@@ -457,8 +478,7 @@ echo examples-ok
                                      env=self.env, capture_output=True, text=True, timeout=120)
             self.assert_success(removed)
 
-    def test_agent_budgets_are_effective_and_lifetime_cleans_owned_proxy(self):
-        _, provider = self.provider_fixture()
+    def test_agent_budgets_are_effective_and_lifetime_is_enforced(self):
         check = """from pathlib import Path
 import sys
 memory, nano, pids = map(int, sys.argv[1:4])
@@ -471,29 +491,24 @@ assert int(quota) * 10**9 == nano * int(period)
 print('AGENT_BUDGETS_OK')
 """
         cases = (({}, (4 << 30, 2 * 10**9, 512)),
-                 ({'CLAUDE_CONTAINER_MEMORY_LIMIT': '2g', 'CLAUDE_CONTAINER_CPU_LIMIT': '0.5',
-                   'CLAUDE_CONTAINER_PIDS_LIMIT': '384'}, (2 << 30, 500000000, 384)))
-        for mode in ('offline', 'provider'):
-            for budgets, expected in cases:
-                with self.subTest(mode=mode, budgets=budgets):
-                    environment = provider | budgets | {'CLAUDE_CONTAINER_NETWORK': mode}
-                    script = ("python3 - " + ' '.join(map(str, expected)) + " <<'PY'\n" + check + 'PY\n')
-                    result = self.shell(script, **environment)
-                    self.assert_success(result)
-                    self.assertIn('AGENT_BUDGETS_OK', result.stdout)
-        environment = provider | {'CLAUDE_CONTAINER_NETWORK': 'provider', 'CLAUDE_CONTAINER_RUN_TIMEOUT': '4'}
-        result = self.shell('sleep 60\n', **environment)
+                 ({real_env('MEMORY_LIMIT'): '2g', real_env('CPU_LIMIT'): '0.5',
+                   real_env('PIDS_LIMIT'): '384'}, (2 << 30, 500000000, 384)))
+        for budgets, expected in cases:
+            with self.subTest(budgets=budgets):
+                script = ("python3 - " + ' '.join(map(str, expected)) + " <<'PY'\n" + check + 'PY\n')
+                result = self.shell(script, **budgets)
+                self.assert_success(result)
+                self.assertIn('AGENT_BUDGETS_OK', result.stdout)
+        result = self.shell('sleep 60\n', **{real_env('RUN_TIMEOUT'): '4'})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(f'session lifetime limit reached (4 s); exit status {result.returncode}', result.stderr)
-        self.assertEqual(self.owned_proxies(), [])
-        self.assertFalse(list(self.runtime.iterdir()))
 
     def test_proxy_death_fails_closed_and_preserves_status(self):
         _, environment = self.provider_fixture()
         command = 'printf "network-ready\\n"; read -r marker; if curl --fail --silent --max-time 3 --cacert cert.pem https://localhost.localdomain:8443/; then exit 42; fi; exit 37'
         proc = self.start_session(command, environment)
         session = next(self.runtime.iterdir()).name
-        proxy_id = self.podman('ps', '--no-trunc', '--filter', f'label=io.claude-container.egress={session}', '--format', '{{.ID}}')
+        proxy_id = self.podman('ps', '--no-trunc', '--filter', f'label={EGRESS_LABEL}={session}', '--format', '{{.ID}}')
         self.assertEqual(len(proxy_id), 64)
         self.podman('rm', '--force', '--time', '0', proxy_id)
         stdout, stderr = proc.communicate('proceed\n', timeout=25)
@@ -506,7 +521,7 @@ print('AGENT_BUDGETS_OK')
         proc = self.start_session('python3 budget.py', environment)
         session = next(self.runtime.iterdir()).name
         proxy_id = self.podman('ps', '--no-trunc', '--filter',
-            f'label=io.claude-container.egress={session}', '--format', '{{.ID}}')
+            f'label={EGRESS_LABEL}={session}', '--format', '{{.ID}}')
 
         def sample(phase):
             data = json.loads(self.podman('exec', proxy_id, 'python3', '-c',
@@ -554,7 +569,7 @@ finally:
                     'then exit 42; fi; exit 37', environment)
                 session = next(self.runtime.iterdir()).name
                 proxy_id = self.podman('ps', '--no-trunc', '--filter',
-                    f'label=io.claude-container.egress={session}', '--format', '{{.ID}}')
+                    f'label={EGRESS_LABEL}={session}', '--format', '{{.ID}}')
                 result = subprocess.run(['podman', 'exec', proxy_id, 'python3', '-c', script],
                     capture_output=True, text=True, timeout=15)
                 if kind == 'pids':
@@ -576,74 +591,6 @@ finally:
                 stdout, stderr = proc.communicate('continue\n', timeout=25)
                 self.assertEqual(proc.returncode, 37, stdout + stderr)
                 self.assertFalse(list(self.runtime.iterdir()))
-
-    def test_concurrent_policies_and_signal_cleanup_are_owned(self):
-        _, environment = self.provider_fixture()
-        value = json.loads(self.policy_file.read_text())
-        value['profiles']['controlled-denied'] = {'authentication': 'custom', 'disable_optional_traffic': True,
-            'destinations': [{'host': 'other.test', 'port': 443}]}
-        self.policy_file.write_text(json.dumps(value))
-        first = self.start_session('printf "network-ready\\n"; trap "" TERM; read -r marker; sleep 300', environment)
-        second = self.start_session('printf "network-ready\\n"; read -r marker; if curl --fail --silent --max-time 3 https://localhost.localdomain:8443/; then exit 42; fi; exit 0',
-                                    environment | {'CLAUDE_CONTAINER_NETWORK_PROFILE': 'controlled-denied',
-                                                   'CLAUDE_CONTAINER_STATE_DIR': ''})
-        self.assertEqual(len(list(self.runtime.iterdir())), 2)
-        started = time.monotonic()
-        first.send_signal(signal.SIGTERM)
-        stdout, stderr = first.communicate(timeout=23)
-        self.assertEqual(first.returncode, 143, stdout + stderr)
-        self.assertLess(time.monotonic() - started, 22)
-        self.assertIsNone(second.poll(), 'another session was removed')
-        self.assertEqual(len(list(self.runtime.iterdir())), 1)
-        stdout, stderr = second.communicate('proceed\n', timeout=25)
-        self.assertEqual(second.returncode, 0, stdout + stderr)
-        self.assertIn('policy-denied', stderr)
-        self.assertFalse(list(self.runtime.iterdir()))
-
-    def test_interrupted_and_failed_creation_recovers_both_roles(self):
-        _, environment = self.provider_fixture()
-        self.ensure_qualification(environment)
-        shim_dir = self.base / 'bin'
-        shim_dir.mkdir()
-        shim = shim_dir / 'podman'
-        shim.write_text('''#!/usr/bin/env python3
-import os,pathlib,subprocess,sys,time
-args=sys.argv[1:]
-real=os.environ['NETWORK_REAL_PODMAN']
-selected=args and args[0]=='create' and any(a.startswith(os.environ['NETWORK_ROLE']+'=') for a in args)
-if not selected: os.execv(real,[real,*args])
-if os.environ['NETWORK_PHASE']=='before': sys.exit(17)
-result=subprocess.run([real,*args],capture_output=True,text=True)
-sys.stdout.write(result.stdout); sys.stdout.flush()
-sys.stderr.write(result.stderr); sys.stderr.flush()
-if result.returncode: sys.exit(result.returncode)
-pathlib.Path(os.environ['NETWORK_MARKER']).write_text('created')
-if os.environ['NETWORK_PHASE']=='after': sys.exit(17)
-time.sleep(300)
-''')
-        shim.chmod(0o700)
-        marker = self.base / 'creation-marker'
-        for role in ('io.claude-container.egress', 'io.claude-container.session'):
-            for phase in ('before', 'after', 'interrupt'):
-                with self.subTest(role=role, phase=phase):
-                    marker.unlink(missing_ok=True)
-                    values = self.env | environment | {
-                        'PATH': str(shim_dir) + ':' + os.environ['PATH'],
-                        'NETWORK_REAL_PODMAN': shutil.which('podman'), 'NETWORK_ROLE': role,
-                        'NETWORK_PHASE': phase, 'NETWORK_MARKER': str(marker)}
-                    proc = subprocess.Popen([str(self.wrapper), '--container-shell'], cwd=self.project,
-                                            env=values, stdin=subprocess.DEVNULL,
-                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                    if phase == 'interrupt':
-                        deadline = time.monotonic() + 15
-                        while not marker.exists() and proc.poll() is None and time.monotonic() < deadline:
-                            time.sleep(0.02)
-                        self.assertTrue(marker.exists(), 'create interception not reached')
-                        proc.terminate()
-                    stdout, stderr = proc.communicate(timeout=25)
-                    self.assertEqual(proc.returncode, 143 if phase == 'interrupt' else 17, stdout + stderr)
-                    self.assertFalse(list(self.runtime.iterdir()))
-        self.assertEqual(self.owned_proxies(), [])
 
     def test_readiness_binds_policy_guard_and_protocol(self):
         _, environment = self.provider_fixture()
@@ -683,39 +630,27 @@ os.execv(real,[real,*args])
 
     def test_guarded_arguments_stdin_status_and_tty_both_state_modes(self):
         import pty
-        context = self.base / 'invocation-fixture'
-        context.mkdir()
-        source = '''#!/usr/bin/python3
-import errno,json,socket,sys
-try: socket.socket(socket.AF_UNIX)
-except OSError as error: assert error.errno==errno.EPERM
-else: raise AssertionError('guard missing')
-if sys.argv[1:]==['--version']:
- print('Synthetic invocation fixture'); sys.exit(0)
-is_terminal=sys.stdin.isatty()
-print(json.dumps({'argv':sys.argv[1:],'stdin':'' if is_terminal else sys.stdin.read(),'tty':is_terminal}),flush=True)
-sys.exit(37)
-'''
-        (context / 'claude-fixture').write_text(source)
-        (context / 'Containerfile').write_text(f'FROM {IMAGE}\nRUN rm -f /usr/local/bin/claude\nCOPY claude-fixture /usr/local/bin/claude\nRUN chmod 555 /usr/local/bin/claude\n')
-        tag = 'localhost/claude-invocation-test-' + uuid.uuid4().hex
-        self.addCleanup(self.podman, 'rmi', '--force', tag)
-        self.podman('build', '--pull=never', '--tag', tag, str(context))
-        for state in ('', self.env['CLAUDE_CONTAINER_STATE_DIR']):
-            environment = self.env | {'CLAUDE_CONTAINER_STATE_DIR': state, 'CLAUDE_CONTAINER_IMAGE': tag}
-            self.ensure_qualification(environment)
-            arguments = ['-p', 'space value', '', '--help']
+        probe = ("python3 -c 'import errno,json,socket,sys\n"
+                 "try: socket.socket(socket.AF_UNIX)\n"
+                 "except OSError as error: assert error.errno==errno.EPERM\n"
+                 "else: raise AssertionError(\"guard missing\")\n"
+                 "tty=sys.stdin.isatty()\n"
+                 "print(json.dumps({\"argv\":sys.argv[1:],\"stdin\":\"\" if tty else sys.stdin.read(),\"tty\":tty}))' \"$@\"; exit 37")
+        for state in ('', self.env[real_env('STATE_DIR')]):
+            environment = self.env | {real_env('STATE_DIR'): state}
+            self.ensure_qualification({real_env('STATE_DIR'): state})
+            arguments = ['space value', '', '--help']
             try:
-                result = subprocess.run([str(self.wrapper), *arguments], cwd=self.project, env=environment,
-                    input='synthetic stdin\n', capture_output=True, text=True, timeout=30)
+                result = subprocess.run([str(self.wrapper), '-c', probe, 'bash', *arguments], cwd=self.project,
+                    env=environment, input='synthetic stdin\n', capture_output=True, text=True, timeout=30)
             except subprocess.TimeoutExpired as error:
                 self.fail(f'guarded pipe timed out; isolated={bool(state)} stdout={error.stdout!r} stderr={error.stderr!r}')
             self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
             self.assertEqual(json.loads(result.stdout), {'argv':arguments, 'stdin':'synthetic stdin\n', 'tty':False})
             master, slave = pty.openpty()
             try:
-                proc = subprocess.Popen([str(self.wrapper), '--tty-probe'], cwd=self.project, env=environment,
-                    stdin=slave, stdout=slave, stderr=subprocess.PIPE)
+                proc = subprocess.Popen([str(self.wrapper), '-c', probe, 'bash', '--tty-probe'], cwd=self.project,
+                    env=environment, stdin=slave, stdout=slave, stderr=subprocess.PIPE)
                 os.close(slave); slave = -1
                 _, error = proc.communicate(timeout=30)
                 self.assertEqual(proc.returncode, 37, error.decode())
@@ -733,104 +668,18 @@ sys.exit(37)
                 if slave >= 0: os.close(slave)
                 os.close(master)
 
-    def test_bootstrap_failure_after_proxy_setup_cleans_owned_resources(self):
-        _, environment = self.provider_fixture()
-        shim_dir = self.base / 'bin'
-        shim_dir.mkdir()
-        shim = shim_dir / 'podman'
-        shim.write_text("#!/usr/bin/env python3\nimport os,sys\nargs=sys.argv[1:]\nif args and args[0]=='create' and any(a.startswith('io.claude-container.session=') for a in args):\n args[1:1]=['--volume',os.environ['NETWORK_INJECTED_BIND']+':/tmp/untrusted-nested:rw']\nos.execv(os.environ['NETWORK_REAL_PODMAN'],[os.environ['NETWORK_REAL_PODMAN'],*args])\n")
-        shim.chmod(0o700)
-        result = self.shell('touch agent-started\n', **environment,
-            PATH=str(shim_dir) + ':' + os.environ['PATH'],
-            NETWORK_REAL_PODMAN=shutil.which('podman'), NETWORK_INJECTED_BIND=str(self.project))
-        self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
-        self.assertIn('nested private IPC mount validation', result.stderr)
-        self.assertFalse((self.project / 'agent-started').exists())
-        self.assertFalse(list(self.runtime.iterdir()))
-
     def test_windows_workspace_ordinary_files_and_restricted_modes(self):
         parent = ROOT / '.test-state'
         parent.mkdir(exist_ok=True)
         project = Path(tempfile.mkdtemp(prefix='guarded-workspace-', dir=parent))
         self.addCleanup(shutil.rmtree, project)
         self.project = project
-        for state in ('', self.env['CLAUDE_CONTAINER_STATE_DIR']):
+        for state in ('', self.env[real_env('STATE_DIR')]):
             script = "mkdir -p first second; printf persisted >first/file; mv first/file second/file; test \"$(cat second/file)\" = persisted\n"
             script += "python3 - <<'CHECK'\nimport socket,errno\ntry: socket.socket(socket.AF_UNIX)\nexcept OSError as error: assert error.errno == errno.EPERM\nelse: raise AssertionError('Unix socket allowed')\nCHECK\n"
-            result = self.shell(script, CLAUDE_CONTAINER_STATE_DIR=state)
+            result = self.shell(script, **{real_env('STATE_DIR'): state})
             self.assert_success(result)
             self.assertEqual((project / 'second/file').read_text(), 'persisted')
-
-    def test_stalled_proxy_cleanup_keeps_exit_status_and_deadline(self):
-        _, environment = self.provider_fixture()
-        shim_dir = self.base / 'bin'
-        shim_dir.mkdir()
-        shim = shim_dir / 'podman'
-        shim.write_text('''#!/usr/bin/env python3
-import os,signal,subprocess,sys,time
-args=sys.argv[1:]
-real=os.environ['NETWORK_REAL_PODMAN']
-if args and args[0]=='rm':
-    owner=subprocess.run([real,'inspect','--format','{{index .Config.Labels "io.claude-container.egress"}}',args[-1]],capture_output=True,text=True)
-    if owner.returncode==0 and owner.stdout.strip():
-        signal.signal(signal.SIGTERM,signal.SIG_IGN)
-        time.sleep(300)
-os.execv(real,[real,*args])
-''')
-        shim.chmod(0o700)
-        values = environment | {'PATH': str(shim_dir) + ':' + os.environ['PATH'],
-                                'NETWORK_REAL_PODMAN': shutil.which('podman')}
-        proc = self.start_session('printf "network-ready\\n"; read -r marker; exit 37', values)
-        session = next(self.runtime.iterdir()).name
-        proxy_id = self.podman('ps', '--no-trunc', '--filter', f'label=io.claude-container.egress={session}', '--format', '{{.ID}}')
-        self.addCleanup(self.podman, 'rm', '--force', '--time', '0', '--ignore', proxy_id)
-        started = time.monotonic()
-        stdout, stderr = proc.communicate('proceed\n', timeout=23)
-        self.assertEqual(proc.returncode, 37, stdout + stderr)
-        self.assertLess(time.monotonic() - started, 22)
-        self.assertIn('failed or timed out', stderr)
-        self.assertIn(proxy_id, stderr)
-
-    def test_cli_permission_modes_and_optional_controls_both_state_modes(self):
-        _, environment = self.provider_fixture()
-        for state in ('', self.env['CLAUDE_CONTAINER_STATE_DIR']):
-            values = self.env | environment | {'CLAUDE_CONTAINER_STATE_DIR': state,
-                                               'ANTHROPIC_API_KEY': 'synthetic-not-a-real-key'}
-            controls = self.shell("""test "$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" = 1
-test "$DISABLE_AUTOUPDATER" = 1
-test "$DISABLE_TELEMETRY" = 1
-test "$DISABLE_ERROR_REPORTING" = 1
-test "$ENABLE_CLAUDEAI_MCP_SERVERS" = false
-test "$CLAUDE_CODE_DISABLE_ARTIFACT" = 1
-test "$ANTHROPIC_API_KEY" = synthetic-not-a-real-key
-""", **environment, CLAUDE_CONTAINER_STATE_DIR=state, ANTHROPIC_API_KEY='synthetic-not-a-real-key')
-            self.assert_success(controls)
-            for flags, yolo in ((['--version'], '0'), (['--dangerously-skip-permissions', '--version'], '0'),
-                                (['--version'], '1')):
-                with self.subTest(state=state, flags=flags, yolo=yolo):
-                    result = subprocess.run([str(self.wrapper), *flags], cwd=self.project,
-                                            env=values | {'CLAUDE_YOLO': yolo}, input='',
-                                            text=True, capture_output=True, timeout=30)
-                    self.assert_success(result)
-                    self.assertIn('2.1.316', result.stdout)
-            self.assertFalse(list(self.runtime.iterdir()))
-
-    def test_actual_claude_bash_tool_with_synthetic_messages_api(self):
-        context, environment = self.provider_fixture()
-        # The controlled custom profile and fixture CA authorize only this local
-        # synthetic API. No account state, real key or external model is involved.
-        for state in ('', self.env['CLAUDE_CONTAINER_STATE_DIR']):
-            sentinel = self.project / 'claude-tool-sentinel'
-            sentinel.unlink(missing_ok=True)
-            script = "export ANTHROPIC_BASE_URL=https://localhost.localdomain:8443\n"
-            script += "claude --dangerously-skip-permissions --model claude-sonnet-4-6 --max-turns 3 -p fixture-tool-operation </dev/null\n"
-            script += "test \"$(cat claude-tool-sentinel)\" = actual-claude-tool-ok\n"
-            result = self.shell(script, **environment, CLAUDE_CONTAINER_STATE_DIR=state,
-                ANTHROPIC_API_KEY='synthetic-not-a-real-key',
-                CLAUDE_CONTAINER_TRUST_HOST_CA='1', CLAUDE_CONTAINER_CA_BUNDLE=str(context / 'cert.pem'))
-            self.assert_success(result)
-            self.assertIn('fixture-tool-complete', result.stdout)
-            self.assertEqual(sentinel.read_text(), 'actual-claude-tool-ok')
 
     def test_unsafe_policy_and_missing_proxy_image_fail_before_agent(self):
         _, environment = self.provider_fixture()
@@ -841,11 +690,11 @@ test "$ANTHROPIC_API_KEY" = synthetic-not-a-real-key
         self.assertFalse((self.project / 'agent-started').exists())
         self.policy_file.chmod(0o600)
         result = self.shell('touch agent-started\n', qualify=False, **(environment | {
-            'CLAUDE_CONTAINER_EGRESS_IMAGE': 'sha256:' + '0' * 64}))
+            fixture_env('EGRESS_IMAGE'): 'sha256:' + '0' * 64}))
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('proxy image is absent', result.stderr)
         self.assertFalse((self.project / 'agent-started').exists())
         self.assertFalse(list(self.runtime.iterdir()))
+        self.assertEqual(self.owned_proxies(), [])
 
     def test_tampered_bootstrap_fails_before_application(self):
         guard = self.install / 'network/bin/sandbox-egress-guard'

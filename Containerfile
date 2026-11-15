@@ -1,17 +1,18 @@
-# Image inputs are pinned. Update them only through the documented maintenance
-# procedure (docs/validation.md): CLAUDE_CODE_VERSION must equal the CLI version
-# recorded in agent/policies/default.json `tested.cli`.
+# Reference sandbox image: a Bash shell with the shared base of the agent
+# wrappers and no agent CLI. Image inputs are pinned; update them only through
+# the documented maintenance procedure (docs/validation.md).
 FROM docker.io/library/node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 
-ARG CLAUDE_CODE_VERSION=2.1.316
 ARG OPENSPEC_VERSION=1.16.0
 
+# Bash history lives in the configuration directory, which is the persistent
+# writable state in both the shared and the isolated state mode.
 ENV DEBIAN_FRONTEND=noninteractive \
-    CLAUDE_CONFIG_DIR=/claude-home/.claude \
+    SANDBOX_CONTAINER_CONFIG_DIR=/sandbox-home/.config/sandbox-container \
+    HISTFILE=/sandbox-home/.config/sandbox-container/bash_history \
     EDITOR=nano \
     VISUAL=nano \
-    HOME=/claude-home \
-    DISABLE_AUTOUPDATER=1
+    HOME=/sandbox-home
 
 # Debian packages are fetched only over verified HTTPS, so builds need no outbound
 # port 80. The slim base has no ca-certificates, so the pinned base's Node.js root
@@ -53,14 +54,13 @@ RUN --mount=type=secret,id=build-ca,required=false \
         xz-utils \
         zip \
     && rm -f /tmp/apt-bootstrap-ca.pem \
-    && npm install --global --omit=dev "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-        "@fission-ai/openspec@${OPENSPEC_VERSION}" \
+    && npm install --global --omit=dev "@fission-ai/openspec@${OPENSPEC_VERSION}" \
     && echo 'unset historylog' >> /etc/nanorc \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /root/.npm \
-    && mkdir -p /claude-home /workspace \
-    && chmod 1777 /claude-home
+    && mkdir -p /sandbox-home /workspace \
+    && chmod 1777 /sandbox-home
 
 WORKDIR /workspace
 COPY network/relay.py network/mux.py /opt/sandbox-egress/
-ENTRYPOINT ["claude"]
+ENTRYPOINT ["bash"]

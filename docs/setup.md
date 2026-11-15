@@ -5,30 +5,30 @@ The [archived change](../openspec/changes/archive/2026-11-07-add-interactive-con
 retains the design, completed tasks and delta specifications.
 
 Setup is the mandatory first step for new users. Run
-`bash ./claude-container.sh --container-setup` from a reviewed checkout,
+`bash ./sandbox-container.sh --container-setup` from a reviewed checkout,
 as the non-root Linux/WSL user who will use the sandbox. Podman and its rootless
 dependencies must already be installed. Host Python 3, Bash and GNU coreutils
 are also required. Setup needs terminal stdin/stdout; redirected answers and
-combinations with launch flags or Claude arguments are rejected. Help is always
+combinations with launch flags or shell arguments are rejected. Help is always
 available through `--container-help` without loading preferences or using Podman.
 
 ## Choices and preparation
 
-The prompts cover network access, account/API authentication for online use,
-shared/fresh isolated state, delegation, permission bypass, worktree scope, host
-CA trust, installation/command paths and the Podman endpoint. Provider choices
-select `anthropic-account` or `anthropic-api` from the protected packaged policy.
-No API key is needed for account use. First-run setup defaults to provider mode
-with account authentication, shared state,
-ordinary Claude approvals, current workspace only, delegation off and CA trust off.
-Accept defaults with Enter; invalid choices are requested again. Existing saved
-choices are offered for review on rerun, including a previously selected offline
-mode. The managed launcher applies the saved network choice. Ordinary direct
-invocation with `CLAUDE_CONTAINER_NETWORK` unset or empty stops with setup
-guidance before runtime prerequisite checks, engine queries or state creation.
-Setup is never started automatically. An explicit empty network override on a
-managed invocation also receives this refusal; remove the override to use the
-saved choice. Offline mode cannot reach the Claude API.
+The prompts cover network access, shared/fresh isolated state, delegation,
+worktree scope, host CA trust, installation/command paths and the Podman
+endpoint. The reference profile declares no authentication method and no
+permission bypass, so network access offers only `offline` and `unrestricted`
+and there is no authentication or permission-bypass question; a profile with
+methods (the agent wrappers) also offers `provider`. First-run setup defaults to
+offline mode, shared state, current workspace only, delegation off and CA trust
+off. Accept defaults with Enter; invalid choices are requested again. Existing
+saved choices are offered for review on rerun. The managed launcher applies the
+saved network choice. A direct invocation with `SANDBOX_CONTAINER_NETWORK` unset
+or empty uses `offline`, which needs a protected installation: from a checkout it
+stops with setup guidance before engine queries or state creation. Setup is never
+started automatically. An explicit empty network override on a managed
+invocation selects the offline default instead of the saved choice. Offline
+sessions have no external network.
 
 After the worktree question, setup asks for the agent budgets and lifetime:
 `Agent memory limit` (default `4g`), `Agent CPU limit` (default `2`),
@@ -36,35 +36,31 @@ After the worktree question, setup asks for the agent budgets and lifetime:
 disables` (default `0`). Invalid answers are explained and asked again; `0`,
 `-1`, `max` and unitless memory are rejected, so a budget cannot be disabled.
 The setup plan lists the values. They are saved in schema 2 preferences and
-supplied by the managed launcher as `CLAUDE_CONTAINER_MEMORY_LIMIT`,
-`CLAUDE_CONTAINER_CPU_LIMIT`, `CLAUDE_CONTAINER_PIDS_LIMIT` and
-`CLAUDE_CONTAINER_RUN_TIMEOUT` unless those are exported. Smoke and
+supplied by the managed launcher as `SANDBOX_CONTAINER_MEMORY_LIMIT`,
+`SANDBOX_CONTAINER_CPU_LIMIT`, `SANDBOX_CONTAINER_PIDS_LIMIT` and
+`SANDBOX_CONTAINER_RUN_TIMEOUT` unless those are exported. Smoke and
 qualification use the saved values. To change a budget, rerun setup; an
 exported different value makes restricted launches stop until
 `--container-qualify` is run with the same environment. Preferences saved by an
 earlier release (schema 1) are read with the default budgets proposed.
 
-Setup smoke, qualification and optional login run in a private temporary
-workspace, never in the directory from which setup was started. Ordinary
-launches refuse sensitive workspace roots such as `/`, your home, system
-directories and WSL drive roots unless exact
-`CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` is set.
+Setup smoke and qualification run in a private temporary workspace, never in
+the directory from which setup was started. Ordinary launches refuse sensitive
+workspace roots such as `/`, your home, system directories and WSL drive roots
+unless exact `SANDBOX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` is set.
 
-Operators can still invoke a manually prepared wrapper with explicit `offline`,
-`provider` or `unrestricted` mode. All existing prerequisites, protected paths,
+Operators can still invoke a manually prepared wrapper with explicit `offline`
+or `unrestricted` mode. All existing prerequisites, protected paths,
 qualification and authority checks apply. Image maintenance additionally
-requires exact `CLAUDE_CONTAINER_MAINTENANCE=1`; that consent alone does not select
-a mode. Help and standalone setup/qualification retain their own dispatch checks.
+requires exact `SANDBOX_CONTAINER_MAINTENANCE=1`; that consent alone does not
+select a mode. Help and standalone setup/qualification retain their own dispatch checks.
 Standalone `--container-qualify` keeps its offline default when no mode is set
-and can run only fixed controls, never a supplied application command.
+and can run only fixed controls, never a supplied command.
 
-Before `c777b73`, ordinary networking needed no runtime-mode selection. The
-enforced-network change introduced an unset/empty offline default; ordinary
-missing-mode launches now stop with setup guidance instead. Existing managed
-launchers supply a saved mode. Install the updated protected wrapper through
-setup, or update and requalify a manual restricted installation: changing the
-wrapper invalidates its old qualification identity. Existing activation and
-last-working-release rollback remain unchanged.
+This repository took over the reference role from `claude-container`; its
+history and earlier validation entries were recorded for the Claude wrapper.
+The installation, command, state and image names differ from that wrapper, so
+an existing Claude installation is untouched and this shell needs its own setup.
 
 The toolchain library (`add-toolchain-library`) changes the wrapper and adds
 `setup/toolchains.py` to the installed and qualified code, so rerun
@@ -72,46 +68,11 @@ The toolchain library (`add-toolchain-library`) changes the wrapper and adds
 operator adds them with `--container-toolchain`, and every session mounts the
 library read-only at `/toolchains` (see the README "Toolchains" section).
 
-The N23 transport update also requires matching protected code, runtime image
-and immutable proxy image: both images embed the multiplex implementation.
-Prepare them under explicit maintenance consent and rerun setup or manual
-qualification; old code/image fingerprints cannot authorize the candidate.
-Existing running sessions keep their original transport and need a restart to
-gain stream-failure isolation. Failed qualification keeps the previous activation.
-Rollback uses the previous protected release with its matching images and a
-currently valid report, requalifying when required. No fallback network mode is
-selected during update or rollback.
-
-Provider mode authorizes CONNECT hostname/address and requires matching SNI in
-the initial TLS ClientHello, and in the retried ClientHello after a TLS 1.3
-HelloRetryRequest, before forwarding client bytes. TLS 1.2 renegotiation is
-encrypted and not inspected. It preserves
-end-to-end certificate verification. ECH (including GREASE), missing/malformed or
-different names and inspection timeout/overflow fail closed. Encrypted HTTP
-Host/authority, shared-service routing and provider forwarding remain opaque;
-this does not guarantee exclusive access to Anthropic applications. Allowed
-services can still receive session data.
-
-Selecting provider mode prints a residual-exfiltration notice listing the hosts
-of each profile (`account: api.anthropic.com, platform.claude.com`;
-`api: api.anthropic.com`) and asks `Acknowledge that allowed provider hosts can
-receive data sent with foreign credentials? (yes/no)`. Destination binding cannot
-tell your credentials from attacker-supplied ones, so a prompt-injected agent can
-send workspace data to an allowed host with a foreign API key or account. Answering
-`no` returns to the network-mode question; no other mode is chosen for you. The
-acknowledgement is required on every setup run that selects provider mode,
-including the delegation-conflict network change, and is not saved. Only offline
-mode removes this channel; see
-[Residual exfiltration](network-contract.md#residual-exfiltration-to-allowed-services).
-
-The candidate image and protected release must both implement
-`tls-clienthello-sni-v2`; missing/old enforcement identity fails readiness before
-agent startup and candidate activation. Deploy matching code and image together.
-Unsupported clients require a supported non-ECH configuration; failures never
-trigger unchecked tunneling. A rollback to a historical release also removes
-this guarantee; use offline mode if the stronger boundary is required until a
-compatible candidate passes. Existing maintenance consent and rollback remain
-in force.
+Setup and qualification refuse provider mode for this profile before any
+image, proxy or container operation. The provider CONNECT/SNI binding, its
+residual exfiltration notice and acknowledgement remain part of the shared
+setup code for profiles with authentication methods; see the
+[network contract](network-contract.md) and each agent wrapper's documentation.
 
 Restricted modes admit native Linux and WSL2 x86_64 with usable Landlock ABI >= 3,
 rootless same-host Unix Netavark/Podman >= 4.9 and standard OCI seccomp, followed
@@ -123,11 +84,9 @@ Fix those host prerequisites separately. Setup never installs host packages,
 uses sudo, edits subordinate-ID mappings, enables lingering, changes WSL init,
 disables security policy or silently selects unrestricted networking.
 
-Every agent container, in every mode, and every provider proxy drops all
-capabilities and enables no-new-privileges. Setup smoke verifies zero capability
-sets, no-new-privileges and the effective agent `memory.max`, `pids.max` and
-`cpu.max` in every mode. Provider proxies additionally receive 256 MiB and 128
-processes.
+Every shell container, in every mode, drops all capabilities and enables
+no-new-privileges. Setup smoke verifies zero capability sets, no-new-privileges
+and the effective `memory.max`, `pids.max` and `cpu.max` in every mode.
 Setup adapts to the cgroup v2 controllers the rootless engine delegates
 (`podman info --format '{{.Host.CgroupControllers}}'`). A budget whose
 controller is missing is not enforced: the setup plan, the smoke and every
@@ -136,8 +95,8 @@ verified exactly, unenforced ones must be absent, and the enforced set is bound
 into restricted qualification. Without memory or process budgets an agent can
 exhaust host memory or processes for your user; without a CPU budget it can
 saturate every CPU.
-The installed wrapper verifies the effective limits and proxy hardening before
-its smoke agent starts. An ignored delegated limit or an incompatible image
+The installed wrapper verifies the effective limits before its smoke shell
+starts. An ignored delegated limit or an incompatible image
 makes setup incomplete and preserves the previous working release. Setup never
 adds privileges, changes host security policy or asks for host changes.
 
@@ -149,20 +108,9 @@ previous release selected. Authentication remains a separate status.
 
 Existing managed installations must rerun setup. Manually prepared installations
 can invoke `--container-qualify` alone with their existing explicit environment
-configuration; this command never starts an ordinary Claude session or grants
+configuration; this command never starts an ordinary shell session or grants
 maintenance. Help and unrestricted launches do not require a report.
 
-For the provider idle-channel fix, rerun setup from the updated reviewed checkout
-and explicitly approve maintenance and image refresh so both the runtime and
-proxy images contain the same updated multiplex receiver. Install the matching
-protected release and let normal qualification regenerate reports for its changed
-code and immutable image identities; an old report must not be copied or reused.
-The guard ABI and mux wire version remain unchanged. Relaunch existing sessions:
-their preconnected channel cannot be repaired after closure. The optional
-`bash tests/run-runtime.sh --guard-idle` check documented in `network/README.md`
-verifies reuse after a real 305-second pause without authentication. Rollback
-uses the retained last-working release and its normal qualification checks;
-the previous receiver still has the five-minute inactivity defect.
 
 Reports bind kernel/boot, ABI, engine/backend/security artifacts, protected code,
 immutable images, selected policy/profile, CA trust and hardening. Relevant changes
@@ -202,24 +150,21 @@ as a non-persisted build secret. Without it, such builds fail with a certificate
 Consent grants exact maintenance authorization only to these preparation
 commands. It is not saved or enabled for subsequent ordinary launches.
 
-Every mode needs a runtime image; restricted modes also need the static guard
-and its digest manifest. Provider additionally needs the immutable proxy image,
-selected policy and private egress runtime directory. Setup reuses inspected
-artifacts when suitable and prepares missing ones from the existing recipes.
-Compiler tools are installed only in the pinned toolchain image. Compilation
-uses that immutable image without networking. Failed recipe/package acquisition
-does not change pins automatically; resolve the reported maintenance stage and
-rerun. Unrestricted mode skips the guard/toolchain/proxy, and offline skips the
-provider proxy/authentication.
+Every mode needs a runtime image; offline mode also needs the static guard and
+its digest manifest. Setup reuses inspected artifacts when suitable and prepares
+missing ones from the existing recipes. Compiler tools are installed only in the
+pinned toolchain image. Compilation uses that immutable image without
+networking. Failed recipe/package acquisition does not change pins
+automatically; resolve the reported maintenance stage and rerun. Unrestricted
+mode skips the guard and toolchain.
 
 ## Managed installation and launch
 
 Default paths:
 
-- Installation: `$HOME/.local/lib/claude-container` on native Linux storage.
-- Command: `$HOME/.local/bin/claude-container`.
-- Egress state: `$HOME/.local/state/claude-egress`.
-- Optional fresh isolated home: `$HOME/.local/share/claude-container/home`.
+- Installation: `$HOME/.local/lib/sandbox-container` on native Linux storage.
+- Command: `$HOME/.local/bin/sandbox-container`.
+- Optional fresh isolated home: `$HOME/.local/share/sandbox-container/home`.
 
 Source may be on a Windows mount; installation, private state and executable
 guard output need permission-enforcing native storage with protected ancestors.
@@ -236,10 +181,10 @@ or inaccessible existing roots are diagnosed before maintenance confirmation.
 The configuration directory, or the isolated state directory, must belong to
 the caller, permit read/write/traverse access and deny all group/other
 permissions. Whether shared directories (the profile's `native.shared_dirs`;
-for Claude `~/.config/openspec`) must also be private depends on the optional
+here `~/.config/openspec`) must also be private depends on the optional
 profile field `native.private_shared_dirs`:
 
-- `false`, the default and Claude's value: shared directories are created
+- `false`, the default and this shell's value: shared directories are created
   privately when missing and must be accessible. Existing modes are kept.
 - `true`: the wrapper refuses non-private shared directories. Setup then checks
   them the same way as the configuration directory, before any image work.
@@ -265,9 +210,9 @@ Use the absolute completion command, or add its directory to PATH yourself:
 
 ```bash
 cd /path/to/my-project
-"$HOME/.local/bin/claude-container"
-"$HOME/.local/bin/claude-container" --container-shell
-"$HOME/.local/bin/claude-container" --container-setup
+"$HOME/.local/bin/sandbox-container"
+"$HOME/.local/bin/sandbox-container" -c 'git status'
+"$HOME/.local/bin/sandbox-container" --container-setup
 ```
 
 Setup does not edit shell startup files. If the command directory is absent from
@@ -279,7 +224,7 @@ non-secret JSON and execs the installed wrapper; preferences are never sourced
 as shell code. It preserves current directory, stdin, arguments, terminal and
 exit/signal handling. Settings provide defaults only for variables absent from
 the environment. Explicit values, including empty values, take precedence and
-must pass normal validation. A nonempty `CLAUDE_CONFIG_DIR` conflicts with an
+must pass normal validation. A nonempty `SANDBOX_CONTAINER_CONFIG_DIR` conflicts with an
 isolated home; unset it deliberately rather than expecting setup to discard it.
 
 The installation and command remain outside writable mounts on every managed
@@ -298,7 +243,7 @@ Existing dispatchers from before this path-check protocol are upgraded
 atomically by setup. Such a dispatcher can still request help/setup, but normal
 launch against the new helper fails closed until the upgrade. Run setup from the
 updated checkout to install both matching components; no image refresh is needed.
-Direct `claude-container.sh` retains its existing environment-based behavior and
+Direct `sandbox-container.sh` retains its existing environment-based behavior and
 does not load a global configuration. Managed help bypasses preferences and
 Python, including when preferences are corrupt. Setup rerun uses saved choices;
 to repair invalid JSON, first review/restore the affected file or use a reviewed
@@ -325,14 +270,13 @@ recreate a retired command or adapt an older launch helper's interface.
 ## Readiness and authentication
 
 Setup smoke-checks the actual installed wrapper with the selected state, network
-and CA settings, without credentials in its environment or a model request. It
-checks the Claude executable; restricted smoke also exercises enforced Unix
-socket denial, direct egress denial, own-loopback/pair compatibility and, for
-provider mode, the confined proxy deny path. ABI query success alone is not
+and CA settings, without credentials in its environment. It checks the Bash
+shell; offline smoke also exercises enforced Unix socket denial, direct egress
+denial and own-loopback/pair compatibility. ABI query success alone is not
 accepted. Failure prevents activation and returns nonzero.
 
 When the smoke launch fails, or does not confirm readiness, setup prints the
-last lines of the wrapper's standard error, labeled `claude-container: smoke:`,
+last lines of the wrapper's standard error, labeled `sandbox-container: smoke:`,
 before `setup incomplete`. For example, a wrapper refusal of a state directory
 appears there. The excerpt holds at most 5 non-empty lines of at most 2048
 characters, with control characters removed. A successful smoke prints none of
@@ -342,28 +286,12 @@ Completion distinguishes:
 
 | Result | Meaning |
 | --- | --- |
-| `Sandbox: ready`, authentication pending | Installation/smoke passed; login/key configuration still needs user action. Setup returns zero. |
-| `Sandbox: ready`, account login verified | Claude login succeeded through this sandbox; no model request was tested. |
-| `Sandbox: ready`, authentication not applicable | Offline sandbox is usable without provider authentication. |
+| `Sandbox: ready`, authentication not applicable | Installation and smoke passed. The reference profile has nothing to authenticate. |
 | setup incomplete | A prerequisite/preparation/smoke step failed. Setup returns nonzero and leaves the last activated release selected. |
 
-Account users can reuse shared state or accept optional
-`auth login --claudeai` in the selected fresh isolated sandbox. Claude displays
-the login flow directly and owns credential persistence; setup never captures
-codes, credential-bearing URLs or tokens. Login cancellation/failure leaves a
-ready sandbox with authentication pending. To log in later:
-
-```bash
-"$HOME/.local/bin/claude-container" auth login --claudeai
-```
-
-API setup does not collect or save an API key. Provider/API launches use the
-existing `ANTHROPIC_API_KEY` environment forwarding by name. Supply that variable
-through your normal private secret mechanism when launching. The existing
-unrestricted wrapper does not add API-key environment forwarding; use
-provider/API or explicitly configured Claude credentials for that workflow.
-Setup performs no paid model request. Shell/version smoke, account login and
-authenticated model-response evidence remain separate.
+Profiles with authentication methods (the agent wrappers) add login assistance
+and a separate authentication status here; the reference shell never asks for
+a login or a key.
 
 The wrapper reclassifies Podman 4.3's successful `Should restart: false` message
 as informational (`INFO[...]` or `level=info`), preserving its timestamp and
@@ -386,25 +314,24 @@ bash tests/run-runtime.sh --qualification  # installed-path gate and report chec
 
 Runtime checks use existing prepared images, disposable installation/state and
 an existing same-host service; they do not enable user services or access real
-credentials. Real systemd activation and optional real login require a user to
-accept their respective setup prompts. Record unexercised variants as unavailable
-in `docs/validation.md` and retain the optional status of a real API-key request.
+credentials. Real systemd activation requires a user to accept its setup
+prompt. Record unexercised variants as unavailable in `docs/validation.md`.
 
 The `container-setup` requirement coverage is:
 
 | Requirement | Verification |
 | --- | --- |
 | Dedicated interactive setup invocation | PTY early-dispatch, mixed-argument/pipeline rejection and help precedence tests |
-| Workflow questionnaire with explicit defaults | Default/retry/conflict PTY checks; saved-choice rerun; real provider/offline/unrestricted paths |
+| Workflow questionnaire with explicit defaults | Default/retry/conflict PTY checks; fixture profiles with and without methods; saved-choice rerun; real offline/unrestricted paths |
 | Optional authority requires deliberate selection | Delegation conflict questionnaire; separate service confirmation; saved worktree/TTY checks |
 | Installed host prerequisites only | Missing command, unsupported context/platform and strict failed/malformed engine-response tests |
 | User-scoped Podman service preparation | Synthetic accepted/declined/unavailable systemd and exact-endpoint tests; real existing-service reuse |
 | Reviewed setup mutations and maintenance | Declined plan has no filesystem/image mutation; scoped maintenance/environment tests |
 | Protected complete installation | Native manifest copy from Windows checkout; path/ancestor/overlap/state/privacy checks |
-| Mode-specific image and guard preparation | Inspection/recipe pin/build failure/guard preflight tests; real compilation and provider/offline/unrestricted smoke |
+| Mode-specific image and guard preparation | Inspection/recipe pin/build failure/guard preflight tests; real compilation and offline/unrestricted smoke |
 | Persistent non-secret managed launch preferences | Schema/privacy/secret rejection, empty overrides, argv/stdin/cwd/TTY/status/signal and future-mount tests |
-| Credential-preserving authentication assistance | Synthetic direct-terminal login success/failure/cancellation and absent-key cases; real login separately opt-in |
-| Verified readiness with separate authentication status | Actual installed guard, proxy deny path, CA off/on, version/shell and explicit pending/not-applicable results |
+| Credential-preserving authentication assistance | Fixture-profile login success/failure/cancellation and absent-key cases; no-method profile skips authentication |
+| Verified readiness with separate authentication status | Actual installed guard, CA off/on, shell smoke and not-applicable authentication |
 | Repeatable setup with owned recovery | Lock/publication/interruption/container cleanup tests; real rerun and failed-candidate rollback |
 
 Adversarial regression checks additionally cover managed-command relocation,
