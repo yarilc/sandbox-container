@@ -51,8 +51,8 @@
 
 ## 9. Integration and tag
 
-- [ ] 9.1 Run unit discovery and every runner mode (`--setup`, `--setup-runtime`, `--qualification`, `--guard`, `--network`, `--network-policy`, `--network-feasibility`, `--wrapper`, default), plus `git diff --check`; verify they all pass.
-- [ ] 9.2 Add the `sandbox-ref-19` section to `docs/validation.md` with each mode's result and environment, noting that earlier entries were recorded for the Claude wrapper; verify every mode from 9.1 is listed.
+- [x] 9.1 Run unit discovery and every runner mode (`--setup`, `--setup-runtime`, `--qualification`, `--guard`, `--network`, `--network-policy`, `--network-feasibility`, `--wrapper`, default), plus `git diff --check`; verify they all pass.
+- [x] 9.2 Add the `sandbox-ref-19` section to `docs/validation.md` with each mode's result and environment, noting that earlier entries were recorded for the Claude wrapper; verify every mode from 9.1 is listed.
 - [ ] 9.3 Commit, merge into `main`, and create the annotated tag `sandbox-ref-19` on the merge commit; verify `git describe --exact-match` on `main` prints `sandbox-ref-19`.
 
 ## Workflow follow-up

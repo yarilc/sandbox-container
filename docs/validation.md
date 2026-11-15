@@ -2454,3 +2454,67 @@ Runtime image: setup image `0fb0d09b935d`, tagged
 afterwards. `setup/common.py`, `setup/toolchains.py` and
 `network/agent_profile.py` change, and so does the `Containerfile`, so
 restricted installations rerun `--container-setup`, which rebuilds the image.
+
+## Reference shell (`sandbox-ref-19`): 2026-11-15
+
+Change `establish-sandbox-reference`. `sandbox-container` takes over the
+reference role from `claude-container`: its history was imported unchanged
+(merge `9ff66c8`, tree equal to `claude-container` `094ec39`, tags
+`sandbox-ref-1` to `sandbox-ref-18` kept), so every entry above was recorded
+for the Claude wrapper while it held this role and is history, not evidence of
+the shell.
+
+- **Reference shell:** `sandbox-container.sh` opens Bash with the profile
+  `sandbox-container` (`"auth": {}`, no approval-bypass variable, empty policy
+  profiles). `offline` is the default, `unrestricted` is explicit, `provider`
+  is refused before any engine operation. An offline launch without the guard
+  manifest stops with setup guidance before engine queries. Bash history lives
+  in `~/.config/sandbox-container` (or the isolated home); the wrapper sets
+  `HISTFILE` after the toolchain environment.
+- **Image:** same pinned `node:22-bookworm-slim` base and HTTPS apt block as the
+  agent wrappers, `@fission-ai/openspec@1.16.0`, no agent CLI, `bash` entrypoint.
+- **Shared code:** profiles may declare no authentication method and no
+  approval bypass; such a policy has no profiles; session helper, setup and
+  qualification refuse provider mode for them; setup offers only offline and
+  unrestricted and defaults to offline.
+- **Shared tests:** module-level tests use the fixture profiles in
+  `tests/fixtures/` (`fixture-agent` with two `.test` methods, `fixture-shell`
+  without methods). Setup checks that launch the wrapper moved to the per-agent
+  `tests/test_setup_wrapper.py`; the qualification runtime gate uses the real
+  wrapper and profile. Alignment checks neutral `SANDBOX_*` names against the
+  wrapper prefix and forbids checkout-profile reads in the other shared tests.
+- **Provider evidence:** the reference has no provider mode, so
+  `tests/provider_session.py` drives `network/session.py` from a protected
+  fixture installation with the production guard, relay and proxy; TLS binding,
+  real proxy, CA, budget, exhaustion and proxy-death cases run through it.
+  Wrapper provider lifecycle tests (signals, recovery, stalled cleanup) and the
+  Claude authenticated/CLI tests stay in the agent wrappers.
+- **Launcher fix:** the lifetime notice used Bash `SECONDS` (whole seconds), so
+  a short failing session crossing a second boundary was reported as a reached
+  limit; it now measures with `EPOCHREALTIME`. The new boundary test failed with
+  the old launcher and passed 32 consecutive isolated runs plus two full
+  `--wrapper` runs with the fix. The same defect remains in the agent wrappers.
+
+Environment: WSL2 kernel 6.6.87.2-microsoft-standard-WSL2 x86_64, Podman
+server 4.9.3 (rootless, same-host Unix service), runtime image
+`localhost/sandbox-container:latest` (`f7a1e11124c3`), guard toolchain
+`215f5ffc1023` tagged `localhost/sandbox-container-guard-toolchain:development`.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 399 tests, 66 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 66 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests (real offline setup, qualification `locally-qualified`, persistent history) |
+| `bash tests/run-runtime.sh --qualification` | Passed: 28 tests, 1 skipped (TLS stage needs provider mode) |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped (305-second idle check) |
+| `bash tests/run-runtime.sh --network` | Passed: 16 tests, 1 skipped (documented toolchain downloads) |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 15 tests |
+| `bash tests/run-runtime.sh --network-feasibility` | Passed: 1 test |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 80 tests (after the lifetime fix; one earlier full run failed on the boundary defect) |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
+| `tools/propagate.py` dry run against a clone of `codex-container` (`sandbox-ref-18` to a local tag) | Passed: 16 modified and 4 added shared files, documents and runner checklist listed |
+| `git diff --check`, `bash -n sandbox-container.sh` | Passed |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+
+Every agent wrapper must adopt `sandbox-ref-19` in its own change; the shared
+test ownership moves with it.
