@@ -2,7 +2,7 @@
 # Run tests without host Python, using disposable native Linux state.
 set -Eeuo pipefail
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-image=${CLAUDE_CONTAINER_IMAGE:-localhost/claude-code:latest}
+image=${SANDBOX_CONTAINER_IMAGE:-localhost/sandbox-container:latest}
 rootless=$(podman info --format '{{.Host.Security.Rootless}}')
 [[ "$rootless" == true ]] || { printf 'A rootless engine is required.\n' >&2; exit 1; }
 socket=$(podman info --format '{{.Host.RemoteSocket.Path}}')
@@ -36,7 +36,7 @@ elif [[ "${1:-}" == --mux ]]; then
     shift
 elif [[ "${1:-}" == --guard || "${1:-}" == --guard-idle ]]; then
     pattern=test_guard.py
-    guard_toolchain=$(podman image inspect --format '{{.Id}}' "${SANDBOX_GUARD_TOOLCHAIN:-localhost/claude-guard-toolchain:development}")
+    guard_toolchain=$(podman image inspect --format '{{.Id}}' "${SANDBOX_GUARD_TOOLCHAIN:-localhost/sandbox-container-guard-toolchain:development}")
     guard_environment=(--env SANDBOX_GUARD_TESTS=1 --env "SANDBOX_GUARD_TOOLCHAIN=$guard_toolchain")
     if [[ "$1" == --guard-idle ]]; then
         guard_environment+=(--env SANDBOX_IDLE_TESTS=1)
@@ -62,7 +62,7 @@ podman run --rm --interactive --userns=keep-id --user "$(id -u):$(id -g)" \
     --workdir "$project_root" \
     --env CONTAINER_HOST=unix:///run/podman/podman.sock \
     --env SANDBOX_RUNTIME_TESTS=1 \
-    --env "CLAUDE_CONTAINER_IMAGE=$image" \
+    --env "SANDBOX_CONTAINER_IMAGE=$image" \
     --env "SANDBOX_TEST_STATE_ROOT=$native_state" \
     "${guard_environment[@]}" \
     --env "SANDBOX_TOOLCHAIN_EXAMPLES=${SANDBOX_TOOLCHAIN_EXAMPLES:-0}" \

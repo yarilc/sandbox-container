@@ -14,7 +14,7 @@ import shutil
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-WRAPPER = ROOT / 'claude-container.sh'
+WRAPPER = ROOT / 'sandbox-container.sh'
 OWNED_ID = 'a' * 64
 FAKE = r'''#!/usr/bin/env python3
 import json, os, pathlib, sys, time, signal
@@ -73,7 +73,7 @@ elif args[0] == 'ps':
     else:
         print(os.environ.get('FAKE_NAMES', ''))
 elif args[0] == 'create':
-    if os.environ.get('FAKE_NETWORK') and any(a.startswith('io.claude-container.egress=') for a in args):
+    if os.environ.get('FAKE_NETWORK') and any(a.startswith('io.sandbox-container.egress=') for a in args):
         pathlib.Path(args[args.index('--cidfile') + 1]).write_text('b' * 64 + '\n')
         print('b' * 64)
         sys.exit(0)
@@ -167,44 +167,9 @@ BUDGET_ACCEPTED = {
 }
 
 
-class AccountInventoryTests(unittest.TestCase):
-    """Claude-specific exact provider inventories (N21)."""
-    def setUp(self):
-        import sys
-        sys.path.insert(0, str(ROOT / 'network'))
-        import agent_profile
-        import policy
-        self.policy = policy
-        self.rules = agent_profile.load(ROOT / agent_profile.PROFILE).policy_rules()
-        self.value = json.loads((ROOT / agent_profile.POLICY).read_text())
-
-    def hosts(self, name):
-        return {(d['host'], d['port']) for d in self.value['profiles'][name]['destinations']}
-
-    def test_shipped_inventories_are_exact(self):
-        self.policy.validate(json.loads(json.dumps(self.value)), self.rules)
-        self.assertEqual(self.hosts('anthropic-api'), {('api.anthropic.com', 443)})
-        self.assertEqual(self.hosts('anthropic-account'), {('api.anthropic.com', 443), ('platform.claude.com', 443)})
-        self.assertEqual(self.value['revision'], 'anthropic-2026-11-08-v2')
-
-    def test_removed_account_hosts_require_a_separate_profile(self):
-        for host in ('claude.ai', 'claude.com'):
-            with self.subTest(host=host):
-                value = json.loads(json.dumps(self.value))
-                value['profiles']['anthropic-account']['destinations'].append({'host': host, 'port': 443})
-                with self.assertRaisesRegex(self.policy.PolicyError, 'exact base profile'):
-                    self.policy.validate(value, self.rules)
-        value = json.loads(json.dumps(self.value))
-        value['profiles']['account-with-web'] = {
-            'authentication': 'account', 'disable_optional_traffic': True,
-            'destinations': [*value['profiles']['anthropic-account']['destinations'],
-                             {'host': 'claude.ai', 'port': 443}, {'host': 'claude.com', 'port': 443}]}
-        self.policy.validate(value, self.rules)
-
-
 class WrapperTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='claude-wrapper-', dir=os.environ.get('SANDBOX_TEST_TMPDIR'))
+        self.tmp = tempfile.TemporaryDirectory(prefix='sandbox-wrapper-', dir=os.environ.get('SANDBOX_TEST_TMPDIR'))
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.bin = self.base / 'bin'
@@ -216,18 +181,18 @@ class WrapperTests(unittest.TestCase):
         self.project.mkdir(parents=True)
         self.log = self.base / 'calls.jsonl'
         self.state = self.base / 'state'
-        self.env = {'PATH': os.environ['PATH'], 'CLAUDE_CONTAINER_NETWORK': 'unrestricted',
-                    'CLAUDE_CONTAINER_MAINTENANCE': '1'}
+        self.env = {'PATH': os.environ['PATH'], 'SANDBOX_CONTAINER_NETWORK': 'unrestricted',
+                    'SANDBOX_CONTAINER_MAINTENANCE': '1'}
         self.env['HOME'] = str(self.base / 'host-home')
-        self.env.pop('CLAUDE_CONFIG_DIR', None)
+        self.env.pop('SANDBOX_CONTAINER_CONFIG_DIR', None)
         self.env.update(PATH=str(self.bin) + ':' + self.env['PATH'],
                         FAKE_LOG=str(self.log),
-                        CLAUDE_CONTAINER_STATE_DIR=str(self.state))
+                        SANDBOX_CONTAINER_STATE_DIR=str(self.state))
         self.socket = socket.socket(socket.AF_UNIX)
         self.socket_path = self.base / 'podman.sock'
         self.socket.bind(str(self.socket_path))
         self.addCleanup(self.socket.close)
-        self.env['CLAUDE_CONTAINER_PODMAN_SOCKET'] = str(self.socket_path)
+        self.env['SANDBOX_CONTAINER_PODMAN_SOCKET'] = str(self.socket_path)
         self.library = self.base / 'host-home/.local/share/sandbox-toolchains'
 
     def run_wrapper(self, *args, cwd=None, caller_umask=-1, **env):
@@ -295,19 +260,21 @@ class WrapperTests(unittest.TestCase):
         self.assertFalse(self.calls())
         self.assertFalse(self.state.exists())
 
-    def test_missing_network_mode_requires_setup_without_side_effects(self):
+    def test_missing_mode_defaults_to_offline_and_needs_an_installation(self):
         for mode in (None, ''):
             with self.subTest(mode=mode):
                 env = self.env.copy()
-                env.pop('CLAUDE_CONTAINER_NETWORK')
+                env.pop('SANDBOX_CONTAINER_NETWORK')
                 if mode is not None:
-                    env['CLAUDE_CONTAINER_NETWORK'] = mode
+                    env['SANDBOX_CONTAINER_NETWORK'] = mode
                 result = subprocess.run(['/bin/bash', str(WRAPPER)], cwd=self.project,
                                         env=env, input='input payload', text=True,
                                         capture_output=True, timeout=5)
                 self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn('setup required: run bash ', result.stderr)
+                self.assertIn('setup required: offline sessions need a protected installation; run bash ',
+                              result.stderr)
                 self.assertIn('--container-setup', result.stderr)
+                self.assertIn('SANDBOX_CONTAINER_NETWORK=unrestricted', result.stderr)
                 self.assertEqual(result.stdout, '')
                 self.assertFalse(self.calls())
                 self.assertFalse(self.state.exists())
@@ -323,17 +290,18 @@ class WrapperTests(unittest.TestCase):
                 for mode in (None, ''):
                     with self.subTest(enabled=enabled, missing_tools=missing_tools, mode=mode):
                         env = self.env | {'CLAUDE_YOLO': 'invalid',
-                            'CLAUDE_CONTAINER_TRUST_HOST_CA': 'invalid',
-                            'CLAUDE_CONTAINER_PODMAN': '1', 'CONTAINER_HOST': 'invalid',
-                            'CLAUDE_CONTAINER_NETWORK_POLICY': '/invalid/policy',
-                            'CLAUDE_CONFIG_DIR': '/conflicting/config'}
-                        env.pop('CLAUDE_CONTAINER_NETWORK')
+                            'SANDBOX_CONTAINER_TRUST_HOST_CA': 'invalid',
+                            'SANDBOX_CONTAINER_MAINTENANCE': '1',
+                            'SANDBOX_CONTAINER_PODMAN': '1', 'CONTAINER_HOST': 'invalid',
+                            'SANDBOX_CONTAINER_NETWORK_POLICY': '/invalid/policy',
+                            'SANDBOX_CONTAINER_CONFIG_DIR': '/conflicting/config'}
+                        env.pop('SANDBOX_CONTAINER_NETWORK')
                         if mode is not None:
-                            env['CLAUDE_CONTAINER_NETWORK'] = mode
+                            env['SANDBOX_CONTAINER_NETWORK'] = mode
                         if missing_tools:
                             env['PATH'] = ''
                         args = [option for option, use in zip(options, enabled) if use]
-                        result = subprocess.run(['/bin/bash', str(WRAPPER), *args, '-p', ''],
+                        result = subprocess.run(['/bin/bash', str(WRAPPER), *args, '-c', ''],
                                                 cwd=self.project, env=env, input='payload',
                                                 text=True, capture_output=True, timeout=5)
                         self.assertEqual(result.returncode, 1, result.stderr)
@@ -342,11 +310,14 @@ class WrapperTests(unittest.TestCase):
                         self.assertFalse(self.calls())
                         self.assertFalse(self.state.exists())
                         self.assertFalse(Path(env['HOME']).exists())
-        for mode in ('invalid', ' ', '\t'):
+        for mode in ('invalid', ' ', '\t', 'provider'):
             with self.subTest(invalid_mode=repr(mode)):
-                result = self.run_wrapper(CLAUDE_CONTAINER_NETWORK=mode)
+                result = self.run_wrapper(SANDBOX_CONTAINER_NETWORK=mode)
                 self.assertEqual(result.returncode, 1)
-                self.assertIn('must be offline, provider, or unrestricted', result.stderr)
+                if mode == 'provider':
+                    self.assertIn('declares no authentication method', result.stderr)
+                else:
+                    self.assertIn('must be offline or unrestricted', result.stderr)
                 self.assertNotIn('setup required:', result.stderr)
                 self.assertFalse(self.calls())
 
@@ -354,14 +325,14 @@ class WrapperTests(unittest.TestCase):
         link = self.base / 'wrapper with spaces $(touch injected) `touch injected-too`.sh'
         link.symlink_to(WRAPPER)
         env = self.env.copy()
-        env.pop('CLAUDE_CONTAINER_NETWORK')
+        env.pop('SANDBOX_CONTAINER_NETWORK')
         for wrapper in (str(link), os.path.relpath(link, self.project), str(WRAPPER)):
             with self.subTest(wrapper=wrapper):
                 result = subprocess.run(['/bin/bash', wrapper], cwd=self.project,
                                         env=env, capture_output=True, text=True, timeout=5)
                 self.assertEqual(result.returncode, 1)
-                command = result.stderr.split('setup required: run ', 1)[1].split(
-                    '; use the managed launcher afterward', 1)[0]
+                command = result.stderr.split('protected installation; run ', 1)[1].split(
+                    ' and use the managed launcher', 1)[0]
                 # Execute the suggested command with help taking precedence over
                 # setup: this verifies shell quoting without starting a setup.
                 help_result = subprocess.run(['/bin/bash', '-c', command + ' --container-help'],
@@ -379,10 +350,10 @@ class WrapperTests(unittest.TestCase):
 
     def test_network_preflight_rejections_precede_image_operations(self):
         for values in (
-            {'CLAUDE_CONTAINER_NETWORK': 'invalid'},
-            {'CLAUDE_CONTAINER_NETWORK': 'provider'},
-            {'CLAUDE_CONTAINER_NETWORK': 'offline', 'CLAUDE_CONTAINER_PODMAN': '1'},
-            {'CLAUDE_CONTAINER_NETWORK': 'provider', 'CLAUDE_CONTAINER_PODMAN': '1'},
+            {'SANDBOX_CONTAINER_NETWORK': 'invalid'},
+            {'SANDBOX_CONTAINER_NETWORK': 'provider'},
+            {'SANDBOX_CONTAINER_NETWORK': 'offline', 'SANDBOX_CONTAINER_PODMAN': '1'},
+            {'SANDBOX_CONTAINER_NETWORK': 'provider', 'SANDBOX_CONTAINER_PODMAN': '1'},
         ):
             for flags in ((), ('--container-shell', '--container-build', '--container-git-worktree')):
                 with self.subTest(values=values, flags=flags):
@@ -393,7 +364,7 @@ class WrapperTests(unittest.TestCase):
         fixture = self.restricted_fixture()
         for values in ({'FAKE_BACKEND': 'cni'}, {'FAKE_SERVER_VERSION': '4.8.0'}):
             self.log.unlink(missing_ok=True)
-            result = self.run_wrapper(**(fixture | values | {'CLAUDE_CONTAINER_NETWORK':'offline'}))
+            result = self.run_wrapper(**(fixture | values | {'SANDBOX_CONTAINER_NETWORK':'offline'}))
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('ineligible restricted platform', result.stderr)
             self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
@@ -403,24 +374,24 @@ class WrapperTests(unittest.TestCase):
             for explicit in (False, True):
                 self.log.unlink(missing_ok=True)
                 result = self.run_wrapper(*(['--container-build'] if explicit else []),
-                    CLAUDE_CONTAINER_MAINTENANCE=maintenance, FAKE_IMAGE_STATUS='1')
+                    SANDBOX_CONTAINER_MAINTENANCE=maintenance, FAKE_IMAGE_STATUS='1')
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('MAINTENANCE=1', result.stderr)
                 self.assertFalse(any(c[0] in ('build', 'pull', 'create') for c in self.calls()))
 
     def test_restricted_unprotected_installation_fails_before_image_operations(self):
         result = self.run_wrapper('--container-shell', '--container-build',
-                                  CLAUDE_CONTAINER_NETWORK='offline',
+                                  SANDBOX_CONTAINER_NETWORK='offline',
                                   CONTAINER_HOST='unix:///run/service.sock',
                                   FAKE_INFO='true linux true')
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('network policy preflight failed', result.stderr)
-        self.assertFalse(any(c[0] in ('image', 'build', 'pull', 'create') for c in self.calls()))
+        self.assertIn('setup required:', result.stderr)
+        self.assertFalse(self.calls())
 
     def test_argument_forwarding_and_defaults(self):
         result = self.run_wrapper('-p', 'hello world', '', '--help')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.create()[-5:], ['localhost/claude-code:latest', '-p', 'hello world', '', '--help'])
+        self.assertEqual(self.create()[-5:], ['localhost/sandbox-container:latest', '-p', 'hello world', '', '--help'])
         self.assertNotIn('--tty', self.create())
         self.assertNotIn('--dangerously-skip-permissions', self.create())
         self.assertIn('--unsetenv', self.create())
@@ -428,35 +399,44 @@ class WrapperTests(unittest.TestCase):
         self.assertIn('stdin:input payload', result.stdout)
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
 
-    def test_four_independent_permission_combinations(self):
+    def test_delegation_only_follows_the_exact_opt_in(self):
+        # An agent approval variable has no effect on the shell.
         for yolo in ('0', '1'):
             for service in ('0', '1'):
                 with self.subTest(yolo=yolo, service=service):
                     self.log.unlink(missing_ok=True)
-                    result = self.run_wrapper('-p', 'test', CLAUDE_YOLO=yolo,
-                                              CLAUDE_CONTAINER_PODMAN=service)
+                    result = self.run_wrapper('-c', 'test', CLAUDE_YOLO=yolo,
+                                              SANDBOX_CONTAINER_PODMAN=service)
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual('--dangerously-skip-permissions' in self.create(), yolo == '1')
+                    self.assertNotIn('--dangerously-skip-permissions', self.create())
+                    self.assertEqual(self.create()[-2:], ['-c', 'test'])
                     self.assertEqual('CONTAINER_HOST=unix:///run/podman/podman.sock' in self.create(), service == '1')
                     self.assertNotIn('--privileged', self.create())
                     self.assertFalse(any('label=disable' in a for a in self.create()))
 
     def test_boolean_forms_and_invalid_values(self):
         for value in ('1', 'true', 'TrUe', 'yes', 'YES', '', '0', 'false', 'FALSE', 'no', 'NO'):
-            self.assertEqual(self.run_wrapper(CLAUDE_YOLO=value).returncode, 0)
-        for variable in ('CLAUDE_YOLO', 'CLAUDE_CONTAINER_TRUST_HOST_CA'):
+            self.assertEqual(self.run_wrapper(SANDBOX_CONTAINER_TOOLCHAINS=value).returncode, 0)
+        for variable in ('SANDBOX_CONTAINER_TOOLCHAINS', 'SANDBOX_CONTAINER_TRUST_HOST_CA'):
             self.log.unlink(missing_ok=True)
             result = self.run_wrapper(**{variable: 'maybe'})
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(variable, result.stderr)
             self.assertFalse(self.calls())
 
-    def test_shell_does_not_receive_yolo_or_cli_arguments(self):
-        result = self.run_wrapper('--container-shell', '-p', 'ignored', CLAUDE_YOLO='1')
-        self.assertEqual(result.returncode, 0)
-        create = self.create()
-        self.assertEqual(create[-3:], ['--entrypoint', '/bin/bash', 'localhost/claude-code:latest'])
-        self.assertNotIn('--dangerously-skip-permissions', create)
+    def test_shell_option_is_equivalent(self):
+        creates = []
+        for flags in ((), ('--container-shell',)):
+            self.log.unlink(missing_ok=True)
+            result = self.run_wrapper(*flags, '-c', 'echo "$0"', '')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('stdin:input payload', result.stdout)
+            create = self.create()
+            # The cidfile and the ownership label name the per-session directory.
+            creates.append([a for i, a in enumerate(create) if i == 0 or create[i - 1] not in ('--cidfile', '--label')])
+        self.assertEqual(creates[0], creates[1])
+        self.assertEqual(creates[0][-6:], ['--entrypoint', '/bin/bash', 'localhost/sandbox-container:latest',
+                                           '-c', 'echo "$0"', ''])
 
     def test_workspace_worktree_and_symlink(self):
         alias = self.base / 'alias'
@@ -477,7 +457,7 @@ class WrapperTests(unittest.TestCase):
             self.assertIn(option, create)
         volumes = [create[i+1] for i, a in enumerate(create) if a == '--volume']
         self.assertEqual(len(volumes), 3)
-        self.assertIn(f'{self.state}:/claude-home:rw', volumes)
+        self.assertIn(f'{self.state}:/sandbox-home:rw', volumes)
         self.assertIn(f'{self.library}:/toolchains:ro,nosuid,nodev', volumes)
 
     # Toolchain library
@@ -491,7 +471,7 @@ class WrapperTests(unittest.TestCase):
         return [create[i + 1] for i, a in enumerate(create) if a == '--env']
 
     def test_toolchain_command_dispatch(self):
-        env = {k: v for k, v in self.env.items() if k != 'CLAUDE_CONTAINER_NETWORK'}
+        env = {k: v for k, v in self.env.items() if k != 'SANDBOX_CONTAINER_NETWORK'}
         result = subprocess.run([str(WRAPPER), '--container-toolchain', 'list'], cwd=self.project, env=env,
                                 text=True, capture_output=True, timeout=25)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -520,7 +500,7 @@ class WrapperTests(unittest.TestCase):
         self.library.mkdir(parents=True, mode=0o700)
         os.chmod(self.library, 0o755)
         cases = [({}, str(self.library))]
-        cases += [({'CLAUDE_CONTAINER_TOOLCHAINS_DIR': str(path)}, str(path))
+        cases += [({'SANDBOX_CONTAINER_TOOLCHAINS_DIR': str(path)}, str(path))
                   for path in (self.project / 'tools', self.base, self.state / 'tools')]
         for env, path in cases:
             with self.subTest(env=env):
@@ -533,13 +513,13 @@ class WrapperTests(unittest.TestCase):
     def test_toolchain_mount_can_be_disabled(self):
         for value in ('0', 'false', 'no'):
             with self.subTest(value=value):
-                result = self.run_wrapper(CLAUDE_CONTAINER_TOOLCHAINS=value)
+                result = self.run_wrapper(SANDBOX_CONTAINER_TOOLCHAINS=value)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertFalse(any(v.endswith(':/toolchains:ro,nosuid,nodev') for v in self.volumes()))
                 self.assertFalse(self.library.exists())
-        result = self.run_wrapper(CLAUDE_CONTAINER_TOOLCHAINS='maybe')
+        result = self.run_wrapper(SANDBOX_CONTAINER_TOOLCHAINS='maybe')
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('CLAUDE_CONTAINER_TOOLCHAINS', result.stderr)
+        self.assertIn('SANDBOX_CONTAINER_TOOLCHAINS', result.stderr)
 
     def test_default_toolchain_environment_is_appended(self):
         sys.path.insert(0, str(ROOT / 'setup'))
@@ -563,36 +543,49 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(result.stderr.count('toolchain stale was verified on another base image'), 1)
         self.assertIn('verify stale', result.stderr)
 
-    def test_toolchain_cannot_set_claude_variables(self):
+    def test_toolchain_variables_and_protected_session_variables(self):
+        # The shell profile declares no agent variables, so another agent's
+        # variables reach the shell; neutral session variables never do.
         sys.path.insert(0, str(ROOT / 'setup'))
         import toolchains
         self.library.mkdir(parents=True, mode=0o700)
-        dropped = ('ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'DISABLE_TELEMETRY')
-        index = {'schema': 1, 'toolchains': [
-            {'name': 'hostile', 'version': '1', 'default': True, 'commands': ['tool'], 'requires': [], 'notes': [],
-             'check': ['tool'], 'source': {}, 'path': ['/toolchains/hostile/bin'],
-             'env': {'JAVA_HOME': '/toolchains/hostile', 'ANTHROPIC_BASE_URL': 'https://attacker.invalid',
-                     'CLAUDE_CODE_USE_BEDROCK': '1', 'DISABLE_TELEMETRY': '0'},
-             'verified': {'base': toolchains.base_reference(ROOT), 'date': '2026-11-15'}}]}
+        entry = {'name': 'tools', 'version': '1', 'default': True, 'commands': ['tool'], 'requires': [],
+                 'notes': [], 'check': ['tool'], 'source': {}, 'path': ['/toolchains/tools/bin'],
+                 'verified': {'base': toolchains.base_reference(ROOT), 'date': '2026-11-15'}}
+        index = {'schema': 1, 'toolchains': [entry | {'env': {
+            'JAVA_HOME': '/toolchains/tools', 'ANTHROPIC_BASE_URL': 'https://example.invalid'}}]}
         (self.library / 'index.json').write_text(json.dumps(index))
         result = self.run_wrapper()
         self.assertEqual(result.returncode, 0, result.stderr)
         environment = self.environment()
-        self.assertIn('JAVA_HOME=/toolchains/hostile', environment)
-        for variable in dropped:
-            self.assertFalse(any(e.split('=', 1)[0] == variable for e in environment), variable)
-            self.assertEqual(result.stderr.count(f'toolchain hostile sets {variable},'), 1, result.stderr)
+        self.assertIn('JAVA_HOME=/toolchains/tools', environment)
+        self.assertIn('ANTHROPIC_BASE_URL=https://example.invalid', environment)
+        for variable in ('SANDBOX_CONTAINER_CONFIG_DIR', 'HISTFILE', 'HOME'):
+            with self.subTest(variable=variable):
+                self.log.unlink(missing_ok=True)
+                index['toolchains'][0]['env'] = {variable: '/toolchains/tools'}
+                (self.library / 'index.json').write_text(json.dumps(index))
+                result = self.run_wrapper()
+                if variable == 'HISTFILE':
+                    # Not a protected name, but the wrapper sets its own value after the toolchains.
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    values = [e.split('=', 1)[1] for e in self.environment() if e.startswith('HISTFILE=')]
+                    self.assertEqual(values[-1], '/sandbox-home/.config/sandbox-container/bash_history')
+                    continue
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('toolchain library check failed', result.stderr)
+                self.assertFalse(any(c[0] == 'create' for c in self.calls()))
 
     def test_restricted_sessions_declare_the_toolchain_mount(self):
         values = self.restricted_fixture()
-        for mode in ('offline', 'provider'):
+        for mode in ('offline',):
             with self.subTest(mode=mode):
                 self.log.unlink(missing_ok=True)
                 Path(str(self.log) + '.control').unlink(missing_ok=True)
-                result = self.run_wrapper(**(values | {'CLAUDE_CONTAINER_NETWORK': mode}))
+                result = self.run_wrapper(**(values | {'SANDBOX_CONTAINER_NETWORK': mode}))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 agent = next(c for c in self.calls() if c[0] == 'create'
-                             and not any(a.startswith('io.claude-container.egress=') for a in c))
+                             and not any(a.startswith('io.sandbox-container.egress=') for a in c))
                 volumes = [agent[i + 1] for i, a in enumerate(agent) if a == '--volume']
                 self.assertIn(f'{self.library}:/toolchains:ro,nosuid,nodev', volumes)
                 control = [json.loads(line) for line in Path(str(self.log) + '.control').read_text().splitlines()]
@@ -604,7 +597,7 @@ class WrapperTests(unittest.TestCase):
         # acceptance lives in test_network_runtime; no production check is changed.
         install = self.base / 'synthetic-install'
         (install / 'network/bin').mkdir(parents=True)
-        self.wrapper = install / 'claude-container.sh'
+        self.wrapper = install / 'sandbox-container.sh'
         shutil.copyfile(WRAPPER, self.wrapper)
         self.wrapper.chmod(0o700)
         guard = install / 'network/bin/sandbox-egress-guard'
@@ -632,34 +625,29 @@ if args[0]=='snapshot':
  (p/'transport/ready').write_text('fixture-policy guard='+ 'c'*64 +' mux=1 tls=' + TLS_ENFORCEMENT + '\\n')
  print('fixture-policy')
 ''')
-        runtime = self.base / 'network-runtime'
-        runtime.mkdir()
         return dict(FAKE_NETWORK='1', FAKE_INFO='true linux true',
                     CONTAINER_HOST='unix:///run/service.sock',
-                    CLAUDE_CONTAINER_NETWORK_POLICY=str(install / 'policy.json'),
-                    CLAUDE_CONTAINER_NETWORK_PROFILE='fixture',
-                    CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR=str(runtime),
-                    CLAUDE_CONTAINER_EGRESS_IMAGE='d' * 64)
+                    SANDBOX_CONTAINER_NETWORK='offline')
 
     def test_hardening_and_budgets_in_every_mode(self):
         values = self.restricted_fixture()
-        cases = [(mode, state, flags, {}) for mode in ('offline', 'provider', 'unrestricted')
+        cases = [(mode, state, flags, {}) for mode in ('offline', 'unrestricted')
                  for state in ('', str(self.state)) for flags in ((), ('--container-shell',))]
-        cases += [('unrestricted', str(self.state), flags, {'CLAUDE_CONTAINER_PODMAN': '1'})
+        cases += [('unrestricted', str(self.state), flags, {'SANDBOX_CONTAINER_PODMAN': '1'})
                   for flags in ((), ('--container-shell',))]
         for mode, state, flags, extra in cases:
             with self.subTest(mode=mode, state=state, flags=flags, extra=extra):
                 self.log.unlink(missing_ok=True)
                 result = self.run_wrapper(*flags, **(values | extra | {
-                    'CLAUDE_CONTAINER_NETWORK': mode, 'CLAUDE_CONTAINER_STATE_DIR': state}))
+                    'SANDBOX_CONTAINER_NETWORK': mode, 'SANDBOX_CONTAINER_STATE_DIR': state}))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 creates = [c for c in self.calls() if c[0] == 'create']
-                self.assertEqual(len(creates), 2 if mode == 'provider' else 1)
+                self.assertEqual(len(creates), 1)
                 for create in creates:
                     for option in ('--cap-drop=all', '--security-opt=no-new-privileges', '--userns=keep-id'):
                         self.assertIn(option, create)
                     self.assertIn(f'{os.getuid()}:{os.getgid()}', create)
-                    proxy = any(a.startswith('io.claude-container.egress=') for a in create)
+                    proxy = any(a.startswith('io.sandbox-container.egress=') for a in create)
                     self.assertEqual('--pids-limit=128' in create, proxy)
                     self.assertEqual('--memory=256m' in create, proxy)
                     agent = ('--memory=4294967296', '--cpus=2', '--pids-limit=512')
@@ -673,8 +661,8 @@ if args[0]=='snapshot':
                     self.assertNotIn('lifetime limit', result.stderr)
 
     def test_budget_overrides_and_rejections_precede_engine(self):
-        result = self.run_wrapper(CLAUDE_CONTAINER_MEMORY_LIMIT='8G', CLAUDE_CONTAINER_CPU_LIMIT='1.5',
-                                  CLAUDE_CONTAINER_PIDS_LIMIT='1024', CLAUDE_CONTAINER_RUN_TIMEOUT='60')
+        result = self.run_wrapper(SANDBOX_CONTAINER_MEMORY_LIMIT='8G', SANDBOX_CONTAINER_CPU_LIMIT='1.5',
+                                  SANDBOX_CONTAINER_PIDS_LIMIT='1024', SANDBOX_CONTAINER_RUN_TIMEOUT='60')
         self.assertEqual(result.returncode, 0, result.stderr)
         create = self.create()
         for option in ('--memory=8589934592', '--cpus=1.5', '--pids-limit=1024'):
@@ -683,7 +671,7 @@ if args[0]=='snapshot':
         for value in ('', '0', None):
             with self.subTest(timeout=value):
                 self.log.unlink(missing_ok=True)
-                env = {} if value is None else {'CLAUDE_CONTAINER_RUN_TIMEOUT': value}
+                env = {} if value is None else {'SANDBOX_CONTAINER_RUN_TIMEOUT': value}
                 self.assertEqual(self.run_wrapper(**env).returncode, 0)
                 self.assertNotIn('--timeout', self.create())
         for name, cases in BUDGET_REJECTIONS.items():
@@ -691,10 +679,10 @@ if args[0]=='snapshot':
                 with self.subTest(name=name, value=value):
                     self.log.unlink(missing_ok=True)
                     fresh = self.base / 'rejected-state'
-                    result = self.run_wrapper(**{'CLAUDE_CONTAINER_' + name: value,
-                                                 'CLAUDE_CONTAINER_STATE_DIR': str(fresh)})
+                    result = self.run_wrapper(**{'SANDBOX_CONTAINER_' + name: value,
+                                                 'SANDBOX_CONTAINER_STATE_DIR': str(fresh)})
                     self.assertEqual(result.returncode, 1)
-                    self.assertIn('CLAUDE_CONTAINER_' + name + ' must be', result.stderr)
+                    self.assertIn('SANDBOX_CONTAINER_' + name + ' must be', result.stderr)
                     self.assertFalse(self.calls())
                     self.assertFalse(fresh.exists())
 
@@ -712,7 +700,7 @@ if args[0]=='snapshot':
                 with self.subTest(accepted=name, value=value):
                     self.log.unlink(missing_ok=True)
                     expected = agent_budgets.normalize({name: value})
-                    result = self.run_wrapper(**{'CLAUDE_CONTAINER_' + name: value})
+                    result = self.run_wrapper(**{'SANDBOX_CONTAINER_' + name: value})
                     self.assertEqual(result.returncode, 0, result.stderr)
                     create = self.create()
                     timeout = int(create[create.index('--timeout') + 1]) if '--timeout' in create else 0
@@ -767,7 +755,7 @@ if args[0]=='snapshot':
     def test_engine_default_secrets_are_masked_in_every_mode(self):
         mask = 'type=tmpfs,destination=/run/secrets,ro=true'
         for args, env in (((), {}), (('--container-shell',), {}), (('--container-git-worktree',), {}),
-                          ((), {'CLAUDE_CONTAINER_PODMAN': '1'})):
+                          ((), {'SANDBOX_CONTAINER_PODMAN': '1'})):
             with self.subTest(args=args, env=env):
                 self.log.unlink(missing_ok=True)
                 result = self.run_wrapper(*args, **env)
@@ -793,16 +781,16 @@ if args[0]=='snapshot':
 
     def test_agent_dev_layout_attaches_terminals_in_every_mode(self):
         values = self.restricted_fixture()
-        cases = [(mode, flags, {}) for mode in ('offline', 'provider', 'unrestricted')
+        cases = [(mode, flags, {}) for mode in ('offline', 'unrestricted')
                  for flags in ((), ('--container-shell',), ('--container-git-worktree',))]
-        cases.append(('unrestricted', (), {'CLAUDE_CONTAINER_PODMAN': '1'}))
+        cases.append(('unrestricted', (), {'SANDBOX_CONTAINER_PODMAN': '1'}))
         for mode, flags, extra in cases:
             with self.subTest(mode=mode, flags=flags, extra=extra):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(*flags, **(values | extra | {'CLAUDE_CONTAINER_NETWORK': mode}))
+                result = self.run_wrapper(*flags, **(values | extra | {'SANDBOX_CONTAINER_NETWORK': mode}))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 for create in (c for c in self.calls() if c[0] == 'create'):
-                    if any(a.startswith('io.claude-container.egress=') for a in create):
+                    if any(a.startswith('io.sandbox-container.egress=') for a in create):
                         # The proxy never attaches a terminal and keeps /dev read-only.
                         self.assertIn('--read-only-tmpfs=false', create)
                         self.assertFalse(any(a.startswith('/dev') or 'destination=/dev' in a for a in create))
@@ -827,12 +815,12 @@ if args[0]=='snapshot':
         self.assertFalse(any(c[0] == 'start' for c in self.calls()))
 
     def test_lifetime_notice_preserves_status(self):
-        result = self.run_wrapper(CLAUDE_CONTAINER_RUN_TIMEOUT='1', FAKE_START_DELAY='1.2', FAKE_EXIT='137')
+        result = self.run_wrapper(SANDBOX_CONTAINER_RUN_TIMEOUT='1', FAKE_START_DELAY='1.2', FAKE_EXIT='137')
         self.assertEqual(result.returncode, 137)
         self.assertIn('session lifetime limit reached (1 s); exit status 137', result.stderr)
         for env in ({'FAKE_EXIT': '3'}, {'FAKE_START_DELAY': '1.2', 'FAKE_EXIT': '0'}):
             with self.subTest(env=env):
-                result = self.run_wrapper(CLAUDE_CONTAINER_RUN_TIMEOUT='1', **env)
+                result = self.run_wrapper(SANDBOX_CONTAINER_RUN_TIMEOUT='1', **env)
                 self.assertEqual(result.returncode, int(env['FAKE_EXIT']))
                 self.assertNotIn('lifetime limit', result.stderr)
 
@@ -850,7 +838,7 @@ if args[0]=='snapshot':
             for override in (None, 'true', 'yes', '0', ' 1'):
                 with self.subTest(cwd=str(cwd), flags=flags, override=override):
                     self.log.unlink(missing_ok=True)
-                    env = {} if override is None else {'CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE': override}
+                    env = {} if override is None else {'SANDBOX_CONTAINER_ALLOW_UNSAFE_WORKSPACE': override}
                     result = self.run_wrapper(*flags, cwd=cwd, **env)
                     self.assertEqual(result.returncode, 1, result.stderr)
                     self.assertIn('refusing sensitive workspace', result.stderr)
@@ -860,13 +848,13 @@ if args[0]=='snapshot':
         self.log.unlink(missing_ok=True)
         # An exposed home contains the default toolchain library, which must
         # never be writable through the workspace: the launch stops first.
-        result = self.run_wrapper(cwd=home, CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE='1')
+        result = self.run_wrapper(cwd=home, SANDBOX_CONTAINER_ALLOW_UNSAFE_WORKSPACE='1')
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('overlaps ' + str(home), result.stderr)
         self.assertFalse(any(c[0] in ('create', 'build') for c in self.calls()))
         self.log.unlink(missing_ok=True)
-        result = self.run_wrapper(cwd=home, CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE='1',
-                                  CLAUDE_CONTAINER_TOOLCHAINS='0')
+        result = self.run_wrapper(cwd=home, SANDBOX_CONTAINER_ALLOW_UNSAFE_WORKSPACE='1',
+                                  SANDBOX_CONTAINER_TOOLCHAINS='0')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f'WARNING: sensitive workspace explicitly exposed read/write: {home}', result.stderr)
         self.assertIn(f'{home}:{home}:rw', self.create())
@@ -882,63 +870,6 @@ if args[0]=='snapshot':
         self.assertEqual(result.returncode, 1)
         self.assertIn('refusing sensitive workspace ' + str(drives[0]), result.stderr)
         self.assertFalse(self.calls())
-
-    def test_proxy_hardening_failure_never_starts_agent(self):
-        values = self.restricted_fixture() | {'CLAUDE_CONTAINER_NETWORK': 'provider'}
-        good = dict(pids=128, memory=268435456, capabilities=[0]*5, no_new_privs=1, seccomp=2)
-        cases = [{'FAKE_PROXY_CONFIG': raw} for raw in ('{}', 'null', 'not-json',
-            '{"PidsLimit":0,"Memory":268435456}', '{"PidsLimit":128,"Memory":0}')]
-        cases += [{'FAKE_PROXY_EFFECTIVE': json.dumps(good | change)} for change in (
-            {'pids':129}, {'memory':536870912}, {'capabilities':[0,0,1,0,0]},
-            {'no_new_privs':0}, {'seccomp':0}, {'memory':True})]
-        cases += [{'FAKE_PROXY_EFFECTIVE': raw} for raw in ('{}', 'null', 'not-json')]
-        cases += [{'FAKE_FAIL': name} for name in ('exec', 'inspect')]
-        for case in cases:
-            with self.subTest(case=case):
-                self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(**(values | case))
-                self.assertNotEqual(result.returncode, 0)
-                creates = [c for c in self.calls() if c[0] == 'create']
-                self.assertEqual(len(creates), 1)
-                self.assertIn('--pids-limit=128', creates[0])
-                self.assertIn('--memory=256m', creates[0])
-                self.assertTrue(any(c[0] == 'rm' and c[-1] == 'b' * 64 for c in self.calls()))
-
-    def test_proxy_probe_timeout_and_interruption_clean_only_proxy(self):
-        values = self.restricted_fixture() | {'CLAUDE_CONTAINER_NETWORK': 'provider', 'FAKE_STALL': 'exec'}
-        for interrupt in (False, True):
-            with self.subTest(interrupt=interrupt):
-                self.log.unlink(missing_ok=True)
-                marker = Path(str(self.log) + '.stalled-exec')
-                marker.unlink(missing_ok=True)
-                proc = subprocess.Popen([str(self.wrapper)], cwd=self.project, env=self.env | values,
-                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                try:
-                    self.wait_marker(proc, '.stalled-exec')
-                    started = time.monotonic()
-                    if interrupt:
-                        proc.terminate()
-                    stdout, stderr = proc.communicate(timeout=22)
-                    self.assertEqual(proc.returncode, 143 if interrupt else 1, stdout + stderr)
-                    self.assertLess(time.monotonic() - started, 21)
-                    creates = [c for c in self.calls() if c[0] == 'create']
-                    self.assertEqual(len(creates), 1)
-                    self.assertTrue(any(c[0] == 'rm' and c[-1] == 'b' * 64 for c in self.calls()))
-                    # The timeout owns its exec child even when shutdown signals it.
-                    deadline = time.monotonic() + 2
-                    while Path('/proc/' + marker.read_text()).exists() and time.monotonic() < deadline:
-                        time.sleep(.02)
-                    if Path('/proc/' + marker.read_text() + '/stat').exists():
-                        self.assertEqual(Path('/proc/' + marker.read_text() + '/stat').read_text().split()[2], 'Z')
-                finally:
-                    if proc.poll() is None:
-                        proc.kill(); proc.communicate()
-                    if marker.exists():
-                        pid = int(marker.read_text())
-                        command = Path(f'/proc/{pid}/cmdline')
-                        if command.exists() and str(self.bin / 'podman').encode() in command.read_bytes():
-                            os.kill(pid, signal.SIGKILL)
-                    proc.stdout.close(); proc.stderr.close()
 
     def test_insecure_existing_state_rejected(self):
         self.state.mkdir(mode=0o777)
@@ -967,15 +898,15 @@ if args[0]=='snapshot':
 
     def test_socket_only_required_when_enabled(self):
         missing = str(self.base / 'missing.sock')
-        self.assertEqual(self.run_wrapper(CLAUDE_CONTAINER_PODMAN_SOCKET=missing).returncode, 0)
+        self.assertEqual(self.run_wrapper(SANDBOX_CONTAINER_PODMAN_SOCKET=missing).returncode, 0)
         self.log.unlink()
-        result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN='1', CLAUDE_CONTAINER_PODMAN_SOCKET=missing)
+        result = self.run_wrapper(SANDBOX_CONTAINER_PODMAN='1', SANDBOX_CONTAINER_PODMAN_SOCKET=missing)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('socket', result.stderr)
         self.assertFalse(any(c[0] in ('build', 'create') for c in self.calls()))
 
     def test_socket_engine_must_be_rootless(self):
-        result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN='1', FAKE_SOCKET_ROOTLESS='false')
+        result = self.run_wrapper(SANDBOX_CONTAINER_PODMAN='1', FAKE_SOCKET_ROOTLESS='false')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('rootless', result.stderr)
 
@@ -1004,8 +935,8 @@ if args[0]=='snapshot':
             for build in (('--container-build',), ()):
                 with self.subTest(trust=trust, build=build):
                     self.log.unlink(missing_ok=True)
-                    result = self.run_wrapper(*build, CLAUDE_CONTAINER_TRUST_HOST_CA=trust,
-                                              CLAUDE_CONTAINER_CA_BUNDLE=str(ca),
+                    result = self.run_wrapper(*build, SANDBOX_CONTAINER_TRUST_HOST_CA=trust,
+                                              SANDBOX_CONTAINER_CA_BUNDLE=str(ca),
                                               **({} if build else {'FAKE_IMAGE_STATUS': '1'}))
                     self.assertEqual(result.returncode, 0, result.stderr)
                     args = next(c for c in self.calls() if c[0] == 'build')
@@ -1231,7 +1162,7 @@ if args[0]=='snapshot':
                                   (valid + '\nextra\n', False)):
                 with self.subTest(query=query, raw=repr(raw)):
                     self.log.unlink(missing_ok=True)
-                    result = self.run_wrapper('--container-build', CLAUDE_CONTAINER_PODMAN='1',
+                    result = self.run_wrapper('--container-build', SANDBOX_CONTAINER_PODMAN='1',
                                               **{f'FAKE_{query}_RAW': raw})
                     self.assertEqual(result.returncode == 0, accepted, result.stderr)
                     operations = [c for c in self.calls() if c[0] in ('image', 'build', 'create')]
@@ -1243,7 +1174,7 @@ if args[0]=='snapshot':
             for raw in (valid, valid + '\n', valid + '\n\n'):
                 with self.subTest(query=query, failed_after_output=repr(raw)):
                     self.log.unlink(missing_ok=True)
-                    result = self.run_wrapper('--container-build', CLAUDE_CONTAINER_PODMAN='1',
+                    result = self.run_wrapper('--container-build', SANDBOX_CONTAINER_PODMAN='1',
                                               **{f'FAKE_{query}_RAW': raw, f'FAKE_{query}_STATUS': '19'})
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn('cannot query Podman', result.stderr)
@@ -1258,7 +1189,7 @@ if args[0]=='snapshot':
             for raw in responses:
                 with self.subTest(options=options, raw=repr(raw)):
                     self.log.unlink(missing_ok=True)
-                    result = self.run_wrapper(*options, CLAUDE_CONTAINER_PODMAN='1',
+                    result = self.run_wrapper(*options, SANDBOX_CONTAINER_PODMAN='1',
                                               FAKE_SOCKET_RAW=raw)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(f'invalid Podman socket response: {self.socket_path}', result.stderr)
@@ -1279,8 +1210,8 @@ if args[0]=='snapshot':
                             if bad_query:
                                 values[f'FAKE_{bad_query}_RAW'] += '\n'
                             accepted = not bad_query or (bad_query == 'SOCKET' and service == '0')
-                            result = self.run_wrapper(*options, CLAUDE_CONTAINER_STATE_DIR=isolated,
-                                                      CLAUDE_CONTAINER_PODMAN=service, **values)
+                            result = self.run_wrapper(*options, SANDBOX_CONTAINER_STATE_DIR=isolated,
+                                                      SANDBOX_CONTAINER_PODMAN=service, **values)
                             self.assertEqual(result.returncode == 0, accepted, result.stderr)
                             self.assertEqual(any(c[0] in ('build', 'image', 'create') for c in self.calls()), accepted)
                             if service == '0':
@@ -1290,7 +1221,7 @@ if args[0]=='snapshot':
         for raw in ('true /host/podman.sock\r\n', 'true /host/pod\rman.sock'):
             with self.subTest(raw=repr(raw), query_failure=True):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper('--container-build', CLAUDE_CONTAINER_PODMAN='1',
+                result = self.run_wrapper('--container-build', SANDBOX_CONTAINER_PODMAN='1',
                                           FAKE_SOCKET_RAW=raw, FAKE_SOCKET_STATUS='19')
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(f'cannot query Podman socket: {self.socket_path}', result.stderr)
@@ -1298,7 +1229,7 @@ if args[0]=='snapshot':
                 self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
             with self.subTest(raw=repr(raw), delegation_disabled=True):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN='0', FAKE_SOCKET_RAW=raw)
+                result = self.run_wrapper(SANDBOX_CONTAINER_PODMAN='0', FAKE_SOCKET_RAW=raw)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
                 self.assertNotIn('CONTAINER_HOST=unix:///run/podman/podman.sock', self.create())
@@ -1310,8 +1241,8 @@ if args[0]=='snapshot':
                     with self.subTest(endpoint=endpoint, delegation=delegation, override=override):
                         self.log.unlink(missing_ok=True)
                         result = self.run_wrapper('--container-build', CONTAINER_HOST=endpoint,
-                                                  CLAUDE_CONTAINER_PODMAN=delegation,
-                                                  CLAUDE_CONTAINER_PODMAN_SOCKET=override)
+                                                  SANDBOX_CONTAINER_PODMAN=delegation,
+                                                  SANDBOX_CONTAINER_PODMAN_SOCKET=override)
                         self.assertNotEqual(result.returncode, 0)
                         self.assertIn('absolute Unix socket path', result.stderr)
                         self.assertEqual(self.calls(), [])
@@ -1324,22 +1255,22 @@ if args[0]=='snapshot':
         self.assertFalse(self.state.exists())
 
     def test_shared_state_default_and_override(self):
-        for custom in ('', str(self.base / 'custom Claude')):
+        for custom in ('', str(self.base / 'custom config')):
             with self.subTest(custom=custom):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(CLAUDE_CONTAINER_STATE_DIR='', CLAUDE_CONFIG_DIR=custom)
+                result = self.run_wrapper(SANDBOX_CONTAINER_STATE_DIR='', SANDBOX_CONTAINER_CONFIG_DIR=custom)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 home = Path(self.env['HOME'])
-                source = Path(custom) if custom else home / '.claude'
-                self.assertIn(f'{source}:/claude-home/.claude:rw', self.create())
-                self.assertIn(f'{home}/.config/openspec:/claude-home/.config/openspec:rw', self.create())
-                self.assertNotIn(f'{self.state}:/claude-home:rw', self.create())
+                source = Path(custom) if custom else home / '.config/sandbox-container'
+                self.assertIn(f'{source}:/sandbox-home/.config/sandbox-container:rw', self.create())
+                self.assertIn(f'{home}/.config/openspec:/sandbox-home/.config/openspec:rw', self.create())
+                self.assertNotIn(f'{self.state}:/sandbox-home:rw', self.create())
                 self.assertFalse((home / '.cache').exists())
                 # Only the toolchain library is created below ~/.local/share.
                 self.assertEqual([p.name for p in (home / '.local/share').iterdir()], ['sandbox-toolchains'])
 
     def test_state_conflict_fails_without_engine(self):
-        result = self.run_wrapper(CLAUDE_CONFIG_DIR=str(self.base / 'custom'))
+        result = self.run_wrapper(SANDBOX_CONTAINER_CONFIG_DIR=str(self.base / 'custom'))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('conflicts', result.stderr)
         self.assertFalse(self.calls())
@@ -1347,16 +1278,16 @@ if args[0]=='snapshot':
     def test_state_overlapping_the_workspace_fails_without_engine(self):
         alias = self.base / 'alias'
         alias.symlink_to(self.project)
-        for case, state in (('workspace', self.project), ('inside', self.project / '.claude-state'),
+        for case, state in (('workspace', self.project), ('inside', self.project / '.sandbox-state'),
                             ('containing', self.project.parent), ('symlink', alias / 'state')):
             with self.subTest(case=case):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(CLAUDE_CONTAINER_STATE_DIR=str(state))
+                result = self.run_wrapper(SANDBOX_CONTAINER_STATE_DIR=str(state))
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn('CLAUDE_CONTAINER_STATE_DIR must not overlap the workspace: ' + str(state), result.stderr)
+                self.assertIn('SANDBOX_CONTAINER_STATE_DIR must not overlap the workspace: ' + str(state), result.stderr)
                 self.assertFalse(self.calls())
-                self.assertFalse((self.project / '.claude-state').exists())
-        result = self.run_wrapper('--container-git-worktree', CLAUDE_CONTAINER_STATE_DIR=str(self.project.parent / 'state'))
+                self.assertFalse((self.project / '.sandbox-state').exists())
+        result = self.run_wrapper('--container-git-worktree', SANDBOX_CONTAINER_STATE_DIR=str(self.project.parent / 'state'))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('must not overlap the workspace', result.stderr)
         self.assertFalse(self.calls())
@@ -1370,24 +1301,43 @@ if args[0]=='snapshot':
                     umask_log = self.base / f'umask-{mask}-{isolated}.jsonl'
                     result = self.run_wrapper('--container-build', caller_umask=mask,
                                               HOME=str(home), FAKE_UMASK_LOG=str(umask_log),
-                                              CLAUDE_CONTAINER_STATE_DIR=str(state) if isolated else '')
+                                              SANDBOX_CONTAINER_STATE_DIR=str(state) if isolated else '')
                     self.assertEqual(result.returncode, 0, result.stderr)
                     observations = [json.loads(line) for line in umask_log.read_text().splitlines()]
                     self.assertTrue({'build', 'create', 'start', 'rm'} <= {c for c, _ in observations})
                     self.assertTrue(all(actual == mask for _, actual in observations), observations)
                     root = state if isolated else home
-                    for relative in ('.', '.claude', '.config', '.config/openspec'):
+                    for relative in ('.', '.config', '.config/sandbox-container', '.config/openspec'):
                         self.assertEqual((root / relative).stat().st_mode & 0o777, 0o700)
+
+    def test_shell_state_and_history_location(self):
+        for isolated in ('', str(self.state)):
+            with self.subTest(isolated=isolated):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(SANDBOX_CONTAINER_STATE_DIR=isolated)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                environment = self.environment()
+                self.assertIn('HOME=/sandbox-home', environment)
+                self.assertIn('SANDBOX_CONTAINER_CONFIG_DIR=/sandbox-home/.config/sandbox-container', environment)
+                self.assertIn('HISTFILE=/sandbox-home/.config/sandbox-container/bash_history', environment)
+                volumes = self.volumes()
+                if isolated:
+                    self.assertIn(f'{self.state}:/sandbox-home:rw', volumes)
+                else:
+                    home = Path(self.env['HOME'])
+                    self.assertIn(f'{home}/.config/sandbox-container:/sandbox-home/.config/sandbox-container:rw',
+                                  volumes)
+                    self.assertIn(f'{home}/.config/openspec:/sandbox-home/.config/openspec:rw', volumes)
 
     def test_state_alias_and_configuration_escape(self):
         self.state.mkdir(mode=0o700)
         alias = self.base / 'state-alias'
         alias.symlink_to(self.state)
-        self.assertEqual(self.run_wrapper(CLAUDE_CONTAINER_STATE_DIR=str(alias)).returncode, 0)
-        self.assertIn(f'{self.state}:/claude-home:rw', self.create())
+        self.assertEqual(self.run_wrapper(SANDBOX_CONTAINER_STATE_DIR=str(alias)).returncode, 0)
+        self.assertIn(f'{self.state}:/sandbox-home:rw', self.create())
         outside = self.base / 'outside'
         outside.mkdir()
-        for relative in ('.claude', '.config/openspec'):
+        for relative in ('.config/sandbox-container', '.config/openspec'):
             with self.subTest(relative=relative):
                 target = self.state / relative
                 target.rmdir()
@@ -1400,10 +1350,10 @@ if args[0]=='snapshot':
                 target.unlink()
                 target.mkdir(mode=0o700)
 
-    def test_private_existing_claude_and_wrong_owner(self):
+    def test_private_existing_configuration_and_wrong_owner(self):
         self.state.mkdir(mode=0o700)
-        config = self.state / '.claude'
-        config.mkdir(mode=0o755)
+        config = self.state / '.config/sandbox-container'
+        config.mkdir(mode=0o755, parents=True)
         result = self.run_wrapper()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(str(config), result.stderr)
@@ -1434,8 +1384,8 @@ if args[0]=='snapshot':
         for value in ('', '0', 'true', 'yes', '01', 'maybe'):
             with self.subTest(value=value):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN=value,
-                                          CLAUDE_CONTAINER_PODMAN_SOCKET='relative-missing')
+                result = self.run_wrapper(SANDBOX_CONTAINER_PODMAN=value,
+                                          SANDBOX_CONTAINER_PODMAN_SOCKET='relative-missing')
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
                 self.assertNotIn('CONTAINER_HOST=unix:///run/podman/podman.sock', self.create())
@@ -1445,13 +1395,13 @@ if args[0]=='snapshot':
         alias = self.base / 'socket-alias'
         alias.symlink_to(self.socket_path)
         cases = (
-            {'CLAUDE_CONTAINER_PODMAN_SOCKET': str(alias), 'CONTAINER_HOST': 'unix:///other/engine'},
-            {'CLAUDE_CONTAINER_PODMAN_SOCKET': '', 'CONTAINER_HOST': f'unix://{self.socket_path}'},
+            {'SANDBOX_CONTAINER_PODMAN_SOCKET': str(alias), 'CONTAINER_HOST': 'unix:///other/engine'},
+            {'SANDBOX_CONTAINER_PODMAN_SOCKET': '', 'CONTAINER_HOST': f'unix://{self.socket_path}'},
         )
         for env in cases:
             with self.subTest(env=env):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN='1', **env)
+                result = self.run_wrapper(SANDBOX_CONTAINER_PODMAN='1', **env)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 query = next(c for c in self.calls() if c[0] == '--remote')
                 self.assertEqual(query[2], f'unix://{self.socket_path}')
@@ -1460,7 +1410,7 @@ if args[0]=='snapshot':
         (runtime / 'podman').mkdir(parents=True)
         (runtime / 'podman/podman.sock').symlink_to(self.socket_path)
         self.log.unlink()
-        result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN='1', CLAUDE_CONTAINER_PODMAN_SOCKET='',
+        result = self.run_wrapper(SANDBOX_CONTAINER_PODMAN='1', SANDBOX_CONTAINER_PODMAN_SOCKET='',
                                   XDG_RUNTIME_DIR=str(runtime))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(next(c for c in self.calls() if c[0] == '--remote')[2], f'unix://{self.socket_path}')
@@ -1470,7 +1420,7 @@ if args[0]=='snapshot':
         for reported, accepted in (('unix:///host/podman.sock', True), ('unix://relative.sock', False)):
             with self.subTest(reported=reported):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN='1', FAKE_HOST_SOCKET=reported)
+                result = self.run_wrapper(SANDBOX_CONTAINER_PODMAN='1', FAKE_HOST_SOCKET=reported)
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
                 if accepted:
                     self.assertIn('/host/podman.sock:/run/podman/podman.sock:rw', self.create())
@@ -1480,7 +1430,7 @@ if args[0]=='snapshot':
 
     def test_socket_fallback_and_invalid_sources(self):
         default = f'/run/user/{os.getuid()}/podman/podman.sock'
-        result = self.run_wrapper(CLAUDE_CONTAINER_PODMAN='1', CLAUDE_CONTAINER_PODMAN_SOCKET='')
+        result = self.run_wrapper(SANDBOX_CONTAINER_PODMAN='1', SANDBOX_CONTAINER_PODMAN_SOCKET='')
         if Path(default).exists():
             # A real user service exists on this host; the fake engine answers for it,
             # so verify the selected fallback endpoint instead of a missing-socket error.
@@ -1491,14 +1441,14 @@ if args[0]=='snapshot':
         for source in ('relative', str(self.base / 'missing'), str(WRAPPER)):
             with self.subTest(source=source):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper('--container-build', CLAUDE_CONTAINER_PODMAN='1',
-                                          CLAUDE_CONTAINER_PODMAN_SOCKET=source)
+                result = self.run_wrapper('--container-build', SANDBOX_CONTAINER_PODMAN='1',
+                                          SANDBOX_CONTAINER_PODMAN_SOCKET=source)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(source, result.stderr)
                 self.assertFalse(any(c[0] in ('build', 'image', 'create') for c in self.calls()))
         self.socket_path.chmod(0o000)
         try:
-            self.assertIn('not accessible', self.run_wrapper(CLAUDE_CONTAINER_PODMAN='1').stderr)
+            self.assertIn('not accessible', self.run_wrapper(SANDBOX_CONTAINER_PODMAN='1').stderr)
         finally:
             self.socket_path.chmod(0o700)
 
@@ -1509,7 +1459,7 @@ if args[0]=='snapshot':
                     {'FAKE_HOST_SOCKET': '/path\nextra'}):
             with self.subTest(env=env):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper('--container-build', CLAUDE_CONTAINER_PODMAN='1', **env)
+                result = self.run_wrapper('--container-build', SANDBOX_CONTAINER_PODMAN='1', **env)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(str(self.socket_path), result.stderr)
                 self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
@@ -1524,11 +1474,11 @@ if args[0]=='snapshot':
                             options = ['--container-build', '--container-git-worktree']
                             if shell:
                                 options.append('--container-shell')
-                            result = self.run_wrapper(*options, CLAUDE_CONTAINER_STATE_DIR=isolated,
-                                                      CLAUDE_YOLO=yolo, CLAUDE_CONTAINER_PODMAN=service)
+                            result = self.run_wrapper(*options, SANDBOX_CONTAINER_STATE_DIR=isolated,
+                                                      CLAUDE_YOLO=yolo, SANDBOX_CONTAINER_PODMAN=service)
                             self.assertEqual(result.returncode, 0, result.stderr)
                             create = self.create()
-                            self.assertEqual('--dangerously-skip-permissions' in create, yolo == '1' and not shell)
+                            self.assertNotIn('--dangerously-skip-permissions', create)
                             self.assertEqual('CONTAINER_HOST=unix:///run/podman/podman.sock' in create, service == '1')
                             self.assertEqual('--unsetenv' in create, service != '1')
                             self.assertNotIn('--read-only-tmpfs=false', create)
@@ -1553,14 +1503,14 @@ if args[0]=='snapshot':
         for isolated in ('', str(self.state)):
             for trust in ('0', '1', 'TrUe'):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(CLAUDE_CONTAINER_STATE_DIR=isolated,
-                                          CLAUDE_CONTAINER_TRUST_HOST_CA=trust,
-                                          CLAUDE_CONTAINER_CA_BUNDLE=str(ca))
+                result = self.run_wrapper(SANDBOX_CONTAINER_STATE_DIR=isolated,
+                                          SANDBOX_CONTAINER_TRUST_HOST_CA=trust,
+                                          SANDBOX_CONTAINER_CA_BUNDLE=str(ca))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 create = self.create()
                 for variable in ('SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'):
-                    self.assertEqual(f'{variable}=/claude-home/ca/bundle.pem' in create, trust != '0')
-                self.assertEqual(f'{ca}:/claude-home/ca/bundle.pem:ro' in create, trust != '0')
+                    self.assertEqual(f'{variable}=/sandbox-home/ca/bundle.pem' in create, trust != '0')
+                self.assertEqual(f'{ca}:/sandbox-home/ca/bundle.pem:ro' in create, trust != '0')
                 self.assertIn('/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777', create)
                 self.assertIn('/run:rw,nosuid,nodev,noexec,size=16m', create)
                 self.assertFalse(any(x.startswith(('--privileged', '--cap-add')) for x in create))
@@ -1568,8 +1518,8 @@ if args[0]=='snapshot':
                                  ['--security-opt=no-new-privileges'])
                 self.assertFalse(any(x.endswith((':z', ':Z')) for x in create))
         self.log.unlink()
-        self.assertNotEqual(self.run_wrapper(CLAUDE_CONTAINER_TRUST_HOST_CA='1',
-                                            CLAUDE_CONTAINER_CA_BUNDLE='/missing').returncode, 0)
+        self.assertNotEqual(self.run_wrapper(SANDBOX_CONTAINER_TRUST_HOST_CA='1',
+                                            SANDBOX_CONTAINER_CA_BUNDLE='/missing').returncode, 0)
         self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
 
     def test_symlink_invocation_and_native_permissions(self):

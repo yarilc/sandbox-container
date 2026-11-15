@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-die() { printf 'claude-container: %s\n' "$*" >&2; exit 1; }
+die() { printf 'sandbox-container: %s\n' "$*" >&2; exit 1; }
 
 # Keep final LF bytes while retaining the query's own exit status and stderr.
 capture_response() {
@@ -16,105 +16,94 @@ capture_response() {
 
 usage() {
     cat <<'EOF'
-Usage: claude-container.sh [container option] [claude arguments...]
+Usage: sandbox-container.sh [container option] [bash arguments...]
 
-Runs Claude Code in a read-only Podman container. The current directory (or
-its parent with --container-git-worktree) and the Claude configuration directory
-are mounted read/write.
+Opens a Bash shell in a read-only Podman container: the reference sandbox for
+the agent wrappers. The current directory (or its parent with
+--container-git-worktree), the shell configuration directory and the shared
+OpenSpec configuration are mounted read/write. Sessions are offline by default.
 
 Container options:
   --container-setup      interactively prepare a complete user installation
   --container-qualify    verify a prepared restricted installation with fixed local controls
   --container-build      build or refresh the container image before starting
-  --container-shell      open a shell instead of starting Claude Code
+  --container-shell      accepted for compatibility; the session is always Bash
   --container-git-worktree mount the parent of the current directory read/write
                          for Git worktrees; the container starts in the current directory
   --container-toolchain  manage the shared read-only toolchain library; must be first:
                          add <recipe.json> | list | remove <name> | verify [<name>]
   --container-help       show this wrapper help
 
-All other arguments are passed to Claude Code unchanged.
+All other arguments are passed to Bash unchanged, for example -c 'git status'.
 
 Environment:
-  CLAUDE_CONTAINER_NETWORK offline, provider, or unrestricted; required explicitly
-                           or supplied by the managed launcher
-  CLAUDE_CONTAINER_NETWORK_PROFILE protected provider policy profile name
-  CLAUDE_CONTAINER_NETWORK_POLICY absolute operator policy JSON path
-  CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR private native directory at its host path
-  CLAUDE_CONTAINER_EGRESS_IMAGE immutable proxy image ID or registry digest
-  CLAUDE_CONTAINER_MAINTENANCE authorize image preparation only with exact value 1
-  CLAUDE_CONTAINER_IMAGE  image name (default: localhost/claude-code:latest)
-  CLAUDE_CONFIG_DIR       Claude configuration directory (default: ~/.claude)
-  CLAUDE_CONTAINER_STATE_DIR optional isolated home; unset keeps shared configuration
-                         (must not be, contain or lie inside the workspace)
-  CLAUDE_CONTAINER_PODMAN_SOCKET optional absolute delegation socket override
-  CLAUDE_YOLO             enable --dangerously-skip-permissions (default: disabled)
-  CLAUDE_CONTAINER_PODMAN enable host Podman API access only with exact value 1
-                         (default: disabled; all other values disable access)
-                         requires a reachable rootless service; failed verification
-                         stops startup before image operations
-  CLAUDE_CONTAINER_TRUST_HOST_CA  trust a host CA bundle: 1, true, or yes (default: disabled)
-  CLAUDE_CONTAINER_CA_BUNDLE      CA bundle file to trust (default: first of
-                                  /etc/ssl/certs/ca-certificates.crt and
-                                  /etc/pki/tls/certs/ca-bundle.crt)
-  CLAUDE_CONTAINER_MEMORY_LIMIT   agent memory, integer with k/m/g unit (default: 4g)
-  CLAUDE_CONTAINER_CPU_LIMIT      agent CPUs, up to 3 decimals (default: 2)
-  CLAUDE_CONTAINER_PIDS_LIMIT     agent process limit (default: 512)
-                                  Budgets cannot be disabled; managed launches use
-                                  the values saved by setup unless exported
-  CLAUDE_CONTAINER_RUN_TIMEOUT    agent container lifetime in whole seconds
-                                  (default: 0, disabled by default)
-  CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE  exact 1 permits a refused sensitive
-                                  workspace with a warning (default: disabled)
-  CLAUDE_CONTAINER_TOOLCHAINS     0, false, or no omits the read-only /toolchains
-                                  library mount (default: mounted)
-  CLAUDE_CONTAINER_TOOLCHAINS_DIR toolchain library shared by the wrappers (default:
-                                  ${XDG_DATA_HOME:-~/.local/share}/sandbox-toolchains)
+  SANDBOX_CONTAINER_NETWORK offline (default when unset or empty) or unrestricted;
+                           provider is unavailable: the reference profile declares
+                           no authentication method
+  SANDBOX_CONTAINER_MAINTENANCE authorize image preparation only with exact value 1
+  SANDBOX_CONTAINER_IMAGE  image name (default: localhost/sandbox-container:latest)
+  SANDBOX_CONTAINER_CONFIG_DIR shell configuration directory with the Bash history
+                           (default: ~/.config/sandbox-container)
+  SANDBOX_CONTAINER_STATE_DIR optional isolated home; unset keeps shared configuration
+                           (must not be, contain or lie inside the workspace)
+  SANDBOX_CONTAINER_PODMAN_SOCKET optional absolute delegation socket override
+  SANDBOX_CONTAINER_PODMAN enable host Podman API access only with exact value 1
+                           and explicit unrestricted mode (default: disabled; all
+                           other values disable access); requires a reachable
+                           rootless service; failed verification stops startup
+                           before image operations
+  SANDBOX_CONTAINER_TRUST_HOST_CA  trust a host CA bundle: 1, true, or yes (default: disabled)
+  SANDBOX_CONTAINER_CA_BUNDLE      CA bundle file to trust (default: first of
+                                   /etc/ssl/certs/ca-certificates.crt and
+                                   /etc/pki/tls/certs/ca-bundle.crt)
+  SANDBOX_CONTAINER_MEMORY_LIMIT   shell memory, integer with k/m/g unit (default: 4g)
+  SANDBOX_CONTAINER_CPU_LIMIT      shell CPUs, up to 3 decimals (default: 2)
+  SANDBOX_CONTAINER_PIDS_LIMIT     shell process limit (default: 512)
+                                   Budgets cannot be disabled; managed launches use
+                                   the values saved by setup unless exported
+  SANDBOX_CONTAINER_RUN_TIMEOUT    container lifetime in whole seconds
+                                   (default: 0, disabled by default)
+  SANDBOX_CONTAINER_ALLOW_UNSAFE_WORKSPACE  exact 1 permits a refused sensitive
+                                   workspace with a warning (default: disabled)
+  SANDBOX_CONTAINER_TOOLCHAINS     0, false, or no omits the read-only /toolchains
+                                   library mount (default: mounted)
+  SANDBOX_CONTAINER_TOOLCHAINS_DIR toolchain library shared by the wrappers (default:
+                                   ${XDG_DATA_HOME:-~/.local/share}/sandbox-toolchains)
 
-New users must first run: bash ./claude-container.sh --container-setup
-Then use the managed launch command printed by setup from your workspace.
-An ordinary launch with unset/empty CLAUDE_CONTAINER_NETWORK stops with setup
-guidance before runtime checks or state creation. Explicit operator workflows
-remain available, for example:
-  CLAUDE_CONTAINER_NETWORK=unrestricted bash ./claude-container.sh --container-shell
-  CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 bash ./claude-container.sh --container-build
-Offline sessions cannot reach the Claude API. Before c777b73, ordinary networking
-needed no runtime mode; later versions defaulted to offline. Missing-mode launch
-now requires setup guidance instead. Restricted failures never retry unrestricted.
+Offline use needs a protected installation: new users first run
+  bash ./sandbox-container.sh --container-setup
+and then use the managed launch command printed by setup from a workspace. An
+offline launch, including the default mode, from a location without a protected
+installation stops with this guidance before engine queries or state creation.
+Direct use from a checkout needs explicit unrestricted networking, for example:
+  SANDBOX_CONTAINER_NETWORK=unrestricted bash ./sandbox-container.sh
+  SANDBOX_CONTAINER_NETWORK=unrestricted SANDBOX_CONTAINER_MAINTENANCE=1 bash ./sandbox-container.sh --container-build
+Offline sessions have no external network. Restricted failures never retry
+unrestricted. This wrapper replaces the Claude wrapper only as the reference for
+the shared sandbox components; existing agent installations are unaffected.
 
 Configured launch requires a verified Linux rootless engine, locally or via an explicit
 same-host Unix CONTAINER_HOST with an absolute socket pathname beyond /.
 Named connections and TCP/SSH are unsupported.
 Delegation endpoint: explicit socket override, Unix CONTAINER_HOST, then
 ${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock.
-The socket permits host mounts beyond the workspace. YOLO changes approvals
-only. Worktree mode exposes the entire parent read/write.
+The socket permits host mounts beyond the workspace. Worktree mode exposes the
+entire parent read/write.
 State directories must belong to the caller and deny group/other access.
-Unset CLAUDE_CONFIG_DIR when selecting an isolated home; no state is imported.
+Unset SANDBOX_CONTAINER_CONFIG_DIR when selecting an isolated home; no state is imported.
 Temporary /tmp, /run, and /var/tmp mounts are noexec, limited to 256/16/256 MiB.
 Host GNU timeout is required. Shutdown is bounded to 20 seconds, with at most
 5 seconds for graceful exit before forced owned-container removal. Cleanup
-failures are reported without changing the application or first signal status.
+failures are reported without changing the shell or first signal status.
 Engine verification replies must contain one record, with no terminator or a
 single final LF; extra blank or nonblank records stop startup before builds.
 Delegated socket verification also rejects any CR character, including CRLF.
-Restricted modes reject Podman delegation, including shell and YOLO. Provider
-mode uses an external CONNECT proxy; removing proxy variables cannot grant a
-direct route. The trusted proxy requires initial TLS 1.2/1.3 SNI, and the TLS 1.3
-retried SNI after a HelloRetryRequest, to match CONNECT before forwarding client
-bytes. TLS 1.2 renegotiation is encrypted and not inspected. Missing/malformed SNI, ECH/GREASE and inspection
-limits/timeouts fail closed. This does not prove exclusive Anthropic application
-access: encrypted Host, shared-service routing and remote forwarding remain opaque.
-Network restriction requires a protected installation outside
-writable workspace/state trees and host Python 3. Eligible Linux/WSL2 x86_64
-installations require a same-host Unix rootless Netavark service, Podman >= 4.9,
-standard OCI seccomp and usable Landlock ABI >= 3. Unsupported setups
-fail closed. Image pulls/build RUN steps remain outside runtime filtering and
-require separate maintenance authorization. Allowed services can receive data;
-provider-hosted remote tools and encrypted application content are not filtered.
-Binding cannot tell your credentials from foreign ones: an injected agent can send
-workspace data to an allowed host (api: api.anthropic.com; account: also
-platform.claude.com) with an attacker's key or account. Only offline removes this.
+Offline mode rejects Podman delegation. Network restriction requires a protected
+installation outside writable workspace/state trees and host Python 3. Eligible
+Linux/WSL2 x86_64 installations require a same-host Unix rootless Netavark
+service, Podman >= 4.9, standard OCI seccomp and usable Landlock ABI >= 3.
+Unsupported setups fail closed. Image pulls/build RUN steps remain outside
+runtime filtering and require separate maintenance authorization.
 Restricted startup requires a protected static guard and SHA-256 manifest in
 network/bin plus a current protected local qualification report. Run setup or
 --container-qualify alone after preparation or relevant updates. Kernel/server
@@ -124,27 +113,25 @@ The guard adds
 unprivileged Landlock and restrictive seccomp, preserving the OCI profile.
 New Unix services are unavailable; fixed-peer pairs may have private inert names.
 See network/README.md for packaging and docs/validation.md for measured evidence.
-Every agent container, in all modes including shell and delegation, drops all
+Every shell container, in all modes including delegation, drops all
 capabilities, enables no-new-privileges and receives the memory, CPU and process
 budgets whose cgroup v2 controller the rootless engine delegates; a budget whose
 controller is missing is not enforced and a notice names it. The created
-configuration is checked before the application starts; a delegated limit that
-is ignored stops startup. Without memory or process budgets an agent can exhaust
+configuration is checked before the shell starts; a delegated limit that
+is ignored stops startup. Without memory or process budgets a session can exhaust
 host memory or processes for your user.
 Budgets and tmpfs sizes do not limit workspace or state storage growth.
-Provider proxies get effective cgroup v2 limits of 128 processes and 256 MiB
-memory under the same rule.
 The workspace mount (the parent in worktree mode) must not be /, your home,
 /home, /root, /etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt, /srv,
 /mnt, /media, /proc, /sys, /dev, /run, /tmp or a WSL drive root such as /mnt/c.
 A reached lifetime limit is reported; the exit status is preserved.
 Qualification is credential-free, uses disposable fixed controls and never grants
-image maintenance or forwards an application command. ABI queries alone do not
-qualify an installation. Changed boot, engine/backend/security, code/images,
-policy/profile, CA trust or hardening, including agent budgets and
-lifetime, invalidates evidence. Unknown active LSM
-policy identity requires the gate each launch. Locally-qualified installations
-are visibly distinguished from exact release-measured acceptance records.
+image maintenance or forwards a command. ABI queries alone do not qualify an
+installation. Changed boot, engine/backend/security, code/images, policy/profile,
+CA trust or hardening, including budgets and lifetime, invalidates evidence.
+Unknown active LSM policy identity requires the gate each launch.
+Locally-qualified installations are visibly distinguished from exact
+release-measured acceptance records.
 EOF
 }
 
@@ -181,7 +168,6 @@ done
 
 build_image=0
 qualification_probe=0
-shell_mode=0
 git_worktree=0
 args=()
 for arg in "$@"; do
@@ -191,18 +177,32 @@ for arg in "$@"; do
             qualification_probe=1 ;;
         --container-help) usage; exit 0 ;;
         --container-build) build_image=1 ;;
-        --container-shell) shell_mode=1 ;;
+        --container-shell) ;;  # The session is always Bash.
         --container-git-worktree) git_worktree=1 ;;
         --container-toolchain) die '--container-toolchain must be the first argument' ;;
         *) args+=("$arg") ;;
     esac
 done
 
-if [[ -z "${CLAUDE_CONTAINER_NETWORK:-}" ]]; then
+# Offline is the default runtime mode; unrestricted applies only when explicit.
+network_mode=${SANDBOX_CONTAINER_NETWORK:-offline}
+case "$network_mode" in
+    offline|unrestricted) ;;
+    provider) die 'SANDBOX_CONTAINER_NETWORK=provider is unavailable: the reference profile declares no authentication method; use offline or unrestricted' ;;
+    *) die 'SANDBOX_CONTAINER_NETWORK must be offline or unrestricted' ;;
+esac
+# Host tools are diagnosed later, so a missing readlink leaves the path empty here.
+script_path=$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null) || script_path=''
+script_dir=${script_path%/*}
+# An offline session needs a protected installation with the built guard and its
+# manifest. Without one, give setup guidance before any engine or state operation;
+# session.py prepare still validates the installation fully.
+if [[ "$network_mode" == offline ]] \
+    && { [[ -z "$script_path" ]] || ! compgen -G "$script_dir/network/bin/*.sha256" >/dev/null; }; then
     setup_wrapper=${BASH_SOURCE[0]}
     [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
     printf -v setup_command 'bash %q --container-setup' "$setup_wrapper"
-    die "setup required: run $setup_command; use the managed launcher afterward or explicitly set CLAUDE_CONTAINER_NETWORK for an operator workflow"
+    die "setup required: offline sessions need a protected installation; run $setup_command and use the managed launcher, or set SANDBOX_CONTAINER_NETWORK=unrestricted for a direct session"
 fi
 
 boolean() {
@@ -212,35 +212,23 @@ boolean() {
         *) die "$1 must be 0, 1, true, false, yes, or no" ;;
     esac
 }
-yolo=$(boolean CLAUDE_YOLO "${CLAUDE_YOLO:-}")
-toolchains_enabled=$(boolean CLAUDE_CONTAINER_TOOLCHAINS "${CLAUDE_CONTAINER_TOOLCHAINS:-1}")
+toolchains_enabled=$(boolean SANDBOX_CONTAINER_TOOLCHAINS "${SANDBOX_CONTAINER_TOOLCHAINS:-1}")
 podman_access=0
-[[ "${CLAUDE_CONTAINER_PODMAN:-}" != 1 ]] || podman_access=1
-trust_host_ca=$(boolean CLAUDE_CONTAINER_TRUST_HOST_CA "${CLAUDE_CONTAINER_TRUST_HOST_CA:-}")
-network_mode=$CLAUDE_CONTAINER_NETWORK
-case "$network_mode" in
-    offline|provider|unrestricted) ;;
-    *) die 'CLAUDE_CONTAINER_NETWORK must be offline, provider, or unrestricted' ;;
-esac
+[[ "${SANDBOX_CONTAINER_PODMAN:-}" != 1 ]] || podman_access=1
+trust_host_ca=$(boolean SANDBOX_CONTAINER_TRUST_HOST_CA "${SANDBOX_CONTAINER_TRUST_HOST_CA:-}")
 if [[ "$network_mode" != unrestricted ]] && ((podman_access)); then
-    die 'restricted networking rejects CLAUDE_CONTAINER_PODMAN=1: the host API bypasses egress enforcement; select explicit unrestricted mode for delegation'
+    die 'restricted networking rejects SANDBOX_CONTAINER_PODMAN=1: the host API bypasses egress enforcement; select explicit unrestricted mode for delegation'
 fi
-if [[ "$network_mode" == provider ]]; then
-    [[ -n "${CLAUDE_CONTAINER_NETWORK_PROFILE:-}" && -n "${CLAUDE_CONTAINER_NETWORK_POLICY:-}" ]] \
-        || die 'provider mode requires CLAUDE_CONTAINER_NETWORK_PROFILE and CLAUDE_CONTAINER_NETWORK_POLICY'
-    [[ -n "${CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR:-}" && -n "${CLAUDE_CONTAINER_EGRESS_IMAGE:-}" ]] \
-        || die 'provider mode requires a private host-path CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR and immutable CLAUDE_CONTAINER_EGRESS_IMAGE'
-fi
-[[ -z "${CLAUDE_CONTAINER_STATE_DIR:-}" || -z "${CLAUDE_CONFIG_DIR:-}" ]] \
-    || die 'CLAUDE_CONTAINER_STATE_DIR conflicts with CLAUDE_CONFIG_DIR; unset CLAUDE_CONFIG_DIR to isolate state'
+[[ -z "${SANDBOX_CONTAINER_STATE_DIR:-}" || -z "${SANDBOX_CONTAINER_CONFIG_DIR:-}" ]] \
+    || die 'SANDBOX_CONTAINER_STATE_DIR conflicts with SANDBOX_CONTAINER_CONFIG_DIR; unset SANDBOX_CONTAINER_CONFIG_DIR to isolate state'
 
 # Agent budgets and lifetime. network/agent_budgets.py implements the same
 # rules for setup and qualification; unrestricted installs may lack host Python.
 # Only an unset budget selects its default; no value disables a budget.
-memory_text=${CLAUDE_CONTAINER_MEMORY_LIMIT-4g}
-cpu_text=${CLAUDE_CONTAINER_CPU_LIMIT-2}
-pids_text=${CLAUDE_CONTAINER_PIDS_LIMIT-512}
-timeout_text=${CLAUDE_CONTAINER_RUN_TIMEOUT:-0}
+memory_text=${SANDBOX_CONTAINER_MEMORY_LIMIT-4g}
+cpu_text=${SANDBOX_CONTAINER_CPU_LIMIT-2}
+pids_text=${SANDBOX_CONTAINER_PIDS_LIMIT-512}
+timeout_text=${SANDBOX_CONTAINER_RUN_TIMEOUT:-0}
 memory_bytes=0
 if [[ "$memory_text" =~ ^([1-9][0-9]{0,15})([kmgKMG])$ ]]; then
     case "${BASH_REMATCH[2],,}" in
@@ -250,18 +238,18 @@ if [[ "$memory_text" =~ ^([1-9][0-9]{0,15})([kmgKMG])$ ]]; then
     esac
     ((10#${BASH_REMATCH[1]} > (1 << 50) / unit)) || memory_bytes=$((10#${BASH_REMATCH[1]} * unit))
 fi
-((memory_bytes > 0)) || die 'CLAUDE_CONTAINER_MEMORY_LIMIT must be a positive integer with unit k, m or g, for example 4g'
+((memory_bytes > 0)) || die 'SANDBOX_CONTAINER_MEMORY_LIMIT must be a positive integer with unit k, m or g, for example 4g'
 cpu_nano=0
 if [[ "$cpu_text" =~ ^([0-9]{1,4})(\.([0-9]{1,3}))?$ ]]; then
     fraction=${BASH_REMATCH[3]}000
     cpu_nano=$((10#${BASH_REMATCH[1]} * 1000000000 + 10#${fraction:0:3} * 1000000))
     ((cpu_nano <= 1024000000000)) || cpu_nano=0
 fi
-((cpu_nano > 0)) || die 'CLAUDE_CONTAINER_CPU_LIMIT must be a positive number of CPUs with at most 3 decimals, for example 2 or 1.5'
+((cpu_nano > 0)) || die 'SANDBOX_CONTAINER_CPU_LIMIT must be a positive number of CPUs with at most 3 decimals, for example 2 or 1.5'
 [[ "$pids_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((pids_text > 0 && pids_text <= 4194304)) \
-    || die 'CLAUDE_CONTAINER_PIDS_LIMIT must be a positive integer process count up to 4194304'
+    || die 'SANDBOX_CONTAINER_PIDS_LIMIT must be a positive integer process count up to 4194304'
 [[ "$timeout_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((timeout_text <= 2147483647)) \
-    || die 'CLAUDE_CONTAINER_RUN_TIMEOUT must be whole seconds; 0 disables the lifetime limit'
+    || die 'SANDBOX_CONTAINER_RUN_TIMEOUT must be whole seconds; 0 disables the lifetime limit'
 pids_limit=$((10#$pids_text))
 run_timeout=$((10#$timeout_text))
 
@@ -280,23 +268,22 @@ case "$workspace_mount" in
 esac
 [[ "$workspace_mount" != "$physical_home" && ! "$workspace_mount" =~ ^/mnt/[A-Za-z]$ ]] || unsafe_workspace=1
 if ((unsafe_workspace)); then
-    [[ "${CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE:-}" == 1 ]] \
-        || die "refusing sensitive workspace $workspace_mount; launch from a project subdirectory or set exact CLAUDE_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1"
-    printf 'claude-container: WARNING: sensitive workspace explicitly exposed read/write: %s\n' "$workspace_mount" >&2
+    [[ "${SANDBOX_CONTAINER_ALLOW_UNSAFE_WORKSPACE:-}" == 1 ]] \
+        || die "refusing sensitive workspace $workspace_mount; launch from a project subdirectory or set exact SANDBOX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1"
+    printf 'sandbox-container: WARNING: sensitive workspace explicitly exposed read/write: %s\n' "$workspace_mount" >&2
 fi
 
 command -v podman >/dev/null || die 'Podman is required on the host'
 command -v timeout >/dev/null && [[ $(timeout --version 2>/dev/null) == *'GNU coreutils'* ]] \
     || die 'GNU timeout is required on the host; install GNU coreutils'
+[[ -n "$script_path" ]] || die 'GNU readlink is required on the host; install GNU coreutils'
 # Isolated credentials and history must never land in, or contain, the workspace.
 # Compare physical paths; readlink -m also resolves a directory not created yet.
-if [[ -n "${CLAUDE_CONTAINER_STATE_DIR:-}" ]]; then
-    state_physical=$(readlink -m -- "$CLAUDE_CONTAINER_STATE_DIR")
+if [[ -n "${SANDBOX_CONTAINER_STATE_DIR:-}" ]]; then
+    state_physical=$(readlink -m -- "$SANDBOX_CONTAINER_STATE_DIR")
     [[ "$state_physical/" != "$workspace_mount/"* && "$workspace_mount/" != "$state_physical/"* ]] \
-        || die "CLAUDE_CONTAINER_STATE_DIR must not overlap the workspace: $CLAUDE_CONTAINER_STATE_DIR"
+        || die "SANDBOX_CONTAINER_STATE_DIR must not overlap the workspace: $SANDBOX_CONTAINER_STATE_DIR"
 fi
-script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
-script_dir=$(dirname -- "$script_path")
 # Unix service access also supports running this wrapper inside another container
 # on the same host. TCP/SSH transports and Podman Machine are not supported.
 [[ -z "${CONTAINER_CONNECTION:-}" ]] || die 'named remote connections are not supported; use local Podman or a local Unix CONTAINER_HOST'
@@ -338,13 +325,13 @@ if controller_delegated memory; then
     budget_args+=("--memory=$memory_bytes")
     expected_memory=$memory_bytes
 else
-    printf 'claude-container: agent memory budget not enforced: cgroup controller memory is not delegated to the rootless engine\n' >&2
+    printf 'sandbox-container: agent memory budget not enforced: cgroup controller memory is not delegated to the rootless engine\n' >&2
 fi
 if controller_delegated cpu; then
     budget_args+=("--cpus=$cpu_text")
     expected_cpu=$cpu_nano
 else
-    printf 'claude-container: agent CPU budget not enforced: cgroup controller cpu is not delegated to the rootless engine\n' >&2
+    printf 'sandbox-container: agent CPU budget not enforced: cgroup controller cpu is not delegated to the rootless engine\n' >&2
 fi
 if controller_delegated pids; then
     budget_args+=("--pids-limit=$pids_limit")
@@ -352,7 +339,7 @@ if controller_delegated pids; then
 else
     # Override any containers.conf default that would request the missing controller.
     budget_args+=(--pids-limit=-1)
-    printf 'claude-container: agent process budget not enforced: cgroup controller pids is not delegated to the rootless engine\n' >&2
+    printf 'sandbox-container: agent process budget not enforced: cgroup controller pids is not delegated to the rootless engine\n' >&2
 fi
 if [[ "$network_mode" != unrestricted ]]; then
     command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
@@ -369,8 +356,8 @@ fi
 
 caller_uid=$(id -u)
 caller_gid=$(id -g)
-socket="${CLAUDE_CONTAINER_PODMAN_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$caller_uid}/podman/podman.sock}"
-if [[ -z "${CLAUDE_CONTAINER_PODMAN_SOCKET:-}" && "${CONTAINER_HOST:-}" == unix:///* ]]; then
+socket="${SANDBOX_CONTAINER_PODMAN_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$caller_uid}/podman/podman.sock}"
+if [[ -z "${SANDBOX_CONTAINER_PODMAN_SOCKET:-}" && "${CONTAINER_HOST:-}" == unix:///* ]]; then
     socket=${CONTAINER_HOST#unix://}
 fi
 if ((podman_access)); then
@@ -391,8 +378,8 @@ if ((podman_access)); then
     [[ "$host_socket" == /* && "$host_socket" != *$'\n'* ]] || die "Podman socket $socket did not report an absolute host socket path"
 fi
 
-image="${CLAUDE_CONTAINER_IMAGE:-localhost/claude-code:latest}"
-state_dir="${CLAUDE_CONTAINER_STATE_DIR:-}"
+image="${SANDBOX_CONTAINER_IMAGE:-localhost/sandbox-container:latest}"
+state_dir="${SANDBOX_CONTAINER_STATE_DIR:-}"
 
 private_directory() {
     local path=$1 mode
@@ -417,38 +404,38 @@ if [[ -n "$state_dir" ]]; then
     private_directory "$state_dir"
     # Resolve before creating children so an existing parent symlink cannot
     # redirect configuration creation outside the dedicated application home.
-    for relative in .claude .config/openspec; do
+    for relative in .config/sandbox-container .config/openspec; do
         resolved=$(readlink -m -- "$state_dir/$relative")
         [[ "$resolved" == "$state_dir/"* ]] \
             || die "isolated configuration escapes state home: $state_dir/$relative"
         create_private_directory "$state_dir/$relative"
     done
-    private_directory "$state_dir/.claude"
+    private_directory "$state_dir/.config/sandbox-container"
     if ((trust_host_ca)); then
         # Prevent the engine from creating a nested CA mount parent owned by a
         # subordinate mapped UID inside the writable isolated home.
         create_private_directory "$state_dir/ca"
         private_directory "$state_dir/ca"
     fi
-    state_mounts+=(--volume "$state_dir:/claude-home:rw")
+    state_mounts+=(--volume "$state_dir:/sandbox-home:rw")
 else
-    claude_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-    create_private_directory "$claude_dir"
-    claude_dir=$(cd -- "$claude_dir" && pwd -P)
-    private_directory "$claude_dir"
+    config_dir="${SANDBOX_CONTAINER_CONFIG_DIR:-$HOME/.config/sandbox-container}"
+    create_private_directory "$config_dir"
+    config_dir=$(cd -- "$config_dir" && pwd -P)
+    private_directory "$config_dir"
     create_private_directory "$HOME/.config/openspec"
     openspec_dir=$(cd -- "$HOME/.config/openspec" && pwd -P)
     state_mounts+=(
-        --volume "$claude_dir:/claude-home/.claude:rw"
-        --volume "$openspec_dir:/claude-home/.config/openspec:rw"
+        --volume "$config_dir:/sandbox-home/.config/sandbox-container:rw"
+        --volume "$openspec_dir:/sandbox-home/.config/openspec:rw"
     )
 fi
 
 ca_bundle=""
 if ((trust_host_ca)); then
-    if [[ -n "${CLAUDE_CONTAINER_CA_BUNDLE:-}" ]]; then
-        [[ -f "$CLAUDE_CONTAINER_CA_BUNDLE" ]] || die "CLAUDE_CONTAINER_CA_BUNDLE is not a file: $CLAUDE_CONTAINER_CA_BUNDLE"
-        ca_bundle=$(readlink -f -- "$CLAUDE_CONTAINER_CA_BUNDLE")
+    if [[ -n "${SANDBOX_CONTAINER_CA_BUNDLE:-}" ]]; then
+        [[ -f "$SANDBOX_CONTAINER_CA_BUNDLE" ]] || die "SANDBOX_CONTAINER_CA_BUNDLE is not a file: $SANDBOX_CONTAINER_CA_BUNDLE"
+        ca_bundle=$(readlink -f -- "$SANDBOX_CONTAINER_CA_BUNDLE")
     else
         for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
             if [[ -f "$candidate" ]]; then
@@ -456,7 +443,7 @@ if ((trust_host_ca)); then
                 break
             fi
         done
-        [[ -n "$ca_bundle" ]] || die 'no default CA bundle found; set CLAUDE_CONTAINER_CA_BUNDLE to a bundle file'
+        [[ -n "$ca_bundle" ]] || die 'no default CA bundle found; set SANDBOX_CONTAINER_CA_BUNDLE to a bundle file'
     fi
 fi
 
@@ -468,15 +455,15 @@ toolchain_path=''
 toolchain_env=()
 if ((toolchains_enabled && ! qualification_probe)); then
     command -v python3 >/dev/null \
-        || die 'host Python 3 is required for the toolchain library; set CLAUDE_CONTAINER_TOOLCHAINS=0 to omit it'
+        || die 'host Python 3 is required for the toolchain library; set SANDBOX_CONTAINER_TOOLCHAINS=0 to omit it'
     toolchain_avoid=(--avoid "$workspace_mount")
     if [[ -n "$state_dir" ]]; then
         toolchain_avoid+=(--avoid "$state_dir")
     else
-        toolchain_avoid+=(--avoid "$claude_dir" --avoid "$openspec_dir")
+        toolchain_avoid+=(--avoid "$config_dir" --avoid "$openspec_dir")
     fi
     toolchain_output=$(python3 -I "$script_dir/setup/toolchains.py" launch-env "${toolchain_avoid[@]}") \
-        || die 'toolchain library check failed; set CLAUDE_CONTAINER_TOOLCHAINS=0 to start without it'
+        || die 'toolchain library check failed; set SANDBOX_CONTAINER_TOOLCHAINS=0 to start without it'
     while IFS=$'\t' read -r toolchain_kind toolchain_first toolchain_second; do
         case "$toolchain_kind" in
             library) toolchain_library=$toolchain_first ;;
@@ -496,29 +483,24 @@ qualification_inputs=()
 guard_digest=''
 if [[ "$network_mode" != unrestricted ]]; then
     network_inputs=(--installation "$script_dir" --writable "$workspace_mount"
-        --mount-target "$workspace_mount" --mount-target /claude-home)
+        --mount-target "$workspace_mount" --mount-target /sandbox-home)
     [[ -z "$toolchain_library" ]] || network_inputs+=(--mount-target /toolchains)
     if [[ -n "$state_dir" ]]; then
         network_inputs+=(--writable "$state_dir")
     else
-        network_inputs+=(--writable "$claude_dir" --writable "$openspec_dir")
-    fi
-    if [[ "$network_mode" == provider ]]; then
-        network_inputs+=(--policy "$CLAUDE_CONTAINER_NETWORK_POLICY"
-            --profile "$CLAUDE_CONTAINER_NETWORK_PROFILE" --proxy-image "$CLAUDE_CONTAINER_EGRESS_IMAGE"
-            --runtime "$CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR")
+        network_inputs+=(--writable "$config_dir" --writable "$openspec_dir")
     fi
     prepare_inputs=(--mode "$network_mode" --server-version "${network_version%$'\n'}"
         --backend "${network_backend%$'\n'}" --endpoint "${CONTAINER_HOST:-}" --engine "$runtime_info")
     if ((qualification_probe)); then
-        prepare_inputs+=(--probe --qualification-input "${CLAUDE_CONTAINER_QUALIFICATION_INPUT:-}"
+        prepare_inputs+=(--probe --qualification-input "${SANDBOX_CONTAINER_QUALIFICATION_INPUT:-}"
             --workspace "$workspace")
     fi
     prepared=$(printf '%s' "$network_platform" | "${session_helper[@]}" prepare "${network_inputs[@]}" "${prepare_inputs[@]}")
     read -r guard_digest qualification_token qualification_tls <<< "$prepared"
     if ((qualification_probe)); then
         qualification_inputs=(--probe --token "$qualification_token" --workspace "$workspace"
-            --qualification-input "${CLAUDE_CONTAINER_QUALIFICATION_INPUT:-}")
+            --qualification-input "${SANDBOX_CONTAINER_QUALIFICATION_INPUT:-}")
         [[ "$qualification_tls" != 1 ]] || qualification_inputs+=(--tls)
     fi
 fi
@@ -530,26 +512,15 @@ if [[ -n "$ca_bundle" ]]; then
     build_secret=(--secret "id=build-ca,src=$ca_bundle")
 fi
 if ((build_image)); then
-    [[ "${CLAUDE_CONTAINER_MAINTENANCE:-}" == 1 ]] || die 'image refresh requires exact CLAUDE_CONTAINER_MAINTENANCE=1; host pulls/build RUN steps are outside runtime filtering'
+    [[ "${SANDBOX_CONTAINER_MAINTENANCE:-}" == 1 ]] || die 'image refresh requires exact SANDBOX_CONTAINER_MAINTENANCE=1; host pulls/build RUN steps are outside runtime filtering'
     podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
 elif podman image exists "$image"; then
     :
 else
     image_status=$?
     [[ "$image_status" == 1 ]] || die "cannot inspect image: $image"
-    [[ "${CLAUDE_CONTAINER_MAINTENANCE:-}" == 1 ]] || die 'image is absent; prepare it with exact CLAUDE_CONTAINER_MAINTENANCE=1 (build traffic is outside runtime filtering)'
+    [[ "${SANDBOX_CONTAINER_MAINTENANCE:-}" == 1 ]] || die 'image is absent; prepare it with exact SANDBOX_CONTAINER_MAINTENANCE=1 (build traffic is outside runtime filtering)'
     podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
-fi
-if [[ "$network_mode" == provider ]]; then
-    if podman image exists "$CLAUDE_CONTAINER_EGRESS_IMAGE"; then
-        :
-    else
-        image_status=$?
-        [[ "$image_status" == 1 ]] || die 'cannot inspect immutable egress proxy image'
-        [[ "${CLAUDE_CONTAINER_MAINTENANCE:-}" == 1 && "$CLAUDE_CONTAINER_EGRESS_IMAGE" == *@sha256:* ]] \
-            || die 'proxy image is absent; prepare the pinned artifact under explicit operator maintenance authorization'
-        podman pull "$CLAUDE_CONTAINER_EGRESS_IMAGE"
-    fi
 fi
 
 if [[ "$network_mode" != unrestricted ]]; then
@@ -591,15 +562,18 @@ container_args=(
     # gets ptmxmode=000 (Podman rejects the option), so no pseudo-terminal could
     # be opened. Only /dev/shm is overridden, with an empty read-only tmpfs.
     --mount type=tmpfs,destination=/dev/shm,ro=true
-    --env HOME=/claude-home
+    --env HOME=/sandbox-home
     --env EDITOR=nano --env VISUAL=nano
-    --env CLAUDE_CONFIG_DIR=/claude-home/.claude
     --volume "$workspace_mount:$workspace_mount:rw"
     "${state_mounts[@]}"
 )
 if [[ -n "$toolchain_library" ]]; then
     container_args+=(--volume "$toolchain_library:/toolchains:ro,nosuid,nodev" "${toolchain_env[@]}")
 fi
+# The shell's own state follows the toolchain environment, so a toolchain cannot
+# move the configuration directory or the Bash history.
+container_args+=(--env SANDBOX_CONTAINER_CONFIG_DIR=/sandbox-home/.config/sandbox-container
+    --env HISTFILE=/sandbox-home/.config/sandbox-container/bash_history)
 ((run_timeout == 0)) || container_args+=(--timeout "$run_timeout")
 if [[ -t 0 && -t 1 ]]; then
     container_args+=(--tty)
@@ -615,26 +589,25 @@ else
 fi
 if ((trust_host_ca)); then
     container_args+=(
-        --volume "$ca_bundle:/claude-home/ca/bundle.pem:ro"
-        --env SSL_CERT_FILE=/claude-home/ca/bundle.pem
-        --env REQUESTS_CA_BUNDLE=/claude-home/ca/bundle.pem
-        --env CURL_CA_BUNDLE=/claude-home/ca/bundle.pem
-        --env NODE_EXTRA_CA_CERTS=/claude-home/ca/bundle.pem
+        --volume "$ca_bundle:/sandbox-home/ca/bundle.pem:ro"
+        --env SSL_CERT_FILE=/sandbox-home/ca/bundle.pem
+        --env REQUESTS_CA_BUNDLE=/sandbox-home/ca/bundle.pem
+        --env CURL_CA_BUNDLE=/sandbox-home/ca/bundle.pem
+        --env NODE_EXTRA_CA_CERTS=/sandbox-home/ca/bundle.pem
     )
 fi
 
+# The session is always Bash; --container-shell is accepted as a no-op and the
+# remaining arguments go to Bash unchanged.
 if ((qualification_probe)); then
     args=()  # The shared helper supplies the fixed probe command.
-elif ((shell_mode)); then
+else
     container_args+=(--entrypoint /bin/bash)
-    args=()
-elif ((yolo)); then
-    args=(--dangerously-skip-permissions "${args[@]}")
 fi
 
 prefix=${workspace##*/}
 prefix=$(printf '%s' "$prefix" | sed -E 's/[^a-zA-Z0-9_.-]+/-/g; s/^[.-]+//; s/[.-]+$//')
-prefix=${prefix:-claude-container}
+prefix=${prefix:-sandbox-container}
 names=$(podman ps --all --format '{{.Names}}') || die 'cannot list Podman containers'
 next_index=0
 while IFS= read -r name; do
@@ -658,15 +631,12 @@ cid_file=''
 create_output=''
 creation_pending=0
 shutdown_deadline=0
-ownership_label=io.claude-container.session
-session_start_pid=''
+ownership_label=io.sandbox-container.session
 qualification_check_pid=''
 
 cleanup_warning() {
-    local proxy_id=unknown
-    [[ -z "$session_dir" || ! -s "$session_dir/proxy.id" ]] || proxy_id=$(<"$session_dir/proxy.id")
-    printf 'claude-container: cleanup %s (container=%s proxy=%s session=%s); inspect the Podman engine for remaining session containers\n' \
-        "$*" "${container_id:-unknown}" "$proxy_id" "${session_token:-unknown}" >&2
+    printf 'sandbox-container: cleanup %s (container=%s session=%s); inspect the Podman engine for remaining session containers\n' \
+        "$*" "${container_id:-unknown}" "${session_token:-unknown}" >&2
 }
 
 # All shutdown engine calls share a deadline and reserve time for local clients.
@@ -788,14 +758,6 @@ shutdown() {
             done
         fi
         [[ -z "$container_id" ]] || control rm --force --time 0 --ignore "$container_id" >/dev/null
-        if [[ -n "$session_start_pid" ]]; then
-            # The session helper owns a separate process group. Reap the whole
-            # group before its leader, including an engine client that ignores TERM.
-            kill -TERM -- "-$session_start_pid" 2>/dev/null || true
-            sleep 0.1
-            kill -KILL -- "-$session_start_pid" 2>/dev/null || true
-            reap_client "$session_start_pid"
-        fi
         reap_client "$create_pid"
         reap_client "$client_pid"
         # Drain the final client log before reaping its owned stderr adapter.
@@ -813,11 +775,6 @@ shutdown() {
                 cleanup_warning 'interrupted creation could not be reconciled'
             fi
         fi
-        if [[ "$network_mode" == provider ]]; then
-            # Owned proxy recovery/removal and diagnostics share the remaining budget.
-            "${session_helper[@]}" stop --session "$session_dir" --deadline "$((shutdown_deadline - SECONDS))" \
-                --container "${container_id:-unknown}" || true
-        fi
         rm -rf -- "$session_dir"
     fi
     exit "$primary_status"
@@ -826,15 +783,11 @@ trap 'shutdown "$?"' EXIT
 trap 'shutdown 143 TERM' TERM
 trap 'shutdown 130 INT' INT
 trap 'shutdown 129 HUP' HUP
-if [[ "$network_mode" == provider ]]; then
-    session_dir=$(umask 077; mktemp -d -- "$CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR/session.XXXXXXXXXXXX")
-else
-    session_dir=$(umask 077; mktemp -d)
-fi
+session_dir=$(umask 077; mktemp -d)
 session_token=${session_dir##*/}
-printf 'claude-container: network mode=%s\n' "$network_mode" >&2
+printf 'sandbox-container: network mode=%s\n' "$network_mode" >&2
 if [[ "$network_mode" != unrestricted ]] && ((qualification_probe == 0)); then
-    CLAUDE_CONTAINER_IMAGE="$image" python3 -I "$script_dir/network/qualify.py" check &
+    SANDBOX_CONTAINER_IMAGE="$image" python3 -I "$script_dir/network/qualify.py" check &
     qualification_check_pid=$!
     if wait "$qualification_check_pid"; then
         qualification_check_pid=''
@@ -844,20 +797,9 @@ if [[ "$network_mode" != unrestricted ]] && ((qualification_probe == 0)); then
         exit "$qualification_status"
     fi
 fi
-if [[ "$network_mode" == provider ]]; then
-    "${session_helper[@]}" start "${network_inputs[@]}" "${qualification_inputs[@]}" --session "$session_dir" \
-        --guard-digest "$guard_digest" >"$session_dir/policy.identity" &
-    session_start_pid=$!
-    wait "$session_start_pid"
-    session_start_pid=''
-fi
 if [[ "$network_mode" != unrestricted ]]; then
     application=()
-    if ((shell_mode)); then
-        application=(/bin/bash)
-    elif ((qualification_probe == 0)); then
-        application=(/usr/local/bin/claude "${args[@]}")
-    fi
+    ((qualification_probe)) || application=(/bin/bash "${args[@]}")
     "${session_helper[@]}" agent-args --installation "$script_dir" --mode "$network_mode" \
         --session "$session_dir" --guard-digest "$guard_digest" "${qualification_inputs[@]}" \
         -- "${application[@]}" >"$session_dir/agent.args"
@@ -865,12 +807,6 @@ if [[ "$network_mode" != unrestricted ]]; then
     [[ "${restricted[0]:-}" =~ ^[0-9]+$ ]] || die 'invalid restricted session arguments'
     container_args+=("${restricted[@]:1:${restricted[0]}}")
     args=("${restricted[@]:$((1 + restricted[0]))}")
-    if [[ "$network_mode" == provider ]]; then
-        container_args+=(--env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 --env DISABLE_AUTOUPDATER=1
-            --env DISABLE_TELEMETRY=1 --env DISABLE_ERROR_REPORTING=1
-            --env ENABLE_CLAUDEAI_MCP_SERVERS=false --env CLAUDE_CODE_DISABLE_ARTIFACT=1)
-        [[ -z "${ANTHROPIC_API_KEY:-}" ]] || container_args+=(--env ANTHROPIC_API_KEY)
-    fi
 fi
 for ((attempt=0; attempt<20; attempt++)); do
     name="$prefix-$next_index"
@@ -942,6 +878,6 @@ fi
 status=0
 wait "$client_pid" || status=$?
 if ((run_timeout > 0 && status != 0 && SECONDS - started_at >= run_timeout)); then
-    printf 'claude-container: session lifetime limit reached (%s s); exit status %s\n' "$run_timeout" "$status" >&2
+    printf 'sandbox-container: session lifetime limit reached (%s s); exit status %s\n' "$run_timeout" "$status" >&2
 fi
 exit "$status"

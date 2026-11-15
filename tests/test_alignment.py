@@ -193,7 +193,9 @@ class WrapperConsistency(unittest.TestCase):
 
     def test_wrapper_delegates_the_restricted_session_to_the_shared_helper(self):
         self.assertIn('network/session.py', self.wrapper)
-        for operation in HELPER_OPERATIONS:
+        # start and stop manage the provider proxy, which needs authentication methods.
+        operations = HELPER_OPERATIONS if PROFILE.auth else ('prepare', 'agent-args')
+        for operation in operations:
             self.assertRegex(self.wrapper, r'"\$\{session_helper\[@\]\}" ' + operation + r'\b')
         self.assertEqual(inline_lifecycle(self.wrapper), [])
 

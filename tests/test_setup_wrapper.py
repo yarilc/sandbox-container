@@ -121,7 +121,9 @@ class SetupWrapperTests(unittest.TestCase):
         self.assertFalse(self.calls())
         self.assertEqual(list(self.home.iterdir()), [])
 
-    def test_missing_mode_keeps_help_setup_and_fixed_qualification_dispatch(self):
+    def test_offline_default_keeps_help_setup_and_fixed_qualification_dispatch(self):
+        # The reference defaults to offline; from a checkout without a protected
+        # installation, only the ordinary launch receives setup guidance.
         cases = (
             (['--container-setup'], 'requires an interactive terminal'),
             (['--container-setup', '--version'], 'must be used alone'),
@@ -146,7 +148,7 @@ class SetupWrapperTests(unittest.TestCase):
                         self.assertNotIn('setup required:', result.stderr)
             result = subprocess.run(['/bin/bash', str(WRAPPER),
                                      '--container-setup', '--container-qualify', '--container-help'],
-                                    cwd=self.workspace, env=env | {PROFILE.approval_bypass_env: 'invalid'},
+                                    cwd=self.workspace, env=env | {'CLAUDE_YOLO': 'invalid'},
                                     text=True, capture_output=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Container options:', result.stdout)
@@ -196,17 +198,19 @@ class SetupWrapperTests(unittest.TestCase):
         self.assertFalse(self.calls())
         self.assertEqual(list(self.home.iterdir()), [])
 
-    def test_managed_real_wrapper_admits_saved_modes_and_preserves_network_overrides(self):
+    def test_managed_real_wrapper_applies_saved_modes_and_the_offline_default(self):
         release = self.release()
         command = Path(self.value['command'])
-        for mode in ('offline', 'provider', 'unrestricted'):
-            saved = self.value | {'network': mode, 'auth': 'none' if mode == 'offline' else PROVIDER_METHOD,
+        # Only the presence of the guard manifest is checked before the engine;
+        # the shared helper validates the installation later.
+        (release / 'network/bin').mkdir(mode=0o700, exist_ok=True)
+        (release / 'network/bin/guard.sha256').write_text('c' * 64 + '\n')
+        for mode in ('offline', 'unrestricted'):
+            saved = self.value | {'network': mode, 'auth': 'none',
                                  'endpoint': 'default' if mode != 'unrestricted' else 'local',
-                                 'state_dir': str(self.base / 'state'),
-                                 'runtime_dir': str(self.base / 'egress'),
-                                 'proxy_image': 'sha256:' + 'b' * 64}
+                                 'state_dir': str(self.base / 'state')}
             (release / 'setup.json').write_text(json.dumps(saved))
-            for override in (None, '', 'unrestricted', 'invalid'):
+            for override in (None, '', 'unrestricted', 'invalid', 'provider'):
                 with self.subTest(saved_mode=mode, override=override):
                     self.log.unlink(missing_ok=True)
                     env = self.env | {'SETUP_TEST_FAIL': 'query'}
@@ -216,22 +220,30 @@ class SetupWrapperTests(unittest.TestCase):
                                             env=env, capture_output=True, text=True, timeout=10)
                     self.assertEqual(result.returncode, 1, result.stderr)
                     self.assertEqual(result.stdout, '')
-                    if override == '':
-                        self.assertIn('setup required:', result.stderr)
+                    if override == 'invalid':
+                        self.assertIn('must be offline or unrestricted', result.stderr)
                         self.assertFalse(self.calls())
-                    elif override == 'invalid':
-                        self.assertIn('must be offline, provider, or unrestricted', result.stderr)
+                    elif override == 'provider':
+                        # The managed launcher refuses provider inputs it cannot validate.
+                        self.assertIn('invalid or unsafe managed configuration', result.stderr)
                         self.assertFalse(self.calls())
                     else:
                         # Deliberately fail the first engine query: reaching it
                         # proves admission without faking restricted readiness.
+                        # An empty override selects the offline default, never the saved mode.
                         self.assertIn('cannot query Podman', result.stderr)
                         self.assertEqual(len(self.calls()), 1)
                         self.assertEqual(self.calls()[0]['args'][0], 'info')
-                        endpoint = self.calls()[0]['endpoint']
-                        self.assertEqual(bool(endpoint), mode != 'unrestricted')
                     self.assertFalse((self.base / 'state').exists())
                     self.assertFalse((self.home / CONFIG_HOME).exists())
+        # Without the guard manifest the offline default gives setup guidance.
+        (release / 'network/bin/guard.sha256').unlink()
+        self.log.unlink(missing_ok=True)
+        result = subprocess.run([str(command), '--version'], cwd=self.workspace, env=self.env | {name('NETWORK'): ''},
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('setup required: offline sessions need a protected installation', result.stderr)
+        self.assertFalse(self.calls())
 
     def test_managed_help_bypasses_corrupt_json_python_and_podman(self):
         release = self.release()
