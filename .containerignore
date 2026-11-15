@@ -1,0 +1,11 @@
+# Admit only explicit runtime build inputs.
+**
+!Containerfile
+!.containerignore
+!network
+network/**
+!network/relay.py
+!network/mux.py
+# Remote Podman clients ship --secret files inside the build context under this
+# name; the secret is mounted only for its RUN step and never copied into a layer.
+!podman-build-secret*

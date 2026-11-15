@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "revision": "anthropic-2026-11-08-v2",
+  "source_date": "2026-11-08",
+  "sources": ["https://code.claude.com/docs/en/network-config"],
+  "tested": {
+    "cli": "2.1.316 (version query; static endpoint inventory 2026-11-08)",
+    "node": "22.23.4 (version query only)",
+    "authentication": "operator account login, request and forced refresh passed 2026-11-08; real API key unverified"
+  },
+  "profiles": {
+    "anthropic-api": {
+      "authentication": "api",
+      "disable_optional_traffic": true,
+      "destinations": [{"host": "api.anthropic.com", "port": 443}]
+    },
+    "anthropic-account": {
+      "authentication": "account",
+      "disable_optional_traffic": true,
+      "destinations": [
+        {"host": "api.anthropic.com", "port": 443},
+        {"host": "platform.claude.com", "port": 443}
+      ]
+    }
+  }
+}

@@ -1,0 +1,7 @@
+.claude
+.agents/
+
+.test-state/
+__pycache__/
+
+todo.md
