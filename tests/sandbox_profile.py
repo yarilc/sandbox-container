@@ -83,6 +83,8 @@ GUARD = 'sandbox-egress-guard'
 # built or pulled. The runner selects the image with the real wrapper variable.
 AGENT_IMAGE = (os.environ.get(REAL_PROFILE.env('IMAGE')) or test_setting('TEST_IMAGE')
                or REAL_PROFILE.image('agent', 'latest'))
+# The command of that real image, for runtime checks that execute it.
+AGENT_COMMAND = REAL_PROFILE.command
 PROXY_IMAGE = PROFILE.image('proxy', 'local')
 NO_METHODS = 'the checkout profile declares no authentication method'
 

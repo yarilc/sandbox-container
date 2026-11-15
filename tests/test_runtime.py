@@ -16,8 +16,8 @@ import unittest
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-WRAPPER = ROOT / 'claude-container.sh'
-IMAGE = os.environ.get('CLAUDE_CONTAINER_IMAGE', 'localhost/claude-code:latest')
+WRAPPER = ROOT / 'sandbox-container.sh'
+IMAGE = os.environ.get('SANDBOX_CONTAINER_IMAGE', 'localhost/sandbox-container:latest')
 ENABLED = os.environ.get('SANDBOX_RUNTIME_TESTS') == '1'
 
 
@@ -32,17 +32,17 @@ class RuntimeTests(unittest.TestCase):
         self.project.mkdir()
         # With a Unix launch service this directory must exist at the identical
         # host path. The disposable runner supplies a native Linux volume.
-        self.native = Path(tempfile.mkdtemp(prefix='claude-runtime-',
+        self.native = Path(tempfile.mkdtemp(prefix='sandbox-runtime-',
                            dir=os.environ.get('SANDBOX_TEST_STATE_ROOT')))
         self.addCleanup(shutil.rmtree, self.native)
         self.state = self.native / 'state'
         self.host_home = self.native / 'synthetic-host-home'
         self.host_home.mkdir(mode=0o700)
         self.env = {'PATH': os.environ['PATH'], 'HOME': str(self.host_home),
-                    'CLAUDE_CONTAINER_NETWORK': 'unrestricted',
-                    'CLAUDE_CONTAINER_MAINTENANCE': '1',
-                    'CLAUDE_CONTAINER_IMAGE': IMAGE,
-                    'CLAUDE_CONTAINER_STATE_DIR': str(self.state)}
+                    'SANDBOX_CONTAINER_NETWORK': 'unrestricted',
+                    'SANDBOX_CONTAINER_MAINTENANCE': '1',
+                    'SANDBOX_CONTAINER_IMAGE': IMAGE,
+                    'SANDBOX_CONTAINER_STATE_DIR': str(self.state)}
         if os.environ.get('CONTAINER_HOST'):
             self.env['CONTAINER_HOST'] = os.environ['CONTAINER_HOST']
 
@@ -55,7 +55,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def build_fixture(self, context, recipe):
-        image = 'localhost/claude-test-' + uuid.uuid4().hex + ':latest'
+        image = 'localhost/sandbox-test-' + uuid.uuid4().hex + ':latest'
         (context / 'Containerfile').write_text(f'FROM {IMAGE}\n' + recipe)
         # Register before building so partially successful builds are cleaned up.
         self.addCleanup(subprocess.run, ['podman', 'image', 'rm', '--force', '--ignore', image],
@@ -78,9 +78,9 @@ class RuntimeTests(unittest.TestCase):
                               'test "$CONTAINER_HOST" = unix:///run/podman/podman.sock\n'
                               'test -S /run/podman/podman.sock\n'
                               "test \"$(podman info --format '{{.Host.Security.Rootless}}')\" = true\n")
-                    self.assert_success(self.shell(script, CLAUDE_CONTAINER_IMAGE=image,
-                                                   CLAUDE_CONTAINER_STATE_DIR=isolated,
-                                                   CLAUDE_CONTAINER_PODMAN=service))
+                    self.assert_success(self.shell(script, SANDBOX_CONTAINER_IMAGE=image,
+                                                   SANDBOX_CONTAINER_STATE_DIR=isolated,
+                                                   SANDBOX_CONTAINER_PODMAN=service))
 
     def test_effective_hardening_and_budgets_in_every_unrestricted_variant(self):
         script = '''python3 - "$@" <<'CHECK'
@@ -97,23 +97,23 @@ quota, period = (root / 'cpu.max').read_text().split()
 assert int(quota) * 10**9 == nano * int(period)
 print('EFFECTIVE_HARDENING_OK')
 CHECK
-git --version >/dev/null && openspec --version >/dev/null && claude --version >/dev/null
+git --version >/dev/null && openspec --version >/dev/null && ! command -v claude >/dev/null
 '''
         cases = ((dict(), (4 << 30, 2 * 10**9, 512)),
-                 (dict(CLAUDE_CONTAINER_MEMORY_LIMIT='1536m', CLAUDE_CONTAINER_CPU_LIMIT='1.5',
-                       CLAUDE_CONTAINER_PIDS_LIMIT='256'), (1536 << 20, 1500000000, 256)))
+                 (dict(SANDBOX_CONTAINER_MEMORY_LIMIT='1536m', SANDBOX_CONTAINER_CPU_LIMIT='1.5',
+                       SANDBOX_CONTAINER_PIDS_LIMIT='256'), (1536 << 20, 1500000000, 256)))
         for env, expected in cases:
             for isolated in ('', str(self.state)):
                 for service in ('0', '1'):
                     with self.subTest(env=env, isolated=isolated, service=service):
                         arguments = 'set -- ' + ' '.join(map(str, expected)) + '\n'
-                        result = self.shell(arguments + script, CLAUDE_CONTAINER_STATE_DIR=isolated,
-                                            CLAUDE_CONTAINER_PODMAN=service, **env)
+                        result = self.shell(arguments + script, SANDBOX_CONTAINER_STATE_DIR=isolated,
+                                            SANDBOX_CONTAINER_PODMAN=service, **env)
                         self.assert_success(result)
                         self.assertIn('EFFECTIVE_HARDENING_OK', result.stdout)
         # Delegated children still work without capabilities in the agent.
         result = self.shell(f'podman run --rm --pull=never --entrypoint true {shlex.quote(IMAGE)}\n'
-                            'echo DELEGATED_CHILD_OK\n', CLAUDE_CONTAINER_PODMAN='1')
+                            'echo DELEGATED_CHILD_OK\n', SANDBOX_CONTAINER_PODMAN='1')
         self.assert_success(result)
         self.assertIn('DELEGATED_CHILD_OK', result.stdout)
         # A process budget is enforced, not just reported.
@@ -121,19 +121,19 @@ git --version >/dev/null && openspec --version >/dev/null && claude --version >/
                             '    for _ in range(80):\n        children.append(subprocess.Popen(["sleep", "30"]))\n'
                             'except (BlockingIOError, OSError):\n    print("PIDS_BUDGET_ENFORCED")\n'
                             'finally:\n    [child.kill() for child in children]\nCHECK\n',
-                            CLAUDE_CONTAINER_PIDS_LIMIT='32')
+                            SANDBOX_CONTAINER_PIDS_LIMIT='32')
         self.assert_success(result)
         self.assertIn('PIDS_BUDGET_ENFORCED', result.stdout)
 
     def test_session_lifetime_limit_and_early_exit(self):
         started = time.monotonic()
-        result = self.shell('sleep 60\n', CLAUDE_CONTAINER_RUN_TIMEOUT='3')
+        result = self.shell('sleep 60\n', SANDBOX_CONTAINER_RUN_TIMEOUT='3')
         self.assertLess(time.monotonic() - started, 45)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(f'session lifetime limit reached (3 s); exit status {result.returncode}', result.stderr)
         self.assertNotIn(self.project.name, subprocess.run(['podman', 'ps', '--all', '--format', '{{.Names}}'],
                          env=self.env, capture_output=True, text=True).stdout.replace(' ', '-'))
-        result = self.shell('exit 7\n', CLAUDE_CONTAINER_RUN_TIMEOUT='30')
+        result = self.shell('exit 7\n', SANDBOX_CONTAINER_RUN_TIMEOUT='30')
         self.assertEqual(result.returncode, 7)
         self.assertNotIn('lifetime limit', result.stderr)
 
@@ -159,7 +159,7 @@ for path, size in (('/tmp', 256 << 20), ('/run', 16 << 20), ('/var/tmp', 256 << 
     directory = pathlib.Path(path)
     assert stat.S_IMODE(directory.stat().st_mode) == 0o1777
     (directory / 'ephemeral-sentinel').write_text('temporary')
-    executable = directory / 'claude-test-executable'
+    executable = directory / 'sandbox-test-executable'
     shutil.copy('/bin/true', executable)
     executable.chmod(0o755)
     try:
@@ -170,13 +170,13 @@ for path, size in (('/tmp', 256 << 20), ('/run', 16 << 20), ('/var/tmp', 256 << 
         raise AssertionError('execution allowed from ' + path)
 print('Explicit temporary mount checks passed.')
 CHECK
-! touch /var/log/claude-test-write 2>/dev/null
+! touch /var/log/sandbox-test-write 2>/dev/null
 '''
         for isolated in ('', str(self.state)):
             for service in ('0', '1'):
                 with self.subTest(isolated=isolated, service=service):
-                    env = {'CLAUDE_CONTAINER_STATE_DIR': isolated,
-                           'CLAUDE_CONTAINER_PODMAN': service}
+                    env = {'SANDBOX_CONTAINER_STATE_DIR': isolated,
+                           'SANDBOX_CONTAINER_PODMAN': service}
                     self.assert_success(self.shell(script, **env))
                     self.assert_success(self.shell(
                         'test ! -e /tmp/ephemeral-sentinel\n'
@@ -250,7 +250,7 @@ print('pty-and-masks-ok')
         (context / 'opt/imgtool/bin/imgtool').write_text('#!/bin/sh\necho image-tool\n')
         (context / 'opt/imgtool/bin/imgtool').chmod(0o755)
         (context / 'Containerfile').write_text('FROM scratch\nCOPY opt /opt\n')
-        image = 'localhost/claude-toolchain-test-' + uuid.uuid4().hex
+        image = 'localhost/sandbox-toolchain-test-' + uuid.uuid4().hex
         self.addCleanup(subprocess.run, ['podman', 'image', 'rm', '--force', '--ignore', image + ':latest'],
                         env=self.env, capture_output=True, timeout=60)
         self.assert_success(subprocess.run(['podman', 'build', '--tag', image + ':latest', str(context)],
@@ -286,7 +286,7 @@ echo toolchains-ok
         self.assertFalse((library / 'imgtool').exists())
 
     def test_toolchain_library_can_be_omitted(self):
-        result = self.shell('test ! -e /toolchains\necho omitted\n', CLAUDE_CONTAINER_TOOLCHAINS='0')
+        result = self.shell('test ! -e /toolchains\necho omitted\n', SANDBOX_CONTAINER_TOOLCHAINS='0')
         self.assert_success(result)
         self.assertIn('omitted', result.stdout)
 
@@ -295,7 +295,7 @@ echo toolchains-ok
 import json, os, pathlib, stat, tempfile
 mask = os.umask(0)
 os.umask(mask)
-config = pathlib.Path(os.environ['CLAUDE_CONFIG_DIR'])
+config = pathlib.Path(os.environ['SANDBOX_CONTAINER_CONFIG_DIR'])
 assert stat.S_IMODE(config.stat().st_mode) == 0o700
 with tempfile.TemporaryDirectory(dir=config) as directory:
     root = pathlib.Path(directory)
@@ -316,9 +316,9 @@ CHECK
             for mask in (0o022, 0o002):
                 with self.subTest(isolated=isolated, host_umask=oct(mask)):
                     result = self.shell(script, caller_umask=mask,
-                                        CLAUDE_CONTAINER_STATE_DIR=isolated)
+                                        SANDBOX_CONTAINER_STATE_DIR=isolated)
                     self.assert_success(result)
-                    source = self.state if isolated else self.host_home / '.claude'
+                    source = self.state if isolated else self.host_home / '.config/sandbox-container'
                     self.assertEqual(source.stat().st_mode & 0o777, 0o700)
                     print(f'Runtime permissions (isolated={bool(isolated)}, '
                           f'host umask={oct(mask)}): {result.stdout.strip()}', flush=True)
@@ -327,8 +327,8 @@ CHECK
         context = self.base / 'synthetic-build-context'
         context.mkdir()
         shutil.copyfile(ROOT / '.containerignore', context / '.containerignore')
-        for relative in ('.git/config', '.claude/settings.json', '.test-state/token',
-                         'custom-private-home/.claude/token', '.env',
+        for relative in ('.git/config', '.config/sandbox-container/bash_history', '.test-state/token',
+                         'custom-private-home/.config/sandbox-container/token', '.env',
                          '__pycache__/module.pyc', '.agents/skills/private.md',
                          'nested/unrelated.txt', 'README.md', 'network/policies/secret.json',
                          'network/proxy.py'):
@@ -337,17 +337,17 @@ CHECK
             path.write_text('synthetic excluded sentinel')
         (context / 'network/relay.py').write_text('explicit runtime input')
         (context / 'network/mux.py').write_text('explicit transport input')
-        self.build_fixture(context, '''COPY . /claude-build-context/
-RUN test -f /claude-build-context/Containerfile \\
-    && test -f /claude-build-context/.containerignore \\
-    && test -f /claude-build-context/network/relay.py \\
-    && test -z "$(find /claude-build-context -mindepth 1 ! -path /claude-build-context/Containerfile ! -path /claude-build-context/.containerignore ! -path /claude-build-context/network ! -path /claude-build-context/network/relay.py ! -path /claude-build-context/network/mux.py -print -quit)"
+        self.build_fixture(context, '''COPY . /sandbox-build-context/
+RUN test -f /sandbox-build-context/Containerfile \\
+    && test -f /sandbox-build-context/.containerignore \\
+    && test -f /sandbox-build-context/network/relay.py \\
+    && test -z "$(find /sandbox-build-context -mindepth 1 ! -path /sandbox-build-context/Containerfile ! -path /sandbox-build-context/.containerignore ! -path /sandbox-build-context/network ! -path /sandbox-build-context/network/relay.py ! -path /sandbox-build-context/network/mux.py -print -quit)"
 ''')
 
     def test_image_smoke_both_state_modes(self):
         script = (ROOT / 'tests/image-smoke.sh').read_text()
         for isolated in ('', str(self.state)):
-            result = self.shell(script, CLAUDE_CONTAINER_STATE_DIR=isolated)
+            result = self.shell(script, SANDBOX_CONTAINER_STATE_DIR=isolated)
             self.assert_success(result)
             self.assertIn('Image smoke checks passed.', result.stdout)
 
@@ -358,30 +358,30 @@ RUN test -f /claude-build-context/Containerfile \\
             with self.subTest(isolated=isolated):
                 script = f'''test "$PWD" = {shlex.quote(str(self.project))}
                 test ! -e {shlex.quote(str(sentinel))}
-                ! touch /usr/claude-test-write 2>/dev/null
+                ! touch /usr/sandbox-test-write 2>/dev/null
                 printf owned > owned-file
-                printf persistent > "$CLAUDE_CONFIG_DIR/persistent"
+                printf persistent > "$SANDBOX_CONTAINER_CONFIG_DIR/persistent"
                 printf temporary > /tmp/ephemeral-sentinel
                 test ! -S /run/podman/podman.sock
                 test -z "${{CONTAINER_HOST:-}}"
                 '''
-                self.assert_success(self.shell(script, CLAUDE_CONTAINER_STATE_DIR=isolated))
+                self.assert_success(self.shell(script, SANDBOX_CONTAINER_STATE_DIR=isolated))
                 self.assertEqual((self.project / 'owned-file').stat().st_uid, os.getuid())
-                source = self.state / '.claude' if isolated else self.host_home / '.claude'
+                source = (self.state if isolated else self.host_home) / '.config/sandbox-container'
                 self.assertEqual((source / 'persistent').read_text(), 'persistent')
-                self.assert_success(self.shell('test "$(cat "$CLAUDE_CONFIG_DIR/persistent")" = persistent\n'
+                self.assert_success(self.shell('test "$(cat "$SANDBOX_CONTAINER_CONFIG_DIR/persistent")" = persistent\n'
                                                'test ! -e /tmp/ephemeral-sentinel\n',
-                                               CLAUDE_CONTAINER_STATE_DIR=isolated))
+                                               SANDBOX_CONTAINER_STATE_DIR=isolated))
                 self.assertEqual(source.stat().st_mode & 0o777, 0o700)
 
     def test_isolated_profiles_do_not_import_or_merge(self):
-        shared = self.host_home / '.claude'
-        shared.mkdir(mode=0o700)
+        shared = self.host_home / '.config/sandbox-container'
+        shared.mkdir(mode=0o700, parents=True)
         (shared / 'host-sentinel').write_text('synthetic')
-        self.assert_success(self.shell('test ! -e "$CLAUDE_CONFIG_DIR/host-sentinel"\n'
+        self.assert_success(self.shell('test ! -e "$SANDBOX_CONTAINER_CONFIG_DIR/host-sentinel"\n'
                                        'printf isolated > "$HOME/isolated-marker"\n'))
-        self.assert_success(self.shell('test -e "$CLAUDE_CONFIG_DIR/host-sentinel"\n'
-                                       'test ! -e "$HOME/isolated-marker"\n', CLAUDE_CONTAINER_STATE_DIR=''))
+        self.assert_success(self.shell('test -e "$SANDBOX_CONTAINER_CONFIG_DIR/host-sentinel"\n'
+                                       'test ! -e "$HOME/isolated-marker"\n', SANDBOX_CONTAINER_STATE_DIR=''))
         self.assertEqual((self.state / 'isolated-marker').read_text(), 'isolated')
         self.assertEqual((shared / 'host-sentinel').read_text(), 'synthetic')
 
@@ -407,30 +407,30 @@ RUN test -f /claude-build-context/Containerfile \\
         test "$(cat child-file)" = child
         '''
         for isolated in ('', str(self.state)):
-            self.assert_success(self.shell(script, CLAUDE_CONTAINER_PODMAN='1',
-                                           CLAUDE_CONTAINER_STATE_DIR=isolated))
+            self.assert_success(self.shell(script, SANDBOX_CONTAINER_PODMAN='1',
+                                           SANDBOX_CONTAINER_STATE_DIR=isolated))
             self.assertEqual((self.project / 'child-file').stat().st_uid, os.getuid())
 
     def test_ca_mount_and_environment(self):
         bundle = self.native / 'synthetic-ca.pem'
         bundle.write_text('synthetic bundle, no TLS request')
         for isolated in ('', str(self.state)):
-            self.assert_success(self.shell('test ! -e /claude-home/ca/bundle.pem\n'
+            self.assert_success(self.shell('test ! -e /sandbox-home/ca/bundle.pem\n'
                                            'test -z "${SSL_CERT_FILE:-}${REQUESTS_CA_BUNDLE:-}${CURL_CA_BUNDLE:-}${NODE_EXTRA_CA_CERTS:-}"\n',
-                                           CLAUDE_CONTAINER_STATE_DIR=isolated))
+                                           SANDBOX_CONTAINER_STATE_DIR=isolated))
             if isolated:
                 # Keep the synthetic mount parent caller-owned for cleanup;
                 # an engine-created parent can belong to a mapped root UID.
                 (self.state / 'ca').mkdir(mode=0o700, exist_ok=True)
             script = '''for variable in SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE NODE_EXTRA_CA_CERTS; do
-                test "${!variable}" = /claude-home/ca/bundle.pem
+                test "${!variable}" = /sandbox-home/ca/bundle.pem
             done
-            test "$(cat /claude-home/ca/bundle.pem)" = 'synthetic bundle, no TLS request'
-            ! printf denied >> /claude-home/ca/bundle.pem
+            test "$(cat /sandbox-home/ca/bundle.pem)" = 'synthetic bundle, no TLS request'
+            ! printf denied >> /sandbox-home/ca/bundle.pem
             '''
-            self.assert_success(self.shell(script, CLAUDE_CONTAINER_STATE_DIR=isolated,
-                                           CLAUDE_CONTAINER_TRUST_HOST_CA='1',
-                                           CLAUDE_CONTAINER_CA_BUNDLE=str(bundle)))
+            self.assert_success(self.shell(script, SANDBOX_CONTAINER_STATE_DIR=isolated,
+                                           SANDBOX_CONTAINER_TRUST_HOST_CA='1',
+                                           SANDBOX_CONTAINER_CA_BUNDLE=str(bundle)))
         self.assertEqual(bundle.read_text(), 'synthetic bundle, no TLS request')
 
     def test_exit_code_and_concurrent_sessions(self):
@@ -459,7 +459,7 @@ RUN test -f /claude-build-context/Containerfile \\
 
     def start_ready_shell(self, script, isolated):
         proc = subprocess.Popen([str(WRAPPER), '--container-shell'], cwd=self.project,
-                                env=self.env | {'CLAUDE_CONTAINER_STATE_DIR': isolated},
+                                env=self.env | {'SANDBOX_CONTAINER_STATE_DIR': isolated},
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True)
         identity = []
@@ -519,18 +519,18 @@ RUN test -f /claude-build-context/Containerfile \\
             other.stdin.close()
             self.assertEqual(other.wait(timeout=25), 0)
 
-    def test_native_help_and_version_without_tty(self):
+    def test_bash_arguments_and_status_without_tty(self):
         for isolated in ('', str(self.state)):
-            for yolo in ('0', '1'):
-                for service in ('0', '1'):
-                    for option in ('--help', '--version'):
-                        result = subprocess.run([str(WRAPPER), option], cwd=self.project,
-                                                env=self.env | {'CLAUDE_CONTAINER_STATE_DIR': isolated,
-                                                                'CLAUDE_YOLO': yolo,
-                                                                'CLAUDE_CONTAINER_PODMAN': service},
-                                                stdin=subprocess.DEVNULL, text=True,
-                                                capture_output=True, timeout=60)
-                        self.assert_success(result)
+            for service in ('0', '1'):
+                with self.subTest(isolated=isolated, service=service):
+                    result = subprocess.run([str(WRAPPER), '-c', 'printf "[%s][%s]" "$1" "$2"; exit 7', 'bash',
+                                             'with space', ''], cwd=self.project,
+                                            env=self.env | {'SANDBOX_CONTAINER_STATE_DIR': isolated,
+                                                            'SANDBOX_CONTAINER_PODMAN': service},
+                                            stdin=subprocess.DEVNULL, text=True,
+                                            capture_output=True, timeout=60)
+                    self.assertEqual(result.returncode, 7, result.stderr)
+                    self.assertEqual(result.stdout, '[with space][]')
 
 
 if __name__ == '__main__':

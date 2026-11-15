@@ -35,14 +35,14 @@
 
 ## 6. Runtime and setup acceptance
 
-- [ ] 6.1 Adapt `tests/test_runtime.py`, `tests/test_setup_runtime.py` and `tests/run-runtime.sh` (image and variable names, guard toolchain image, shell application, no YOLO grid); verify `bash tests/run-runtime.sh` (default mode) and `--setup-runtime` pass.
+- [x] 6.1 Adapt `tests/test_runtime.py`, `tests/test_setup_runtime.py` and `tests/run-runtime.sh` (image and variable names, guard toolchain image, shell application, no YOLO grid); verify `bash tests/run-runtime.sh` (default mode) and `--setup-runtime` pass.
 - [ ] 6.2 Update `docs/setup.md` for the shell questionnaire and managed launcher; run `--container-setup` on this host with offline mode; verify setup reports locally qualified, authentication not applicable, and the managed launcher opens an offline shell with persistent history.
-- [ ] 6.3 Run `bash tests/run-runtime.sh --qualification` and `--guard`; verify both pass with the reference installation and the fixture installations.
+- [x] 6.3 Run `bash tests/run-runtime.sh --qualification` and `--guard`; verify both pass with the reference installation and the fixture installations.
 
 ## 7. Network runtime through the session helper
 
-- [ ] 7.1 Rework `tests/test_network_runtime.py` and `network_tls_fixture.py` to drive `network/session.py` from a protected fixture installation with the reference images by immutable ID (design decision 8), keeping SNI binding, retried ClientHello, shared-address, CA off/on and transport cases; verify `bash tests/run-runtime.sh --network` passes and leaves no fixture-named image tags.
-- [ ] 7.2 Run `--network-policy` and `--network-feasibility`; verify both pass.
+- [x] 7.1 Rework `tests/test_network_runtime.py` and `network_tls_fixture.py` to drive `network/session.py` from a protected fixture installation with the reference images by immutable ID (design decision 8), keeping SNI binding, retried ClientHello, shared-address, CA off/on and transport cases; verify `bash tests/run-runtime.sh --network` passes and leaves no fixture-named image tags.
+- [x] 7.2 Run `--network-policy` and `--network-feasibility`; verify both pass.
 
 ## 8. Reference role
 

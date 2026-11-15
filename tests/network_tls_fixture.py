@@ -16,9 +16,13 @@ import proxy
 # A deterministic test resolver supplies only the policy's explicit loopback
 # exception. Production proxy resolution/address validation still runs in full.
 original_resolver = socket.getaddrinfo
+# Synthetic provider hosts of the shared fixture profile, plus one host outside it.
+PROVIDER_HOSTS = ('api.provider.test', 'login.provider.test', 'other.provider.test')
+
+
 def fixture_resolver(host, port, *args, **kwargs):
-    return original_resolver('127.0.0.1' if host in ('localhost.localdomain', 'alternate.test', 'api.anthropic.com', 'claude.ai', 'claude.com', 'platform.claude.com') else host,
-                             8443 if host in ('api.anthropic.com', 'claude.ai', 'claude.com', 'platform.claude.com') else port, *args, **kwargs)
+    return original_resolver('127.0.0.1' if host in ('localhost.localdomain', 'alternate.test') + PROVIDER_HOSTS else host,
+                             8443 if host in PROVIDER_HOSTS else port, *args, **kwargs)
 socket.getaddrinfo = fixture_resolver
 
 
