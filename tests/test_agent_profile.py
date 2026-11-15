@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sandbox_profile import NETWORK, PROFILE, ROOT, test_setting
+from sandbox_profile import AGENT_FIXTURE, NETWORK, NO_METHODS, PROFILE, REAL_POLICY_FILE, REAL_ROOT, ROOT, test_setting
 import agent_profile
 import policy
 
@@ -211,6 +211,56 @@ class ProfileSchemaTests(unittest.TestCase):
             result = run(*args)
             self.assertNotEqual(result.returncode, 0, args)
             self.assertEqual(result.stdout, '')
+
+
+def missing_base_profiles(profile, value):
+    """Methods whose exact base policy profile is absent or differs from the profile's hosts."""
+    missing = []
+    for method, item in profile.auth.items():
+        selected = value['profiles'].get(item['policy_profile'])
+        if (selected is None or selected['authentication'] != method
+                or {(d['host'], d['port']) for d in selected['destinations']} != {(h, 443) for h in item['hosts']}):
+            missing.append(method)
+    return missing
+
+
+class RealProfileTests(unittest.TestCase):
+    """The checkout's own profile and policy; every other test uses the fixture."""
+    def setUp(self):
+        self.profile = agent_profile.load(REAL_ROOT / agent_profile.PROFILE)
+        self.policy = json.loads(REAL_POLICY_FILE.read_text())
+
+    def test_schema_identifiers_and_distinct_names(self):
+        # load() validates the schema, the identifier coverage and the distinct names.
+        self.assertEqual(self.profile.wrapper, self.profile.name + '.sh')
+        self.assertTrue((REAL_ROOT / self.profile.wrapper).is_file())
+        policy.validate(copy.deepcopy(self.policy), self.profile.policy_rules())
+
+    def test_every_method_has_its_exact_base_profile(self):
+        if not self.profile.auth:
+            self.assertEqual(self.policy['profiles'], {})
+            self.skipTest(NO_METHODS)
+        self.assertEqual(missing_base_profiles(self.profile, self.policy), [])
+
+    def test_missing_base_profile_is_detected(self):
+        if not self.profile.auth:
+            self.skipTest(NO_METHODS)
+        method, item = next(iter(self.profile.auth.items()))
+        value = copy.deepcopy(self.policy)
+        value['profiles'].pop(item['policy_profile'])
+        self.assertEqual(missing_base_profiles(self.profile, value), [method])
+
+
+class FixtureProfileTests(unittest.TestCase):
+    def test_fixture_profile_and_policy_are_valid(self):
+        self.assertEqual(PROFILE.value, json.loads((AGENT_FIXTURE / 'profile.json').read_text()))
+        self.assertGreaterEqual(len(PROFILE.auth), 2)
+        self.assertTrue(PROFILE.approval_bypass_env)
+        self.assertTrue(any(entry.endswith('_') for entry in PROFILE.protected_env))
+        value = json.loads((ROOT / agent_profile.POLICY).read_text())
+        policy.validate(value, PROFILE.policy_rules())
+        hosts = {host for item in PROFILE.auth.values() for host in item['hosts']}
+        self.assertTrue(all(host.endswith('.test') for host in hosts), hosts)
 
 
 if __name__ == '__main__':

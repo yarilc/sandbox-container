@@ -175,7 +175,7 @@ class AccountInventoryTests(unittest.TestCase):
         import agent_profile
         import policy
         self.policy = policy
-        self.rules = agent_profile.load().policy_rules()
+        self.rules = agent_profile.load(ROOT / agent_profile.PROFILE).policy_rules()
         self.value = json.loads((ROOT / agent_profile.POLICY).read_text())
 
     def hosts(self, name):
