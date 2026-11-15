@@ -46,8 +46,8 @@
 
 ## 8. Reference role
 
-- [ ] 8.1 Update `tools/propagate.py` messages, docstring and `MANIFEST_HEAD`, and `tests/test_propagate.py`; verify `test_propagate` passes and a dry run against a scratch clone of `codex-container` from `sandbox-ref-18` to a local test tag lists the shared and fixture files and names `sandbox-container`.
-- [ ] 8.2 Rewrite `docs/propagation.md` for five targets including Claude, and update `docs/network-contract.md` (reference row, Claude as a target row, offline-default mode table, neutral identity wording); verify the five wrapper rows remain identical to the sibling repositories' rows.
+- [x] 8.1 Update `tools/propagate.py` messages, docstring and `MANIFEST_HEAD`, and `tests/test_propagate.py`; verify `test_propagate` passes and a dry run against a scratch clone of `codex-container` from `sandbox-ref-18` to a local test tag lists the shared and fixture files and names `sandbox-container`.
+- [x] 8.2 Rewrite `docs/propagation.md` for five targets including Claude, and update `docs/network-contract.md` (reference row, Claude as a target row, offline-default mode table, neutral identity wording); verify the five wrapper rows remain identical to the sibling repositories' rows.
 
 ## 9. Integration and tag
 
@@ -60,3 +60,4 @@
 - The operator pushes `main` and `sandbox-ref-19`, then runs setup on the Rocky 9 and newer WSL hosts; record the results.
 - Archive this change with spec sync.
 - Adopt `sandbox-ref-19` in `claude-container` first (it also removes `tools/propagate.py`, `docs/propagation.md` and the `reference-propagation` spec, and adds `tests/test_reference_copy.py`), then in Codex, OpenCode, Pi and Antigravity, each as its own OpenSpec change. Each adoption also creates its per-agent `tests/test_setup_wrapper.py` from the wrapper-launching tests of its previous shared `tests/test_setup.py`.
+- In each adoption, fix the parity table by hand: `--apply` rewrites the old `Reference (sandbox-ref-18)` cell of the Claude row, so add the `Sandbox (reference)` row and set the Claude row to `Ported from` the adopted tag, matching this repository.

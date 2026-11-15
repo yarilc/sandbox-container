@@ -1,5 +1,12 @@
 # Network policy contract
 
+This contract is shared by the reference shell and the five agent wrappers.
+`sandbox-container` took over the reference role from `claude-container`; the
+status, evidence and maps below were recorded while Claude held it. The
+reference shell profile declares no authentication method, so this repository
+offers no provider mode; the provider sections describe the shared code, which
+the shared tests exercise with the fixture profile and each agent wrapper ships.
+
 Status: mandatory implementation/acceptance complete; specifications synchronized
 and change archived as `2026-11-07-add-enforced-network-egress` following
 the IPC design revision. IP-only tests passed, but an unapproved workspace Unix
@@ -24,17 +31,19 @@ API check.
 
 | Mode | Agent access | Socket delegation |
 | --- | --- | --- |
-| unset/empty effective mode | Ordinary launch stops with setup guidance | No session |
+| unset/empty effective mode | Agent wrappers: ordinary launch stops with setup guidance. Reference shell: `offline` | As the selected mode |
 | `offline` | Own loopback, pipes and fixed-peer socket pairs only | Rejected |
-| `provider` | Loopback/pipes/pairs and preconnected exact-destination proxy | Rejected |
+| `provider` (profiles with authentication methods) | Loopback/pipes/pairs and preconnected exact-destination proxy | Rejected |
 | `unrestricted` (explicit only) | Ordinary runtime networking | Exact opt-in allowed |
 
-New users must first run `bash ./claude-container.sh --container-setup`, then
-use its managed launcher, which supplies validated saved preferences. Explicit
-operator modes remain supported for manual installations and maintenance.
-Missing/empty ordinary mode stops before runtime checks, engine queries and state
-creation; a managed empty override is preserved and refused. No working-directory
-configuration is discovered. Offline sessions cannot reach the Claude API.
+New users first run the wrapper with `--container-setup`, then use its managed
+launcher, which supplies validated saved preferences. Explicit operator modes
+remain supported for manual installations and maintenance. In the agent
+wrappers a missing/empty ordinary mode stops before runtime checks, engine
+queries and state creation, and a managed empty override is preserved and
+refused; the reference shell applies `offline` instead and refuses `provider`
+because its profile declares no authentication method. No working-directory
+configuration is discovered. Offline sessions have no external network.
 Standalone qualification retains its offline default and fixed protected controls;
 it cannot launch an arbitrary command. Maintenance consent never selects a mode.
 
@@ -180,37 +189,31 @@ remove only owned resources within one 20-second budget and preserve the primary
 exit/signal status. Proxy failure leaves outbound connections closed. Protected
 bounded logs contain sanitized destination/port/reason, never secrets or payloads.
 
-## Claude migration examples
+## Reference shell examples
 
-The following interfaces require the prepared protected guard and a matching
+The offline interfaces require the prepared protected guard and a matching
 local qualification report. Use the protected installed wrapper path in place of
-`./claude-container.sh` when the checkout is agent-writable:
+`./sandbox-container.sh` when the checkout is session-writable:
 
 ```bash
-# Qualify a prepared restricted installation without model requests.
-./claude-container.sh --container-qualify
+# Qualify a prepared restricted installation without credentials.
+./sandbox-container.sh --container-qualify
 
-# Default offline shell; image must already exist.
-./claude-container.sh --container-shell
+# Default offline shell from a protected installation; the image must exist.
+./sandbox-container.sh
+./sandbox-container.sh -c 'git status'
 
-# Restricted API session with an operator-installed policy.
-CLAUDE_CONTAINER_NETWORK=provider \
-CLAUDE_CONTAINER_NETWORK_PROFILE=anthropic-api \
-CLAUDE_CONTAINER_NETWORK_POLICY="$HOME/.local/lib/claude-container/current/agent/policies/default.json" \
-CLAUDE_CONTAINER_NETWORK_RUNTIME_DIR="$HOME/.local/state/claude-egress" \
-CLAUDE_CONTAINER_EGRESS_IMAGE="$egress_image" \
-./claude-container.sh
-
-# Select anthropic-account (api.anthropic.com, platform.claude.com) for account login/reuse/refresh.
-# Prepare service/image/runtime per README; see validation.md for evidence limits.
 # Explicit broad-network compatibility and host API authority.
-CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_PODMAN=1 \
-./claude-container.sh
+SANDBOX_CONTAINER_NETWORK=unrestricted SANDBOX_CONTAINER_PODMAN=1 \
+./sandbox-container.sh
 
 # Operator-controlled preparation; runtime mode does not filter build traffic.
-CLAUDE_CONTAINER_NETWORK=unrestricted CLAUDE_CONTAINER_MAINTENANCE=1 \
-./claude-container.sh --container-build
+SANDBOX_CONTAINER_NETWORK=unrestricted SANDBOX_CONTAINER_MAINTENANCE=1 \
+./sandbox-container.sh --container-build
 ```
+
+Provider examples, profiles and endpoint inventories belong to each agent
+wrapper's own contract copy.
 
 Changing profiles or adding endpoints requires an operator policy revision and
 revalidation. An agent-writable launcher cannot protect its own future launches;
@@ -218,8 +221,8 @@ install launcher/helpers/policies outside every writable workspace/state tree.
 
 ## Five-wrapper parity checklist
 
-The five wrappers are Claude (this repository), Codex, Antigravity, OpenCode
-and Pi. Ports copy `network/`, `setup/` and the shared tests unchanged. Each
+The reference is `sandbox-container` (this repository); the five wrappers are
+Claude, Codex, Antigravity, OpenCode and Pi. Ports copy `network/`, `setup/` and the shared tests unchanged. Each
 wrapper keeps the following per-agent items:
 - its own `agent/profile.json` (variable prefix, images, labels, native home,
   command, configuration variable, authentication methods and their required
@@ -230,9 +233,8 @@ wrapper keeps the following per-agent items:
   account method's `login_args` may be empty when the agent has no login
   command, and setup then offers sign-in inside the interactive agent; and
   optional `native.protected_env`: the variables and `_`-terminated prefixes
-  the agent itself reads, which toolchains cannot set; Claude lists
-  `CLAUDE_CODE_`, `ANTHROPIC_`, `DISABLE_TELEMETRY`, `DISABLE_AUTOUPDATER`,
-  `DISABLE_ERROR_REPORTING` and `ENABLE_CLAUDEAI_MCP_SERVERS`);
+  the agent itself reads, which toolchains cannot set; the reference shell
+  declares none, no authentication method and no approval-bypass variable);
 - its own provider policies in `agent/policies/`;
 - its wrapper and agent image.
 
@@ -255,7 +257,8 @@ tag and `tools/propagate.py`; see [propagation](propagation.md).
 
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
-| Claude | Reference (`sandbox-ref-18`) | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
+| Sandbox (reference) | Reference (`sandbox-ref-19`) | Guard, qualification and guided setup integrated; no provider mode (no authentication method); provider mechanics covered by the fixture profile | WSL ABI 3: all runner modes passed (2026-11-15) | Not applicable |
+| Claude | Ported from `sandbox-ref-18`; shared files unchanged | Mandatory bootstrap, multiplexed proxy and guided setup integrated | See the Claude validation record | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
 | Codex | Ported from `sandbox-ref-18`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-09) | Operator session with tool use passed (2026-11-11, `openai-account`); refresh and API-key checks pending; synthetic Responses API streaming and tool call passed |
 | Antigravity | Ported from `sandbox-ref-18`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated; keyring removed | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`); refresh and Gemini API-key checks pending; synthetic Gemini streaming and tool call passed |
 | OpenCode | Ported from `sandbox-ref-18`; shared files unchanged | Guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes and setup acceptance passed (2026-11-10) | Operator session with tool use passed (2026-11-11, `anthropic-api`); the other three profiles pending; synthetic Chat Completions streaming and tool call passed |
@@ -271,14 +274,14 @@ login/refresh/streaming/WebSocket evidence. No untested entry counts as passed.
 
 ## Limits
 
-Destination filtering permits data to be sent to allowed services. The Claude
+Destination filtering permits data to be sent to allowed services. The
 proxy binds an approved CONNECT hostname/address to exactly matching normalized
 SNI in the initial TLS 1.2/1.3 ClientHello before forwarding client bytes, and
 binds the retried ClientHello after a TLS 1.3 HelloRetryRequest the same way.
 ECH/GREASE, missing/malformed/mismatched names and inspection limits/timeouts
 fail closed. TLS 1.2 renegotiation is an accepted limitation: its ClientHello
 is encrypted under the established session and the proxy never decrypts TLS.
-This is not exclusive Anthropic application access: encrypted HTTP Host/authority,
+This is not exclusive provider application access: encrypted HTTP Host/authority,
 content, domain fronting with matching SNI, and shared services remain opaque. Network activity performed remotely by provider-hosted tools is outside
 the local boundary. Rootless/backend support must be based on controlled positive
 and negative tests, not an `--internal` flag or a failed Internet request alone.
@@ -287,22 +290,11 @@ and negative tests, not an `--internal` flag or a failed Internet request alone.
 
 Destination and SNI binding cannot distinguish the operator's credentials from
 attacker-supplied ones. A prompt-injected agent can send workspace data to any
-allowed host with a foreign API key or account. Base profile hosts
-(policy revision `anthropic-2026-11-08-v2`):
-
-| Profile | Allowed hosts (443) |
-| --- | --- |
-| `anthropic-api` | `api.anthropic.com` |
-| `anthropic-account` | `api.anthropic.com`, `platform.claude.com` |
-
-`claude.ai` and `claude.com` were removed from `anthropic-account` after a
-static endpoint inventory of CLI 2.1.316 (OAuth code exchange and refresh at
-`platform.claude.com`, account calls at `api.anthropic.com`, authorization pages
-in the host browser); sessions now receive policy denials for them. A separately
-named operator profile is required to re-add them. `--container-setup` shows
-this notice and requires an acknowledgement each time provider mode is selected.
-The disclosure and the host reduction do not prevent the channel; only offline
-mode removes it.
+allowed host with a foreign API key or account. Each agent wrapper lists the
+hosts of its base profiles here and its setup requires an acknowledgement each
+time provider mode is selected. The disclosure and any host reduction do not
+prevent the channel; only offline mode removes it. The reference shell has no
+provider mode and therefore no allowed hosts.
 
 ### Credential-injecting interception (not implemented)
 
@@ -319,7 +311,7 @@ own change. Provider tunnels continue to forward TLS end to end.
 
 ## N01–N14 implementation and acceptance map
 
-| Source task | Claude implementation | Acceptance / remaining scope |
+| Source task | Implementation (recorded in the Claude wrapper) | Acceptance / remaining scope |
 | --- | --- | --- |
 | N01 | Operator modes, protected profiles and separate maintenance authority | Wrapper/policy tests; sibling rollout pending |
 | N02 | Private network/PID/IPC plus ABI-3 Landlock and additive seccomp | Real guard IP/IPC/alternate-family tests and wrapper gate |

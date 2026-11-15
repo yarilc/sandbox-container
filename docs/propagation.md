@@ -1,7 +1,10 @@
 # Propagating the shared components
 
 `network/`, `setup/` and the shared tests listed in `tests/test_alignment.py`
-are written here and copied unchanged to Codex, OpenCode, Pi and Antigravity.
+are written here and copied unchanged to Claude, Codex, OpenCode, Pi and
+Antigravity. `sandbox-container` is the only repository that edits them; it took
+over this role from `claude-container`, and the tags `sandbox-ref-1` to
+`sandbox-ref-18` keep their commits here, so adoptions continue from them.
 Each wrapper pins the copy with `tests/test_reference_copy.py`, which names a
 reference tag `sandbox-ref-N`, its commit and the SHA-256 of every copied file.
 The durable contract is
@@ -41,11 +44,12 @@ tag while a listed mode fails. Merge into `main`, then create an annotated tag o
 git tag -a sandbox-ref-N -m "Reference sandbox: <one-line summary>"
 ```
 
-In the same merge, update this repository's own five-wrapper parity table in
-`docs/network-contract.md`: change the `Reference (...)` cell and every
-`Ported from ...` cell to the new tag. `--apply` rewrites those cells only in
-the other wrappers, so the five tables stay identical only if the reference is
-updated by hand.
+In the same merge, update this repository's own parity table in
+`docs/network-contract.md`: change the `Reference (...)` cell of the
+`sandbox-container` row to the new tag. Each wrapper row keeps the tag that
+wrapper has adopted; `--apply` moves a wrapper's own `Ported from ...` cell and
+the reference cell in that wrapper, so the tables stay identical once every
+wrapper has adopted the tag.
 
 ## 2. Adopt the tag in each wrapper
 
@@ -116,8 +120,9 @@ test checks, is fixed in the wrapper on the same branch.
 
 Commit in each wrapper with the printed message and the co-author trailer, then
 merge `adopt-sandbox-ref-N` into `main`. The tool already moved that wrapper's
-own parity cells; check that the five rows of the parity table in
-`docs/network-contract.md` are still identical across the repositories, and
+own parity cells; check that the rows of the parity table in
+`docs/network-contract.md` (the reference and the five wrappers) are still
+identical across the repositories, and
 update a row's status text when the adoption changed it. The user pushes the
 branches and the tag.
 
