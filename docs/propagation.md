@@ -87,7 +87,12 @@ python3 -I tools/propagate.py ../codex-container sandbox-ref-M sandbox-ref-N --a
 
 This switches the wrapper to the new branch `adopt-sandbox-ref-N`, copies the
 files byte for byte, deletes removed files, and rewrites `REFERENCE_TAG`,
-`REFERENCE_COMMIT` and the manifest. It updates the tag and the full commit
+`REFERENCE_COMMIT` and the manifest. When the manifest's
+`SIBLING = ROOT.parent / '<name>'` names another repository (manifests written
+while `claude-container` held the reference role), it also renames that
+sibling, the docstring and the skip message to this checkout's directory name,
+so the sibling check compares against `sandbox-container`; the dry run reports
+it as `manifest: names ...`. A manifest without a `SIBLING` line is refused. It updates the tag and the full commit
 only in current-state documents:
 
 - `README.md`, `AGENTS.md`, `CONTRIBUTING.md` and `docs/setup.md`;

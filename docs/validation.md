@@ -2518,3 +2518,30 @@ server 4.9.3 (rootless, same-host Unix service), runtime image
 
 Every agent wrapper must adopt `sandbox-ref-19` in its own change; the shared
 test ownership moves with it.
+
+## Adoption blockers (`sandbox-ref-20`): 2026-11-16
+
+Change `fix-adoption-blockers`, found while planning Claude's adoption of
+`sandbox-ref-19`. No wrapper adopts `sandbox-ref-19`; all adopt this tag.
+
+- **Shared `tests/test_guard.py`:** `guarded_multiplex` took the proxy image with
+  `environment[profile_env('EGRESS_IMAGE')]`, which names the fixture variable,
+  while each wrapper's `test_network_runtime.provider_fixture()` returns its own
+  names. It now takes the single harness entry ending in `_EGRESS_IMAGE`.
+- **`tools/propagate.py`:** `--apply` also points a manifest written while
+  `claude-container` held the reference role at this repository (`SIBLING`,
+  docstring, skip message); the dry run reports it; a manifest without a
+  `SIBLING` line is refused.
+
+| Check | Result |
+| --- | --- |
+| `codex-container` copy with `sandbox-ref-19` applied, `--guard -k guarded_multiplex` | Failed as expected: `KeyError: 'FIXTURE_AGENT_EGRESS_IMAGE'` |
+| Same copy with the changed `tests/test_guard.py` | Passed: 3 tests, 1 skipped (idle check) |
+| `python3 -m unittest discover -s tests -p test_propagate.py` | Passed: 8 tests |
+| Clone of `codex-container` next to this checkout, `--apply` from `sandbox-ref-18` to a local tag, then its `tests/test_reference_copy.py` | Passed: 5 tests; the sibling check ran against `sandbox-container` instead of skipping |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 402 tests, 66 skipped |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
+| `bash tests/run-runtime.sh --network` | Passed: 16 tests, 1 skipped |
+| `git diff --check` | Passed |
+
+No installed code, image or profile changes: installations need no new setup.
