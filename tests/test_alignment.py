@@ -29,6 +29,7 @@ SHARED_TESTS = (
     'tests/tls_binding_fixture.py', 'tests/test_session.py', 'tests/test_toolchains.py',
     'tests/fixtures/agent/profile.json', 'tests/fixtures/agent/policies/default.json',
     'tests/fixtures/shell-agent/profile.json', 'tests/fixtures/shell-agent/policies/default.json',
+    'tests/fixtures/agent/launcher.sh', 'tests/fixtures/shell-agent/launcher.sh', 'tests/fake_podman.py',
 )
 FIXTURE_FILES = 'tests/fixtures/'
 SKIPPED_PARTS = ('__pycache__', 'bin')

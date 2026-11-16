@@ -4,9 +4,9 @@ The behavior of each task is defined by the named rows of `docs/launcher-contrac
 
 ## 1. Test groundwork
 
-- [ ] 1.1 Create branch `implement-shared-launcher` from `main`; verify `git status` is clean.
-- [ ] 1.2 Extract the reference's embedded fake engine into `tests/fake_podman.py` (unknown commands fail, design decision 5), and point `tests/test_wrapper.py` at it; verify the 80 cases pass unchanged.
-- [ ] 1.3 Add `tests/fixtures/agent/launcher.sh` (every data array and hook; hooks record their inputs and visible variables) and `tests/fixtures/shell-agent/launcher.sh` (data only). Make `tests/sandbox_profile.fixture_root` copy `launcher/` and write the thin entry script under the fixture wrapper name. Add `launcher` to `SHARED_DIRECTORIES` and `tests/test_launcher.py` and `tests/fake_podman.py` to `SHARED_TESTS` in `tests/test_alignment.py`. Verify the unit discovery passes.
+- [x] 1.1 Create branch `implement-shared-launcher` from `main`; verify `git status` is clean.
+- [x] 1.2 Extract the reference's embedded fake engine into `tests/fake_podman.py` (unknown commands fail, design decision 5), and point `tests/test_wrapper.py` at it; verify the 80 cases pass unchanged.
+- [x] 1.3 Add `tests/fixtures/agent/launcher.sh` (every data array and hook; hooks record their inputs and visible variables) and `tests/fixtures/shell-agent/launcher.sh` (data only). Make `tests/sandbox_profile.fixture_root` copy `launcher/` and write the thin entry script under the fixture wrapper name. Add `tests/fake_podman.py` and the two fixture `launcher.sh` files to `SHARED_TESTS` in `tests/test_alignment.py` (`launcher` and `tests/test_launcher.py` join the lists in 3.1 and 3.3, when they exist, because the alignment checks read every listed path). Verify the unit discovery passes.
 
 ## 2. Profile and shared Python
 
@@ -16,9 +16,9 @@ The behavior of each task is defined by the named rows of `docs/launcher-contrac
 
 ## 3. Core extraction (no behavior change)
 
-- [ ] 3.1 Move `sandbox-container.sh` into `launcher/core.sh`, replacing reference literals with `AGENT_*` values; write the reference's `agent/launcher.sh` (shell profile, `AGENT_SESSION_ENV` with `HISTFILE` and the config variable); make `sandbox-container.sh` the thin entry script with the readlink fallback (H-b). Verify the 80 wrapper cases and `bash -n` pass, and that the entry scripts of the reference and the fixture differ only by name.
+- [ ] 3.1 Move `sandbox-container.sh` into `launcher/core.sh`, replacing reference literals with `AGENT_*` values; write the reference's `agent/launcher.sh` (shell profile, `AGENT_SESSION_ENV` with `HISTFILE` and the config variable); make `sandbox-container.sh` the thin entry script with the readlink fallback (H-b). Add `launcher` to `SHARED_DIRECTORIES`. Verify the 80 wrapper cases and `bash -n` pass, and that the entry scripts of the reference and the fixture differ only by name.
 - [ ] 3.2 Add the alignment test comparing `agent/launcher.sh` with `agent/profile.json` and `AGENT_CREDENTIALS` with `agent/policies/default.json`, and update `tests/test_alignment.py` for the thin entry script. Verify it passes for the reference and both fixtures, and fails on a mismatched value.
-- [ ] 3.3 Restructure the core into the phase functions and `call_hook` of design decisions 2 and 3, still without behavior change. Create `tests/test_launcher.py` and move the reference's cases there, running through the fixture root with the shell fixture. Verify the moved cases pass and the count matches.
+- [ ] 3.3 Restructure the core into the phase functions and `call_hook` of design decisions 2 and 3, still without behavior change. Create `tests/test_launcher.py`, add it to `SHARED_TESTS`, and move the reference's cases there, running through the fixture root with the shell fixture. Verify the moved cases pass and the count matches.
 
 ## 4. Phases 1-2: interface, modes, settings
 
