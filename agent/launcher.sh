@@ -18,6 +18,7 @@ AGENT_PRIVATE_SHARED_DIRS=0
 AGENT_APPROVAL_BYPASS_ENV=
 AGENT_EXEC_TMP=0
 AGENT_CREDENTIALS=()
+AGENT_POLICY_HOSTS=()
 # The shell keeps its history with its configuration, out of reach of toolchains.
 AGENT_SESSION_ENV=(HISTFILE=/sandbox-home/.config/sandbox-container/bash_history)
 AGENT_RESTRICTED_ENV=()

@@ -1463,5 +1463,130 @@ if args[0]=='snapshot':
                     proc.communicate()
 
 
+
+from sandbox_profile import AGENT_FIXTURE  # noqa: E402
+
+# A second fixture root whose agent part defines every hook and declares
+# authentication methods: the agent-only paths of the core.
+AGENT_ROOT = fixture_root(AGENT_FIXTURE)
+atexit.register(shutil.rmtree, AGENT_ROOT, True)
+AGENT_WRAPPER = AGENT_ROOT / 'fixture-agent.sh'
+
+
+class AgentProfileSettingsTests(unittest.TestCase):
+    """Phases 1-2 with the fixture agent part (docs/launcher-contract.md)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='sandbox-agent-', dir=os.environ.get('SANDBOX_TEST_TMPDIR'))
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.bin = self.base / 'bin'
+        self.bin.mkdir()
+        (self.bin / 'podman').write_text(FAKE)
+        (self.bin / 'podman').chmod(0o755)
+        self.project = self.base / 'project'
+        self.project.mkdir()
+        self.log = self.base / 'calls.jsonl'
+        self.hooks = self.base / 'hooks.log'
+        self.env = {'PATH': str(self.bin) + ':' + os.environ['PATH'], 'HOME': str(self.base / 'home'),
+                    'FAKE_LOG': str(self.log), 'FIXTURE_HOOK_LOG': str(self.hooks)}
+
+    def run_agent(self, *args, wrapper=AGENT_WRAPPER, **env):
+        return subprocess.run([str(wrapper), *args], cwd=self.project, env=self.env | env, input='',
+                              text=True, capture_output=True, timeout=30)
+
+    def engine_calls(self):
+        return self.log.read_text().splitlines() if self.log.exists() else []
+
+    def hook_calls(self):
+        return [line.split('\t') for line in self.hooks.read_text().splitlines()] if self.hooks.exists() else []
+
+    def test_agent_profile_defaults_to_provider_and_needs_setup(self):
+        # U1: an agent wrapper exists to use its provider; without saved settings it needs setup.
+        for value in (None, ''):
+            with self.subTest(value=value):
+                env = {} if value is None else {'FIXTURE_AGENT_NETWORK': value}
+                result = self.run_agent(**env)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('setup required: provider sessions', result.stderr)
+                self.assertIn('--container-setup', result.stderr)
+                self.assertEqual(self.engine_calls(), [])
+
+    def test_shell_profile_defaults_to_offline(self):
+        result = self.run_agent(wrapper=WRAPPER)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('setup required: offline sessions', result.stderr)
+        self.assertEqual(self.engine_calls(), [])
+
+    def test_explicit_provider_mode_names_missing_settings(self):
+        result = self.run_agent(FIXTURE_AGENT_NETWORK='provider')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('setup required: provider sessions', result.stderr)
+        install = self.base / 'install'
+        shutil.copytree(AGENT_ROOT, install)
+        (install / 'network/bin').mkdir(exist_ok=True)
+        (install / 'network/bin/guard.sha256').write_text('0' * 64 + '  guard\n')
+        result = self.run_agent(wrapper=install / 'fixture-agent.sh', FIXTURE_AGENT_NETWORK='provider')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('provider mode requires FIXTURE_AGENT_NETWORK_PROFILE and FIXTURE_AGENT_NETWORK_POLICY',
+                      result.stderr)
+        self.assertEqual(self.engine_calls(), [])
+
+    def test_mode_values_follow_the_profile(self):
+        result = self.run_agent(FIXTURE_AGENT_NETWORK='direct')
+        self.assertIn('must be offline, provider, or unrestricted', result.stderr)
+        result = self.run_agent(wrapper=WRAPPER, FIXTURE_SHELL_NETWORK='provider')
+        self.assertIn('the profile declares no authentication method', result.stderr)
+
+    def test_help_composes_profile_provider_and_agent_parts(self):
+        # Only bash itself: help needs no other host tool.
+        (self.bin / 'bash').symlink_to(shutil.which('bash'))
+        result = self.run_agent('--container-help', PATH=str(self.bin))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Usage: fixture-agent.sh', result.stdout)
+        self.assertIn('provider (default when unset or empty)', result.stdout)
+        self.assertIn('fixture-account: api.provider.test, login.provider.test', result.stdout)
+        self.assertIn('fixture-api: api.provider.test', result.stdout)
+        self.assertIn('Only offline mode removes this channel', result.stdout)
+        self.assertIn('FIXTURE_AGENT_EXTRA', result.stdout)
+        self.assertLess(result.stdout.index('FIXTURE_AGENT_READONLY_STATE'), result.stdout.index('FIXTURE_AGENT_EXTRA'))
+        shell = self.run_agent('--container-help', wrapper=WRAPPER, PATH=str(self.bin))
+        self.assertIn('provider is unavailable', shell.stdout)
+        self.assertNotIn('Allowed hosts', shell.stdout)
+        self.assertEqual(self.engine_calls(), [])
+
+    def test_settings_are_validated_before_any_engine_call(self):
+        cases = (
+            ({'FIXTURE_AGENT_ENV_VARS': 'GOOD 1BAD'}, 'FIXTURE_AGENT_ENV_VARS contains an invalid variable name: 1BAD'),
+            ({'FIXTURE_AGENT_READONLY_STATE': 'maybe'}, 'FIXTURE_AGENT_READONLY_STATE must be 0, 1, true'),
+            ({'FIXTURE_AGENT_YOLO': 'perhaps'}, 'FIXTURE_AGENT_YOLO must be 0, 1, true'),
+            ({'FIXTURE_AGENT_IMAGE': 'localhost/agent latest'}, 'must not contain whitespace or control characters'),
+            ({'FIXTURE_CONFIG_DIR': 'relative/config'}, 'FIXTURE_CONFIG_DIR must be an absolute path'),
+            ({'FIXTURE_CONFIG_DIR': '/with:colon'}, 'FIXTURE_CONFIG_DIR must be an absolute path'),
+        )
+        for env, message in cases:
+            with self.subTest(env=env):
+                self.log.unlink(missing_ok=True)
+                result = self.run_agent(FIXTURE_AGENT_NETWORK='unrestricted', **env)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertEqual(self.engine_calls(), [])
+        self.log.unlink(missing_ok=True)
+        result = self.run_agent(FIXTURE_AGENT_NETWORK='unrestricted',
+                                FIXTURE_AGENT_ENV_VARS='GH_TOKEN\tOTHER\n THIRD', FIXTURE_AGENT_READONLY_STATE='yes',
+                                FIXTURE_HOOK_FAIL='agent_validate')
+        self.assertIn('hook agent_validate failed', result.stderr)
+
+    def test_agent_validate_runs_after_settings_with_the_mode(self):
+        result = self.run_agent(FIXTURE_AGENT_NETWORK='unrestricted', FIXTURE_HOOK_FAIL='agent_validate')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('hook agent_validate failed', result.stderr)
+        self.assertEqual(self.engine_calls(), [])
+        calls = self.hook_calls()
+        self.assertEqual([call[0] for call in calls], ['agent_validate'])
+        self.assertEqual(calls[0][1], 'unrestricted')
+        self.assertEqual(calls[0][2:], ['token=unset', 'container=unset'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -150,13 +150,11 @@ INTERNAL = ('QUALIFICATION_INPUT',)
 # Derived variables that only provider mode reads; a profile without
 # authentication methods has no provider mode, so its help need not name them.
 PROVIDER_ONLY = ('NETWORK_PROFILE', 'NETWORK_POLICY', 'NETWORK_RUNTIME_DIR', 'EGRESS_IMAGE')
-# Settings the core reads but does not implement yet (removed by the change's task 4.1).
-PENDING = ('ENV_VARS', 'READONLY_STATE')
 ENTRY_SOURCE = 'source "$wrapper_dir/launcher/core.sh" "$wrapper_dir/agent/launcher.sh" "$@"'
 SCALARS = ('AGENT_NAME', 'AGENT_DISPLAY_NAME', 'AGENT_WRAPPER', 'AGENT_ENV_PREFIX', 'AGENT_LABEL_NAMESPACE',
            'AGENT_IMAGE', 'AGENT_PROXY_IMAGE', 'AGENT_HOME', 'AGENT_COMMAND', 'AGENT_EXEC', 'AGENT_CONFIG_DIR_ENV',
            'AGENT_CONFIG_HOME', 'AGENT_PRIVATE_SHARED_DIRS', 'AGENT_APPROVAL_BYPASS_ENV', 'AGENT_EXEC_TMP')
-ARRAYS = ('AGENT_SHARED_DIRS', 'AGENT_CREDENTIALS', 'AGENT_SESSION_ENV', 'AGENT_RESTRICTED_ENV',
+ARRAYS = ('AGENT_SHARED_DIRS', 'AGENT_CREDENTIALS', 'AGENT_POLICY_HOSTS', 'AGENT_SESSION_ENV', 'AGENT_RESTRICTED_ENV',
           'AGENT_PROVIDER_ENV', 'AGENT_UNSET_ENV', 'AGENT_RESERVED_ENV')
 DUMP = (r'''source "$1"; for name in ''' + ' '.join(SCALARS) + r'''; do printf '%s=%s\n' "$name" "${!name}"; done
 for name in ''' + ' '.join(ARRAYS) + r'''; do declare -n items=$name; printf '%s=' "$name"
@@ -181,13 +179,16 @@ def expected_agent_part(profile, policy):
             'AGENT_PRIVATE_SHARED_DIRS': '1' if profile.private_shared_dirs else '0',
             'AGENT_APPROVAL_BYPASS_ENV': profile.approval_bypass_env or '',
             'AGENT_EXEC_TMP': '1' if profile.exec_tmp else '0',
-            'AGENT_SHARED_DIRS': list(profile.shared_dirs), 'AGENT_CREDENTIALS': credentials}
+            'AGENT_SHARED_DIRS': list(profile.shared_dirs), 'AGENT_CREDENTIALS': credentials,
+            'AGENT_POLICY_HOSTS': sorted(item['policy_profile'] + '=' + ' '.join(item['hosts'])
+                                         for item in profile.auth.values())}
 
 
 def agent_part_mismatches(root):
     profile = agent_profile.load(root / agent_profile.PROFILE)
     declared = agent_part(root / 'agent/launcher.sh')
-    declared['AGENT_CREDENTIALS'] = sorted(declared.get('AGENT_CREDENTIALS', []))
+    for name in ('AGENT_CREDENTIALS', 'AGENT_POLICY_HOSTS'):
+        declared[name] = sorted(declared.get(name, []))
     expected = expected_agent_part(profile, root / agent_profile.POLICY)
     missing = [name for name in SCALARS + ARRAYS if name not in declared]
     return missing + [name for name, value in expected.items() if declared.get(name) != value]
@@ -199,7 +200,7 @@ def core_code(core):
 
 
 def unread_settings(core):
-    unused = SHARED_READ + PENDING + (() if PROFILE.auth else PROVIDER_ONLY)
+    unused = SHARED_READ + (() if PROFILE.auth else PROVIDER_ONLY)
     code = core_code(core)
     return [suffix for suffix in agent_profile.SUFFIXES if suffix not in unused
             and not re.search(r'\bcfg_' + suffix + r'(?![A-Z_])', code)]
@@ -243,7 +244,7 @@ class LauncherConsistency(unittest.TestCase):
         result = subprocess.run(['bash', str(ROOT / PROFILE.wrapper), '--container-help'],
                                 capture_output=True, text=True, env={'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent'})
         self.assertEqual(result.returncode, 0, result.stderr)
-        hidden = INTERNAL + PENDING + (() if PROFILE.auth else PROVIDER_ONLY)
+        hidden = INTERNAL + (() if PROFILE.auth else PROVIDER_ONLY)
         documented = [PROFILE.env(suffix) for suffix in agent_profile.SUFFIXES if suffix not in hidden]
         self.assertEqual([name for name in documented if name not in result.stdout], [])
 

@@ -42,34 +42,32 @@ usage() {
     # Builtins only: help works without sed or any other host tool.
     local text
     IFS= read -r -d '' text <<'EOF' || true
-Usage: @WRAPPER@ [container option] [bash arguments...]
+Usage: @WRAPPER@ [container option] [arguments...]
 
-Opens a Bash shell in a read-only Podman container: the reference sandbox for
-the agent wrappers. The current directory (or its parent with
---container-git-worktree), the shell configuration directory and the shared
-OpenSpec configuration are mounted read/write. Sessions are offline by default.
+Runs @DISPLAY@ (@COMMAND@) in a read-only Podman container. The current
+directory (or its parent with --container-git-worktree) and the @DISPLAY@
+configuration and shared directories are mounted read/write. Sessions default
+to @DEFAULT_MODE@ mode.
 
 Container options:
   --container-setup      interactively prepare a complete user installation
   --container-qualify    verify a prepared restricted installation with fixed local controls
-  --container-build      build or refresh the container image before starting
-  --container-shell      accepted for compatibility; the session is always Bash
+  --container-build      build or refresh the container image; without other
+                         arguments it builds and exits
+  --container-shell      start a Bash shell instead of @COMMAND@ (always Bash
+                         when @COMMAND@ is the shell)
   --container-git-worktree mount the parent of the current directory read/write
                          for Git worktrees; the container starts in the current directory
   --container-toolchain  manage the shared read-only toolchain library; must be first:
                          add <recipe.json> | list | remove <name> | verify [<name>]
   --container-help       show this wrapper help
 
-All other arguments are passed to Bash unchanged, for example -c 'git status'.
+All other arguments are passed to @COMMAND@ (or to Bash in shell mode) unchanged.
 
 Environment:
-  @P@_NETWORK offline (default when unset or empty) or unrestricted;
-                           provider is unavailable: the reference profile declares
-                           no authentication method
-  @P@_MAINTENANCE authorize image preparation only with exact value 1
+@NETWORK_HELP@  @P@_MAINTENANCE authorize image preparation only with exact value 1
   @P@_IMAGE  image name (default: @IMAGE@:latest)
-  @P@_CONFIG_DIR shell configuration directory with the Bash history
-                           (default: ~/@CONFIG_HOME@)
+  @CONFIG_ENV@ configuration directory (default: ~/@CONFIG_HOME@)
   @P@_STATE_DIR optional isolated home; unset keeps shared configuration
                            (must not be, contain or lie inside the workspace)
   @P@_PODMAN_SOCKET optional absolute delegation socket override
@@ -95,18 +93,23 @@ Environment:
                                    library mount (default: mounted)
   @P@_TOOLCHAINS_DIR toolchain library shared by the wrappers (default:
                                    ${XDG_DATA_HOME:-~/.local/share}/sandbox-toolchains)
-
-Offline use needs a protected installation: new users first run
+  @P@_ENV_VARS       whitespace-separated host variable names to forward by
+                                   name, never by value; an invalid name stops
+                                   the launch and reserved names are skipped
+  @P@_READONLY_STATE 1, true, or yes mounts the existing configuration and
+                                   shared directories read-only (default: disabled)
+@PROVIDER_HELP@@AGENT_HELP@
+Restricted use needs a protected installation: new users first run
   bash ./@WRAPPER@ --container-setup
-and then use the managed launch command printed by setup from a workspace. An
-offline launch, including the default mode, from a location without a protected
-installation stops with this guidance before engine queries or state creation.
+and then use the managed launch command printed by setup from a workspace. A
+restricted launch, including the default mode, from a location without a
+protected installation stops with this guidance before engine queries or state
+creation.
 Direct use from a checkout needs explicit unrestricted networking, for example:
   @P@_NETWORK=unrestricted bash ./@WRAPPER@
   @P@_NETWORK=unrestricted @P@_MAINTENANCE=1 bash ./@WRAPPER@ --container-build
 Offline sessions have no external network. Restricted failures never retry
-unrestricted. This wrapper replaces the Claude wrapper only as the reference for
-the shared sandbox components; existing agent installations are unaffected.
+unrestricted.
 
 Configured launch requires a verified Linux rootless engine, locally or via an explicit
 same-host Unix CONTAINER_HOST with an absolute socket pathname beyond /.
@@ -116,11 +119,11 @@ ${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock.
 The socket permits host mounts beyond the workspace. Worktree mode exposes the
 entire parent read/write.
 State directories must belong to the caller and deny group/other access.
-Unset @P@_CONFIG_DIR when selecting an isolated home; no state is imported.
+Unset @CONFIG_ENV@ when selecting an isolated home; no state is imported.
 Temporary /tmp, /run, and /var/tmp mounts are noexec, limited to 256/16/256 MiB.
 Host GNU timeout is required. Shutdown is bounded to 20 seconds, with at most
 5 seconds for graceful exit before forced owned-container removal. Cleanup
-failures are reported without changing the shell or first signal status.
+failures are reported without changing the session or first signal status.
 Engine verification replies must contain one record, with no terminator or a
 single final LF; extra blank or nonblank records stop startup before builds.
 Delegated socket verification also rejects any CR character, including CRLF.
@@ -139,11 +142,11 @@ The guard adds
 unprivileged Landlock and restrictive seccomp, preserving the OCI profile.
 New Unix services are unavailable; fixed-peer pairs may have private inert names.
 See network/README.md for packaging and docs/validation.md for measured evidence.
-Every shell container, in all modes including delegation, drops all
+Every session container, in all modes including delegation, drops all
 capabilities, enables no-new-privileges and receives the memory, CPU and process
 budgets whose cgroup v2 controller the rootless engine delegates; a budget whose
 controller is missing is not enforced and a notice names it. The created
-configuration is checked before the shell starts; a delegated limit that
+configuration is checked before the session starts; a delegated limit that
 is ignored stops startup. Without memory or process budgets a session can exhaust
 host memory or processes for your user.
 Budgets and tmpfs sizes do not limit workspace or state storage growth.
@@ -159,11 +162,54 @@ Unknown active LSM policy identity requires the gate each launch.
 Locally-qualified installations are visibly distinguished from exact
 release-measured acceptance records.
 EOF
+    local network provider='' item hosts agent_text=''
+    if ((${#AGENT_CREDENTIALS[@]})); then
+        network="  @P@_NETWORK offline, provider (default when unset or empty), or
+                           unrestricted
+"
+        provider="  @P@_NETWORK_PROFILE protected provider policy profile name
+  @P@_NETWORK_POLICY  absolute operator policy JSON path
+  @P@_NETWORK_RUNTIME_DIR private native directory at its host path
+  @P@_EGRESS_IMAGE    immutable proxy image ID or registry digest
+
+Provider mode allows only the hosts of the selected policy profile. Destination
+and SNI binding cannot tell your credentials from attacker-supplied ones, so
+each allowed host can receive workspace data sent with a foreign key or
+account. Only offline mode removes this channel. Allowed hosts:
+"
+        for item in "${AGENT_POLICY_HOSTS[@]}"; do
+            hosts=${item#*=}
+            provider+="  ${item%%=*}: ${hosts// /, }
+"
+        done
+    else
+        network="  @P@_NETWORK offline (default when unset or empty) or unrestricted;
+                           provider is unavailable: the profile declares no
+                           authentication method
+"
+    fi
+    if declare -F agent_help >/dev/null; then
+        agent_text=$(agent_help) || die 'hook agent_help failed'
+        agent_text+=$'\n'
+    fi
+    text=${text//@NETWORK_HELP@/$network}
+    text=${text//@PROVIDER_HELP@/$provider}
+    text=${text//@AGENT_HELP@/$agent_text}
     text=${text//@P@/$P}
     text=${text//@WRAPPER@/$AGENT_WRAPPER}
     text=${text//@IMAGE@/$AGENT_IMAGE}
     text=${text//@CONFIG_HOME@/$AGENT_CONFIG_HOME}
+    text=${text//@CONFIG_ENV@/$AGENT_CONFIG_DIR_ENV}
+    text=${text//@DISPLAY@/$AGENT_DISPLAY_NAME}
+    text=${text//@COMMAND@/$AGENT_COMMAND}
+    text=${text//@DEFAULT_MODE@/$(default_mode)}
     printf '%s' "$text"
+}
+
+# A profile with authentication methods defaults to provider mode (U1); the
+# shell reference, without methods, to offline.
+default_mode() {
+    if ((${#AGENT_CREDENTIALS[@]})); then printf provider; else printf offline; fi
 }
 
 # Phase 1: help, toolchain, qualify and setup dispatch, option parsing.
@@ -198,6 +244,9 @@ core_arguments() {
     build_image=0
     qualification_probe=0
     git_worktree=0
+    # A profile whose command is a shell always runs in shell mode (H-c).
+    shell_mode=0
+    [[ "$AGENT_COMMAND" != bash && "$AGENT_COMMAND" != sh ]] || shell_mode=1
     args=()
     for arg in "$@"; do
         case "$arg" in
@@ -206,7 +255,7 @@ core_arguments() {
                 qualification_probe=1 ;;
             --container-help) usage; exit 0 ;;
             --container-build) build_image=1 ;;
-            --container-shell) ;;  # The session is always Bash.
+            --container-shell) shell_mode=1 ;;
             --container-git-worktree) git_worktree=1 ;;
             --container-toolchain) die '--container-toolchain must be the first argument' ;;
             *) args+=("$arg") ;;
@@ -216,25 +265,48 @@ core_arguments() {
 
 # Phase 2: network mode, switches, budgets and lifetime.
 core_settings() {
-    # Offline is the default runtime mode; unrestricted applies only when explicit.
-    network_mode=${cfg_NETWORK:-offline}
-    case "$network_mode" in
-        offline|unrestricted) ;;
-        provider) die "${P}_NETWORK=provider is unavailable: the reference profile declares no authentication method; use offline or unrestricted" ;;
-        *) die "${P}_NETWORK must be offline or unrestricted" ;;
-    esac
+    # The default mode is the profile's (U1); unrestricted applies only when explicit.
+    network_mode=${cfg_NETWORK:-$(default_mode)}
+    if ((${#AGENT_CREDENTIALS[@]})); then
+        case "$network_mode" in
+            offline|provider|unrestricted) ;;
+            *) die "${P}_NETWORK must be offline, provider, or unrestricted" ;;
+        esac
+    else
+        case "$network_mode" in
+            offline|unrestricted) ;;
+            provider) die "${P}_NETWORK=provider is unavailable: the profile declares no authentication method; use offline or unrestricted" ;;
+            *) die "${P}_NETWORK must be offline or unrestricted" ;;
+        esac
+    fi
+    restricted=0
+    [[ "$network_mode" == unrestricted ]] || restricted=1
     # Host tools are diagnosed later, so a missing readlink leaves the path empty here.
     script_path=$WRAPPER_PATH
     script_dir=${script_path%/*}
-    # An offline session needs a protected installation with the built guard and its
-    # manifest. Without one, give setup guidance before any engine or state operation;
-    # session.py prepare still validates the installation fully.
-    if [[ "$network_mode" == offline ]] \
+    setup_wrapper=$WRAPPER_INVOKED
+    [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
+    printf -v setup_command 'bash %q --container-setup' "$setup_wrapper"
+    # A restricted session needs a protected installation with the built guard and
+    # its manifest. Without one, give setup guidance before any engine or state
+    # operation; session.py prepare still validates the installation fully.
+    if ((restricted)) \
         && { [[ -z "$script_path" ]] || ! compgen -G "$script_dir/network/bin/*.sha256" >/dev/null; }; then
-        setup_wrapper=$WRAPPER_INVOKED
-        [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
-        printf -v setup_command 'bash %q --container-setup' "$setup_wrapper"
-        die "setup required: offline sessions need a protected installation; run $setup_command and use the managed launcher, or set ${P}_NETWORK=unrestricted for a direct session"
+        die "setup required: $network_mode sessions need a protected installation; run $setup_command and use the managed launcher, or set ${P}_NETWORK=unrestricted for a direct session"
+    fi
+    # Provider mode needs the settings setup saves; a default provider launch
+    # without them is a missing setup, an explicit one a configuration error.
+    network_profile=''
+    if [[ "$network_mode" == provider ]]; then
+        if [[ -z "${cfg_NETWORK:-}" ]] && [[ -z "${cfg_NETWORK_PROFILE:-}" || -z "${cfg_NETWORK_POLICY:-}" \
+            || -z "${cfg_NETWORK_RUNTIME_DIR:-}" || -z "${cfg_EGRESS_IMAGE:-}" ]]; then
+            die "setup required: provider sessions, the default for $AGENT_DISPLAY_NAME, need the settings setup saves; run $setup_command and use the managed launcher"
+        fi
+        [[ -n "${cfg_NETWORK_PROFILE:-}" && -n "${cfg_NETWORK_POLICY:-}" ]] \
+            || die "provider mode requires ${P}_NETWORK_PROFILE and ${P}_NETWORK_POLICY"
+        [[ -n "${cfg_NETWORK_RUNTIME_DIR:-}" && -n "${cfg_EGRESS_IMAGE:-}" ]] \
+            || die "provider mode requires a private host-path ${P}_NETWORK_RUNTIME_DIR and immutable ${P}_EGRESS_IMAGE"
+        network_profile=$cfg_NETWORK_PROFILE
     fi
 
     boolean() {
@@ -253,6 +325,28 @@ core_settings() {
     fi
     [[ -z "${cfg_STATE_DIR:-}" || -z "${cfg_CONFIG_DIR:-}" ]] \
         || die "${P}_STATE_DIR conflicts with $AGENT_CONFIG_DIR_ENV; unset $AGENT_CONFIG_DIR_ENV to isolate state"
+    if [[ -n "${cfg_CONFIG_DIR:-}" ]]; then
+        [[ "$cfg_CONFIG_DIR" == /* && "$cfg_CONFIG_DIR" != *[:$'\n'$'\r']* ]] \
+            || die "$AGENT_CONFIG_DIR_ENV must be an absolute path without colon, CR or LF: $cfg_CONFIG_DIR"
+    fi
+    [[ "${cfg_IMAGE:-}" != *[[:space:][:cntrl:]]* ]] \
+        || die "${P}_IMAGE must not contain whitespace or control characters"
+    readonly_state=$(boolean "${P}_READONLY_STATE" "${cfg_READONLY_STATE:-}")
+    # Extra variables are forwarded by name only (U5, U18).
+    env_var_names=()
+    if [[ -n "${cfg_ENV_VARS:-}" ]]; then
+        read -r -d '' -a env_var_names <<<"$cfg_ENV_VARS" || true
+    fi
+    for core_name in "${env_var_names[@]}"; do
+        [[ "$core_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+            || die "${P}_ENV_VARS contains an invalid variable name: $core_name"
+    done
+    # The profile's approval bypass switch is validated here; its effect is the
+    # agent's (agent_approval_bypass) and never applies in shell mode.
+    approval_bypass=0
+    if [[ -n "$AGENT_APPROVAL_BYPASS_ENV" ]]; then
+        approval_bypass=$(boolean "$AGENT_APPROVAL_BYPASS_ENV" "${!AGENT_APPROVAL_BYPASS_ENV:-}")
+    fi
 
     # Agent budgets and lifetime. network/agent_budgets.py implements the same
     # rules for setup and qualification; unrestricted installs may lack host Python.
@@ -284,6 +378,7 @@ core_settings() {
         || die "${P}_RUN_TIMEOUT must be whole seconds; 0 disables the lifetime limit"
     pids_limit=$((10#$pids_text))
     run_timeout=$((10#$timeout_text))
+    call_hook agent_validate "$network_mode"
 }
 
 # Phase 3: workspace refusal, host tools and state overlap.

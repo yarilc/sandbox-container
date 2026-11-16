@@ -22,7 +22,7 @@ The behavior of each task is defined by the named rows of `docs/launcher-contrac
 
 ## 4. Phases 1-2: interface, modes, settings
 
-- [ ] 4.1 Implement the phase 1-2 rows:
+- [x] 4.1 Implement the phase 1-2 rows:
   - profile default mode (U1);
   - provider-mode requirements;
   - shell profiles always in shell mode (H-c);
