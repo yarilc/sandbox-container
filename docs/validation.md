@@ -2622,3 +2622,14 @@ launchers, tests, profiles and specs.
 | Visible changes without a spec delta row | 0 |
 | `openspec validate define-launcher-contract --strict` | Passed (`skip_specs`) |
 | `git diff --check` | Passed |
+
+Second independent review of the contract (2026-11-16), on the corrected
+document.
+
+| Check | Result |
+| --- | --- |
+| Findings | 34: 7 high (H-a to H-g), 14 medium, 13 low; the earlier resolutions H2-H6, M1-M11, L1, L3-L5, L7 and L9 confirmed present |
+| Resolutions | all recorded in "Review findings › Second review"; user decisions U15-U18 |
+| Test map after regeneration | 488 of 488 cases mapped, 41 marked "shared (rewrite)"; four other shared test files listed |
+| `openspec validate define-launcher-contract --strict` | Passed (`skip_specs`) |
+| `git diff --check` | Passed |

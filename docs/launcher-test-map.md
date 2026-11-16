@@ -74,7 +74,7 @@ No test covers U1 (provider default) yet; the implementation change adds one.
 | S | `test_create_failure_preserved_without_cleanup_of_other_containers` | 7 | shared |  |
 | S | `test_term_forwarding` | 7 | shared |  |
 | S | `test_launch_verification_fails_before_image_operations` | 5 | shared |  |
-| S | `test_verification_preserves_exact_record_boundaries_and_status` | 6 | shared |  |
+| S | `test_verification_preserves_exact_record_boundaries_and_status` | 6 | shared (rewrite) | decision U16, U17 |
 | S | `test_delegated_response_rejects_carriage_returns_before_image_operations` | 5 | shared |  |
 | S | `test_response_validation_composes_with_launch_modes` | 3-4 | shared |  |
 | S | `test_delegated_cr_response_preserves_query_failure_and_disabled_access` | 3-4 | shared |  |
@@ -91,11 +91,11 @@ No test covers U1 (provider default) yet; the implementation change adds one.
 | S | `test_socket_disabled_values_skip_delegation_checks` | 3-4 | shared |  |
 | S | `test_socket_precedence_and_remapping` | 3-4 | shared |  |
 | S | `test_podman5_unix_url_host_socket_is_bound_as_path` | 3-4 | shared |  |
-| S | `test_socket_fallback_and_invalid_sources` | 3-4 | shared |  |
-| S | `test_invalid_delegation_results_gate_explicit_build` | 5 | shared |  |
-| S | `test_composition_and_independence_in_both_state_modes` | 3-4 | shared |  |
-| S | `test_disabled_delegation_preserves_host_launch_endpoint` | 3-4 | shared |  |
-| S | `test_ca_mount_and_security_policy` | 5 | shared |  |
+| S | `test_socket_fallback_and_invalid_sources` | 3-4 | shared (rewrite) | decision U16 |
+| S | `test_invalid_delegation_results_gate_explicit_build` | 5 | shared (rewrite) | decision U16 |
+| S | `test_composition_and_independence_in_both_state_modes` | 3-4 | shared (rewrite) | decision U7 |
+| S | `test_disabled_delegation_preserves_host_launch_endpoint` | 3-4 | shared (rewrite) | decision U16, U17 |
+| S | `test_ca_mount_and_security_policy` | 5 | shared (rewrite) | decision U7 |
 | S | `test_symlink_invocation_and_native_permissions` | 3-4 | shared |  |
 | S | `test_collision_exhaustion_and_diagnostic_cleanup` | 7 | shared |  |
 | S | `test_int_and_hup_forwarding` | 7 | shared |  |
@@ -158,7 +158,7 @@ No test covers U1 (provider default) yet; the implementation change adds one.
 | C | `test_create_failure_preserved_without_cleanup_of_other_containers` | 7 | shared (duplicate) | duplicate of S |
 | C | `test_term_forwarding` | 7 | shared (duplicate) | duplicate of S |
 | C | `test_launch_verification_fails_before_image_operations` | 5 | shared (duplicate) | duplicate of S |
-| C | `test_verification_preserves_exact_record_boundaries_and_status` | 6 | shared (duplicate) | duplicate of S |
+| C | `test_verification_preserves_exact_record_boundaries_and_status` | 6 | shared (rewrite) | decision U16, U17 |
 | C | `test_delegated_response_rejects_carriage_returns_before_image_operations` | 5 | shared (duplicate) | duplicate of S |
 | C | `test_response_validation_composes_with_launch_modes` | 3-4 | shared (duplicate) | duplicate of S |
 | C | `test_delegated_cr_response_preserves_query_failure_and_disabled_access` | 3-4 | shared (duplicate) | duplicate of S |
@@ -174,11 +174,11 @@ No test covers U1 (provider default) yet; the implementation change adds one.
 | C | `test_socket_disabled_values_skip_delegation_checks` | 3-4 | shared (duplicate) | duplicate of S |
 | C | `test_socket_precedence_and_remapping` | 3-4 | shared (duplicate) | duplicate of S |
 | C | `test_podman5_unix_url_host_socket_is_bound_as_path` | 3-4 | shared (duplicate) | duplicate of S |
-| C | `test_socket_fallback_and_invalid_sources` | 3-4 | shared (duplicate) | duplicate of S |
-| C | `test_invalid_delegation_results_gate_explicit_build` | 5 | shared (duplicate) | duplicate of S |
-| C | `test_composition_and_independence_in_both_state_modes` | 3-4 | shared (duplicate) | duplicate of S |
-| C | `test_disabled_delegation_preserves_host_launch_endpoint` | 3-4 | shared (duplicate) | duplicate of S |
-| C | `test_ca_mount_and_security_policy` | 5 | shared (duplicate) | duplicate of S |
+| C | `test_socket_fallback_and_invalid_sources` | 3-4 | shared (rewrite) | decision U16 |
+| C | `test_invalid_delegation_results_gate_explicit_build` | 5 | shared (rewrite) | decision U16 |
+| C | `test_composition_and_independence_in_both_state_modes` | 3-4 | shared (rewrite) | decision U7 |
+| C | `test_disabled_delegation_preserves_host_launch_endpoint` | 3-4 | shared (rewrite) | decision U16, U17 |
+| C | `test_ca_mount_and_security_policy` | 5 | shared (rewrite) | decision U7 |
 | C | `test_symlink_invocation_and_native_permissions` | 3-4 | shared (duplicate) | duplicate of S |
 | C | `test_collision_exhaustion_and_diagnostic_cleanup` | 7 | shared (duplicate) | duplicate of S |
 | C | `test_int_and_hup_forwarding` | 7 | shared (duplicate) | duplicate of S |
@@ -259,7 +259,7 @@ No test covers U1 (provider default) yet; the implementation change adds one.
 | X | `test_isolated_home_mounts_and_privacy` | 5 | shared |  |
 | X | `test_host_ca_trust_modes` | 5 | shared |  |
 | X | `test_offline_order_arguments_and_status` | 6 | shared |  |
-| X | `test_provider_order_protected_overrides_and_api_key` | 5 | hook |  |
+| X | `test_provider_order_protected_overrides_and_api_key` | 5 | shared (rewrite) | decision U10 (protected overrides stay a hook test) |
 | X | `test_api_key_follows_the_policy_authentication_method` | 1-2 | shared (rewrite) | decision U10 |
 | X | `test_failed_qualification_stops_before_session_resources` | 1-2 | shared |  |
 | X | `test_interrupted_restricted_helpers_are_bounded_and_clean_owned_proxy` | 7 | shared |  |
@@ -334,7 +334,7 @@ No test covers U1 (provider default) yet; the implementation change adds one.
 | A | `test_state_choices_and_configuration_directory` | 3-4 | shared (rewrite) | decision U4 |
 | A | `test_host_ca_trust` | 5 | shared |  |
 | A | `test_offline_order_arguments_and_forwarding` | 7 | shared |  |
-| A | `test_provider_order_and_profile_credentials` | 5 | hook |  |
+| A | `test_provider_order_and_profile_credentials` | 5 | shared (rewrite) | decision U10 (agent settings stay a hook test) |
 | A | `test_unrestricted_keeps_forwarding_without_bus` | 5 | shared (rewrite) | decision U10, U11 |
 | A | `test_failed_qualification_and_interrupted_helpers_clean_up` | 7 | shared |  |
 | A | `test_qualification_entry_points` | 1-2 | shared (duplicate) | duplicate of X |
@@ -407,7 +407,7 @@ No test covers U1 (provider default) yet; the implementation change adds one.
 | O | `test_proxy_image_acquisition_requires_maintenance_and_digest` | 5 | shared (duplicate) | duplicate of X |
 | O | `test_host_ca_trust_modes` | 5 | shared (duplicate) | duplicate of X |
 | O | `test_offline_order_arguments_and_status` | 6 | shared (duplicate) | duplicate of X |
-| O | `test_provider_order_credentials_and_protected_values` | 5 | hook |  |
+| O | `test_provider_order_credentials_and_protected_values` | 5 | shared (rewrite) | decision U10 (OpenCode flags stay a hook test) |
 | O | `test_restricted_modes_reserve_network_variables` | 1-2 | shared |  |
 | O | `test_failed_qualification_stops_before_session_resources` | 1-2 | shared (duplicate) | duplicate of X |
 | O | `test_interrupted_restricted_helpers_are_bounded_and_clean_owned_proxy` | 7 | shared (duplicate) | duplicate of X |
@@ -502,8 +502,19 @@ No test covers U1 (provider default) yet; the implementation change adds one.
 | P | `test_proxy_image_acquisition_requires_maintenance_and_digest` | 5 | shared (duplicate) | duplicate of X |
 | P | `test_config_override_session_value_and_host_ca` | 5 | shared |  |
 | P | `test_offline_order_arguments_and_forwarding` | 7 | shared (duplicate) | duplicate of A |
-| P | `test_provider_order_and_profile_credentials` | 5 | hook |  |
+| P | `test_provider_order_and_profile_credentials` | 5 | shared (rewrite) | decision U10 (agent settings stay a hook test) |
 | P | `test_unrestricted_keeps_forwarding` | 5 | shared (rewrite) | decision U10, U11 |
 | P | `test_failed_qualification_and_interrupted_helpers_clean_up` | 7 | shared (duplicate) | duplicate of A |
 | P | `test_qualification_entry_points` | 1-2 | shared (duplicate) | duplicate of X |
 | P | `test_restricted_credentials_match_the_agent_profile` | 5 | shared (duplicate) | duplicate of A |
+
+## Other shared test files
+
+These shared files change with the core; they are not wrapper tests and are not counted above.
+
+| File | Change |
+| --- | --- |
+| `tests/test_alignment.py` | checks `agent/launcher.sh` and the thin entry script instead of profile values inside the wrapper; compares `agent/launcher.sh` with `agent/profile.json` and `AGENT_CREDENTIALS` with `agent/policies/default.json` |
+| `tests/test_agent_profile.py` | `native.exec`, `native.exec_tmp`; `install.runtime_build` removed |
+| `tests/test_setup.py` | setup builds through the wrapper only (`runtime_build` removed); setup and smoke drop `ENV_VARS` and `READONLY_STATE` |
+| `tests/test_qualification.py` | a missing mode resolves to the profile default |
