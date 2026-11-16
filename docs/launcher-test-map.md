@@ -5,6 +5,7 @@ mapped to a phase of `docs/launcher-contract.md` and to its destination when
 the wrapper adopts the shared core:
 
 - **shared** - becomes a shared launcher test (first occurrence, reference order S, C, X, A, O, P);
+- **shared (rewrite)** - becomes a shared test, rewritten for the decision named in the note;
 - **shared (duplicate)** - same behavior as an earlier shared test; merged into it, not kept;
 - **hook** - tests an agent hook or agent data; stays in the wrapper;
 - **obsolete** - behavior removed by a contract decision (U2, U4, phase 6);
@@ -14,17 +15,18 @@ The classification is by test name and behavior. Duplicates are detected only
 between tests with the same name; family B tests with other names (for example
 `test_attached_signals_both_modes` and `test_term_forwarding`) often cover the
 same behavior and are merged when the change that implements the core moves them.
+No test covers U1 (provider default) yet; the implementation change adds one.
 
 | Repository | Test | Phase | Destination | Note |
 | --- | --- | --- | --- | --- |
 | S | `test_help_without_podman_or_side_effects` | 1-2 | shared |  |
-| S | `test_missing_mode_defaults_to_offline_and_needs_an_installation` | 7 | shared |  |
+| S | `test_missing_mode_defaults_to_offline_and_needs_an_installation` | 1-2 | shared |  |
 | S | `test_missing_mode_precedes_options_prerequisites_and_other_configuration` | 1-2 | shared |  |
 | S | `test_setup_diagnostic_quotes_invoked_symlink_and_runs_from_other_workspace` | 6 | shared |  |
 | S | `test_network_preflight_rejections_precede_image_operations` | 5 | shared |  |
 | S | `test_maintenance_is_separate_from_runtime_mode` | 5 | shared |  |
 | S | `test_restricted_unprotected_installation_fails_before_image_operations` | 7 | shared |  |
-| S | `test_argument_forwarding_and_defaults` | 7 | shared |  |
+| S | `test_argument_forwarding_and_defaults` | 6 | shared |  |
 | S | `test_delegation_only_follows_the_exact_opt_in` | 3-4 | shared |  |
 | S | `test_boolean_forms_and_invalid_values` | 1-2 | shared |  |
 | S | `test_shell_option_is_equivalent` | 1-2 | shared |  |
@@ -52,7 +54,7 @@ same behavior and are merged when the change that implements the core moves them
 | S | `test_socket_only_required_when_enabled` | 3-4 | shared |  |
 | S | `test_socket_engine_must_be_rootless` | 3-4 | shared |  |
 | S | `test_rootful_and_remote_rejected_local_unix_accepted` | 3-4 | shared |  |
-| S | `test_build_location_refresh_and_missing_image` | 5 | shared |  |
+| S | `test_build_location_refresh_and_missing_image` | 5 | shared (rewrite) | decision U3, U8 |
 | S | `test_runtime_build_receives_host_ca_only_when_trusted` | 5 | shared |  |
 | S | `test_build_and_image_inspection_errors` | 5 | shared |  |
 | S | `test_exit_status_and_owned_cleanup` | 7 | shared |  |
@@ -100,16 +102,16 @@ same behavior and are merged when the change that implements the core moves them
 | C | `test_shipped_inventories_are_exact` | 1-2 | hook |  |
 | C | `test_removed_account_hosts_require_a_separate_profile` | 1-2 | hook |  |
 | C | `test_help_without_podman_or_side_effects` | 1-2 | shared (duplicate) | duplicate of S |
-| C | `test_missing_network_mode_requires_setup_without_side_effects` | 1-2 | shared |  |
+| C | `test_missing_network_mode_requires_setup_without_side_effects` | 1-2 | shared (rewrite) | decision U1 |
 | C | `test_missing_mode_precedes_options_prerequisites_and_other_configuration` | 1-2 | shared (duplicate) | duplicate of S |
 | C | `test_setup_diagnostic_quotes_invoked_symlink_and_runs_from_other_workspace` | 6 | shared (duplicate) | duplicate of S |
 | C | `test_network_preflight_rejections_precede_image_operations` | 5 | shared (duplicate) | duplicate of S |
 | C | `test_maintenance_is_separate_from_runtime_mode` | 5 | shared (duplicate) | duplicate of S |
 | C | `test_restricted_unprotected_installation_fails_before_image_operations` | 7 | shared (duplicate) | duplicate of S |
-| C | `test_argument_forwarding_and_defaults` | 7 | shared (duplicate) | duplicate of S |
+| C | `test_argument_forwarding_and_defaults` | 6 | shared (duplicate) | duplicate of S |
 | C | `test_four_independent_permission_combinations` | 1-2 | hook |  |
 | C | `test_boolean_forms_and_invalid_values` | 1-2 | shared (duplicate) | duplicate of S |
-| C | `test_shell_does_not_receive_yolo_or_cli_arguments` | 1-2 | hook |  |
+| C | `test_shell_does_not_receive_yolo_or_cli_arguments` | 1-2 | shared (rewrite) | decision U14 |
 | C | `test_workspace_worktree_and_symlink` | 3-4 | shared (duplicate) | duplicate of S |
 | C | `test_read_only_identity_and_no_extra_host_mounts` | 5 | shared (duplicate) | duplicate of S |
 | C | `test_toolchain_command_dispatch` | 5 | shared (duplicate) | duplicate of S |
@@ -136,7 +138,7 @@ same behavior and are merged when the change that implements the core moves them
 | C | `test_socket_only_required_when_enabled` | 3-4 | shared (duplicate) | duplicate of S |
 | C | `test_socket_engine_must_be_rootless` | 3-4 | shared (duplicate) | duplicate of S |
 | C | `test_rootful_and_remote_rejected_local_unix_accepted` | 3-4 | shared (duplicate) | duplicate of S |
-| C | `test_build_location_refresh_and_missing_image` | 5 | shared (duplicate) | duplicate of S |
+| C | `test_build_location_refresh_and_missing_image` | 5 | shared (rewrite) | decision U3, U8 |
 | C | `test_runtime_build_receives_host_ca_only_when_trusted` | 5 | shared (duplicate) | duplicate of S |
 | C | `test_build_and_image_inspection_errors` | 5 | shared (duplicate) | duplicate of S |
 | C | `test_exit_status_and_owned_cleanup` | 7 | shared (duplicate) | duplicate of S |
@@ -183,7 +185,7 @@ same behavior and are merged when the change that implements the core moves them
 | X | `test_help_without_engine_or_state` | 3-4 | shared |  |
 | X | `test_help_without_podman_installed` | 7 | shared |  |
 | X | `test_valid_launch_engine_without_delegation` | 3-4 | shared |  |
-| X | `test_explicit_build_and_image_override` | 5 | shared |  |
+| X | `test_explicit_build_and_image_override` | 5 | shared (rewrite) | decision U3 |
 | X | `test_builds_receive_the_host_ca_only_when_trusted` | 5 | shared |  |
 | X | `test_engine_failure_matrix_before_image_operations` | 5 | shared |  |
 | X | `test_unsupported_contexts` | 3-4 | shared |  |
@@ -201,17 +203,17 @@ same behavior and are merged when the change that implements the core moves them
 | X | `test_owned_name_is_not_a_collision` | 6 | shared |  |
 | X | `test_interrupted_creation_is_recovered_by_label` | 7 | shared |  |
 | X | `test_application_status_and_cleanup_failure` | 7 | shared |  |
-| X | `test_signals_during_creation` | 7 | shared |  |
-| X | `test_permanently_stalled_creation_signal_matrix` | 7 | shared |  |
+| X | `test_signals_during_creation` | 7 | shared (rewrite) | decision U9 |
+| X | `test_permanently_stalled_creation_signal_matrix` | 7 | shared (rewrite) | decision U9 |
 | X | `test_interrupted_creation_invalid_identity_and_control_failures` | 7 | shared |  |
 | X | `test_stopped_creation_client_is_cancelled` | 6 | shared |  |
 | X | `test_unreapable_client_reports_without_waiting` | 7 | shared |  |
 | X | `test_attached_signals_both_modes` | 7 | shared |  |
-| X | `test_stubborn_application_and_stalled_cleanup_are_bounded` | 7 | shared |  |
+| X | `test_stubborn_application_and_stalled_cleanup_are_bounded` | 7 | shared (rewrite) | decision U9 |
 | X | `test_terminal_matrix` | 6 | shared |  |
 | X | `test_pipe_and_file_input_reach_eof` | 6 | shared |  |
 | X | `test_image_and_build_status_matrix` | 6 | shared |  |
-| X | `test_tmpfs_capacities_and_options` | 5 | shared |  |
+| X | `test_tmpfs_capacities_and_options` | 5 | shared (rewrite) | decision U7 |
 | X | `test_state_overlapping_the_workspace_fails_without_engine` | 3-4 | shared (duplicate) | duplicate of S |
 | X | `test_private_state_creation_and_mask` | 6 | shared |  |
 | X | `test_existing_state_relative_symlink_and_spaces` | 3-4 | shared |  |
@@ -249,7 +251,7 @@ same behavior and are merged when the change that implements the core moves them
 | X | `test_default_toolchain_environment_is_appended` | 5 | shared (duplicate) | duplicate of S |
 | X | `test_toolchain_cannot_set_codex_variables` | 5 | shared (duplicate) | duplicate of C |
 | X | `test_restricted_sessions_declare_the_toolchain_mount` | 5 | shared (duplicate) | duplicate of S |
-| X | `test_missing_mode_stops_before_engine_state_and_other_checks` | 3-4 | shared |  |
+| X | `test_missing_mode_stops_before_engine_state_and_other_checks` | 3-4 | shared (rewrite) | decision U1 |
 | X | `test_mode_and_delegation_rejections_precede_engine` | 3-4 | shared |  |
 | X | `test_help_documents_modes_migration_and_provider_limits` | 5 | shared |  |
 | X | `test_maintenance_gates_every_build` | 5 | shared |  |
@@ -258,7 +260,7 @@ same behavior and are merged when the change that implements the core moves them
 | X | `test_host_ca_trust_modes` | 5 | shared |  |
 | X | `test_offline_order_arguments_and_status` | 6 | shared |  |
 | X | `test_provider_order_protected_overrides_and_api_key` | 5 | hook |  |
-| X | `test_api_key_follows_the_policy_authentication_method` | 1-2 | shared |  |
+| X | `test_api_key_follows_the_policy_authentication_method` | 1-2 | shared (rewrite) | decision U10 |
 | X | `test_failed_qualification_stops_before_session_resources` | 1-2 | shared |  |
 | X | `test_interrupted_restricted_helpers_are_bounded_and_clean_owned_proxy` | 7 | shared |  |
 | X | `test_setup_entry_point_is_dedicated_and_help_takes_precedence` | 1-2 | shared |  |
@@ -266,10 +268,10 @@ same behavior and are merged when the change that implements the core moves them
 | X | `test_unrestricted_codex_keeps_its_own_sandbox` | 1-2 | hook |  |
 | X | `test_qualification_entry_points` | 1-2 | shared |  |
 | A | `test_help_without_podman_or_side_effects` | 1-2 | shared (duplicate) | duplicate of S |
-| A | `test_argument_forwarding_and_defaults` | 7 | shared (duplicate) | duplicate of S |
+| A | `test_argument_forwarding_and_defaults` | 6 | shared (duplicate) | duplicate of S |
 | A | `test_four_independent_permission_combinations` | 1-2 | hook |  |
 | A | `test_boolean_forms_and_invalid_values` | 1-2 | shared (duplicate) | duplicate of S |
-| A | `test_shell_does_not_receive_yolo_or_cli_arguments` | 1-2 | hook |  |
+| A | `test_shell_does_not_receive_yolo_or_cli_arguments` | 1-2 | shared (rewrite) | decision U14 |
 | A | `test_workspace_worktree_and_symlink` | 3-4 | shared (duplicate) | duplicate of S |
 | A | `test_read_only_identity_and_no_extra_host_mounts` | 5 | shared (duplicate) | duplicate of S |
 | A | `test_insecure_existing_state_rejected` | 3-4 | shared (duplicate) | duplicate of S |
@@ -290,7 +292,7 @@ same behavior and are merged when the change that implements the core moves them
 | A | `test_relative_existing_and_missing_socket_rejected_before_delegation_query` | 3-4 | shared |  |
 | A | `test_complete_launch_response_required` | 3-4 | shared |  |
 | A | `test_launch_endpoint_rejected_before_query` | 3-4 | shared |  |
-| A | `test_build_location_refresh_and_missing_image` | 5 | shared (duplicate) | duplicate of S |
+| A | `test_build_location_refresh_and_missing_image` | 5 | shared (rewrite) | decision U3, U8 |
 | A | `test_every_build_requires_exact_maintenance` | 5 | shared |  |
 | A | `test_build_and_image_inspection_errors` | 5 | shared (duplicate) | duplicate of S |
 | A | `test_exit_status_and_owned_cleanup` | 7 | shared (duplicate) | duplicate of S |
@@ -304,7 +306,7 @@ same behavior and are merged when the change that implements the core moves them
 | A | `test_creation_signal_ownership_races` | 7 | shared |  |
 | A | `test_stalled_creation_cancellation_is_bounded` | 7 | shared |  |
 | A | `test_attached_signal_matrix` | 7 | shared |  |
-| A | `test_stubborn_sessions_and_control_failures_are_bounded` | 7 | shared |  |
+| A | `test_stubborn_sessions_and_control_failures_are_bounded` | 7 | shared (rewrite) | decision U9 |
 | A | `test_application_status_survives_cleanup_failure` | 7 | shared |  |
 | A | `test_timeout_prerequisite_without_help_side_effects` | 3-4 | shared |  |
 | A | `test_key_forwarded_by_name_without_value_in_argv` | 5 | shared |  |
@@ -323,17 +325,17 @@ same behavior and are merged when the change that implements the core moves them
 | A | `test_wsl_drive_roots` | 3-4 | shared (duplicate) | duplicate of X |
 | A | `test_unsafe_workspace_override_is_exact` | 3-4 | shared (duplicate) | duplicate of X |
 | A | `test_help_documents_hardening` | 5 | shared (duplicate) | duplicate of X |
-| A | `test_missing_mode_stops_before_engine` | 3-4 | shared |  |
+| A | `test_missing_mode_stops_before_engine` | 3-4 | shared (rewrite) | decision U1 |
 | A | `test_setup_entry_point_is_dedicated_and_help_takes_precedence` | 1-2 | shared (duplicate) | duplicate of X |
 | A | `test_client_stderr_passes_through_the_diagnostics_filter` | 6 | shared (duplicate) | duplicate of X |
 | A | `test_mode_state_and_delegation_rejections_precede_engine` | 3-4 | shared |  |
 | A | `test_help_documents_modes_migration_and_provider_limits` | 5 | shared (duplicate) | duplicate of X |
 | A | `test_proxy_image_acquisition_requires_maintenance_and_digest` | 5 | shared (duplicate) | duplicate of X |
-| A | `test_state_choices_and_configuration_directory` | 3-4 | obsolete |  |
+| A | `test_state_choices_and_configuration_directory` | 3-4 | shared (rewrite) | decision U4 |
 | A | `test_host_ca_trust` | 5 | shared |  |
 | A | `test_offline_order_arguments_and_forwarding` | 7 | shared |  |
 | A | `test_provider_order_and_profile_credentials` | 5 | hook |  |
-| A | `test_unrestricted_keeps_forwarding_without_bus` | 7 | hook |  |
+| A | `test_unrestricted_keeps_forwarding_without_bus` | 5 | shared (rewrite) | decision U10, U11 |
 | A | `test_failed_qualification_and_interrupted_helpers_clean_up` | 7 | shared |  |
 | A | `test_qualification_entry_points` | 1-2 | shared (duplicate) | duplicate of X |
 | A | `test_restricted_credentials_match_the_agent_profile` | 5 | shared |  |
@@ -365,11 +367,11 @@ same behavior and are merged when the change that implements the core moves them
 | O | `test_provider_profiles` | 5 | hook |  |
 | O | `test_unsupported_provider_fails_early` | 5 | hook |  |
 | O | `test_unselected_provider_forwards_nothing_and_notifies` | 5 | hook |  |
-| O | `test_extra_environment_names` | 6 | shared |  |
+| O | `test_extra_environment_names` | 6 | shared (rewrite) | decision U5, U13 |
 | O | `test_home_layout` | 5 | shared |  |
 | O | `test_deprecated_shim` | 1-2 | obsolete |  |
 | O | `test_labels_use_common_namespace` | 6 | obsolete |  |
-| O | `test_image_and_ignored_version_variables` | 5 | obsolete |  |
+| O | `test_image_and_ignored_version_variables` | 5 | shared (rewrite) | decision IMAGE refusal kept, U2 notices removed |
 | O | `test_isolated_state_directory` | 3-4 | shared |  |
 | O | `test_budgets` | 1-2 | shared |  |
 | O | `test_budget_inspection_failures` | 6 | shared |  |
@@ -384,7 +386,7 @@ same behavior and are merged when the change that implements the core moves them
 | O | `test_image_inspection_and_build` | 5 | shared |  |
 | O | `test_stalled_creation_cancellation_is_bounded` | 7 | shared (duplicate) | duplicate of A |
 | O | `test_attached_signal_matrix` | 7 | shared (duplicate) | duplicate of A |
-| O | `test_stubborn_sessions_and_control_failures_are_bounded` | 7 | shared (duplicate) | duplicate of A |
+| O | `test_stubborn_sessions_and_control_failures_are_bounded` | 7 | shared (rewrite) | decision U9 |
 | O | `test_application_status_survives_cleanup_failure` | 7 | shared (duplicate) | duplicate of A |
 | O | `test_owned_name_is_not_a_collision` | 6 | shared (duplicate) | duplicate of X |
 | O | `test_names_failures_and_owned_records` | 6 | shared |  |
@@ -398,7 +400,7 @@ same behavior and are merged when the change that implements the core moves them
 | O | `test_restricted_sessions_declare_the_toolchain_mount` | 5 | shared (duplicate) | duplicate of S |
 | O | `test_toolchain_cannot_override_protected_variables` | 5 | shared |  |
 | O | `test_toolchain_cannot_set_agent_variables` | 5 | shared (duplicate) | duplicate of C |
-| O | `test_missing_mode_stops_before_engine_state_and_other_checks` | 3-4 | shared (duplicate) | duplicate of X |
+| O | `test_missing_mode_stops_before_engine_state_and_other_checks` | 3-4 | shared (rewrite) | decision U1 |
 | O | `test_mode_and_delegation_rejections_precede_engine` | 3-4 | shared (duplicate) | duplicate of X |
 | O | `test_help_documents_modes_migration_and_provider_limits` | 5 | shared (duplicate) | duplicate of X |
 | O | `test_maintenance_gates_every_build` | 5 | shared (duplicate) | duplicate of X |
@@ -432,13 +434,13 @@ same behavior and are merged when the change that implements the core moves them
 | P | `test_owned_name_is_not_a_collision` | 6 | shared (duplicate) | duplicate of X |
 | P | `test_interrupted_creation_is_recovered_by_label` | 7 | shared (duplicate) | duplicate of X |
 | P | `test_application_status_and_cleanup_failure` | 7 | shared (duplicate) | duplicate of X |
-| P | `test_signals_during_creation` | 7 | shared (duplicate) | duplicate of X |
-| P | `test_permanently_stalled_creation_signal_matrix` | 7 | shared (duplicate) | duplicate of X |
+| P | `test_signals_during_creation` | 7 | shared (rewrite) | decision U9 |
+| P | `test_permanently_stalled_creation_signal_matrix` | 7 | shared (rewrite) | decision U9 |
 | P | `test_interrupted_creation_invalid_identity_and_control_failures` | 7 | shared (duplicate) | duplicate of X |
 | P | `test_stopped_creation_client_is_cancelled` | 6 | shared (duplicate) | duplicate of X |
 | P | `test_unreapable_client_reports_without_waiting` | 7 | shared (duplicate) | duplicate of X |
 | P | `test_attached_signals_both_modes` | 7 | shared (duplicate) | duplicate of X |
-| P | `test_stubborn_application_and_stalled_cleanup_are_bounded` | 7 | shared (duplicate) | duplicate of X |
+| P | `test_stubborn_application_and_stalled_cleanup_are_bounded` | 7 | shared (rewrite) | decision U9 |
 | P | `test_terminal_matrix` | 6 | shared (duplicate) | duplicate of X |
 | P | `test_pipe_and_file_input_reach_eof` | 6 | shared (duplicate) | duplicate of X |
 | P | `test_image_and_build_status_matrix` | 6 | shared (duplicate) | duplicate of X |
@@ -470,7 +472,7 @@ same behavior and are merged when the change that implements the core moves them
 | P | `test_gitconfig_opt_in_without_regular_file` | 5 | hook |  |
 | P | `test_gitconfig_deprecated_alias` | 5 | obsolete |  |
 | P | `test_suite_leaves_no_scratch_directories` | 1-2 | fake engine |  |
-| P | `test_common_names_and_deprecated_aliases` | 6 | obsolete |  |
+| P | `test_common_names_and_deprecated_aliases` | 1-2 | obsolete |  |
 | P | `test_yolo_has_no_effect` | 1-2 | hook |  |
 | P | `test_budget_validation` | 1-2 | shared |  |
 | P | `test_device_and_secret_mounts_in_every_unrestricted_mode` | 5 | shared (duplicate) | duplicate of X |
@@ -501,7 +503,7 @@ same behavior and are merged when the change that implements the core moves them
 | P | `test_config_override_session_value_and_host_ca` | 5 | shared |  |
 | P | `test_offline_order_arguments_and_forwarding` | 7 | shared (duplicate) | duplicate of A |
 | P | `test_provider_order_and_profile_credentials` | 5 | hook |  |
-| P | `test_unrestricted_keeps_forwarding` | 7 | hook |  |
+| P | `test_unrestricted_keeps_forwarding` | 5 | shared (rewrite) | decision U10, U11 |
 | P | `test_failed_qualification_and_interrupted_helpers_clean_up` | 7 | shared (duplicate) | duplicate of A |
 | P | `test_qualification_entry_points` | 1-2 | shared (duplicate) | duplicate of X |
 | P | `test_restricted_credentials_match_the_agent_profile` | 5 | shared (duplicate) | duplicate of A |

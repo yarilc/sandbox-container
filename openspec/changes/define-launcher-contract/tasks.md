@@ -33,6 +33,24 @@ Each task below fills one or two phases of the document from the six launchers a
 - [x] 3.2 Add a "Spec deltas for the implementation change" section to `docs/launcher-contract.md`: for each entry of the "visible changes" list and for the new `shared-launcher` capability, the capability, the requirement to add or modify and the behavior it states. Verify every visible change maps to a delta and `openspec validate define-launcher-contract --strict` passes.
 - [x] 3.3 Record a short entry in `docs/validation.md`: launchers and test files read (with their commit), counts of differences by decision type, and validation. Commit this change; verify `git diff --check` and `git status` are clean.
 
+## 4. Independent review fixes
+
+The review findings (H1-H6, M1-M13, L1-L9) are recorded in a "Review findings"
+section of `docs/launcher-contract.md`, each with its resolution.
+
+- [x] 4.1 Resolve the high findings in the contract:
+  - H1: installation manifest and qualification code list include the core files;
+  - H2: in-container application path and the unrestricted entrypoint rule;
+  - H3: credential model keyed by policy profile, including unrestricted forwarding;
+  - H4: proxy and locale forwarding in unrestricted mode;
+  - H5: Pi's `--init`, `CONTAINER_NAME`, delegation tmpfs mounts, build format and timeout;
+  - H6: the base `build-inputs-hash` input set.
+
+  Choices with no existing decision go to the user as U10 and following. Verify each finding has a recorded resolution and a delta row where behavior changes.
+- [x] 4.2 Resolve the medium findings M1-M13 the same way: shutdown slicing, environment scopes and ordering, bind and tmpfs rules, query timeouts, read-only layout, build-only path, entry-script contract, and test-map notes. Verify as in 4.1.
+- [x] 4.3 Correct the low findings L1-L9 and regenerate `docs/launcher-test-map.md`, adding a "shared (rewrite)" destination for tests a decision changes. Verify that the totals still match the `def test_` counts.
+- [x] 4.4 Update the `docs/validation.md` entry (review performed, finding counts and resolutions), run `openspec validate define-launcher-contract --strict` and `git diff --check`, and commit.
+
 ## Workflow follow-up
 
 - The user reviews `docs/launcher-contract.md`; archive this change with `--skip-specs`.

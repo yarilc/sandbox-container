@@ -13,6 +13,7 @@ The six launchers (`sandbox-container.sh` and the five agent wrappers) expose th
   - a per-agent Bash file that carries the profile data the core needs and the agent hooks, kept consistent with `agent/profile.json`;
   - a shared launcher test suite on a shared fake engine.
 - List every observable behavior the reconciliation changes, and the spec deltas the implementation change must write for them.
+- Resolve the findings of an independent review of the document, including the installation and qualification lists the core files must join.
 - No launcher code, test code, shared file or spec changes in this change; no new tag. The core, the shared tests, the spec deltas and the tag follow in the next change, so the specs change only when the behavior does.
 
 ## Capabilities
