@@ -13,10 +13,14 @@ ALIGNMENT = """SHARED_DIRECTORIES = ('network', 'setup')
 SHARED_TESTS = ('tests/test_alignment.py', 'tests/test_shared.py'{extra})
 """
 # Same structure as a wrapper's tests/test_reference_copy.py.
-MANIFEST_HEAD = '''"""Per-agent check that the shared components equal the sandbox-container reference copy."""
+MANIFEST_HEAD = '''"""Per-agent check that the shared components equal the Claude reference copy.
+
+The shared files must stay byte-identical to ``claude-container`` at the tag.
+"""
 import hashlib
 REFERENCE_TAG = '{tag}'
 REFERENCE_COMMIT = '{commit}'
+SIBLING = ROOT.parent / 'claude-container'
 CLOSED_DIRECTORIES = ('network', 'setup')
 SKIPPED_PARTS = ('__pycache__', 'bin')
 MANIFEST = {{
@@ -25,6 +29,10 @@ MANIFEST = {{
 
 def differences(root):
     return []
+
+
+def skip():
+    return 'no sibling claude-container checkout'
 '''
 RUNNER = """case "${1:-}" in
     --wrapper) pattern=test_wrapper.py ;;
@@ -110,6 +118,43 @@ class Propagation(unittest.TestCase):
         return {p.relative_to(self.target): p.read_bytes() for p in self.target.rglob('*')
                 if p.is_file() and '.git' not in p.parts}
 
+    def test_manifest_is_pointed_at_the_reference(self):
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('manifest: names reference instead of claude-container', result.stdout)
+        self.assertIn('claude-container', (self.target / 'tests/test_reference_copy.py').read_text())
+        result = self.run_tool('--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = (self.target / 'tests/test_reference_copy.py').read_text()
+        self.assertNotIn('claude-container', text)
+        self.assertNotIn('Claude', text)
+        self.assertIn("SIBLING = ROOT.parent / 'reference'", text)
+        self.assertIn('equal the reference reference copy.', text)
+        self.assertIn('byte-identical to ``reference`` at the tag', text)
+        self.assertIn("'no sibling reference checkout'", text)
+
+    def test_manifest_already_naming_the_reference_is_kept(self):
+        path = self.target / 'tests/test_reference_copy.py'
+        path.write_text(path.read_text().replace('claude-container', 'reference'))
+        git(self.target, 'commit', '-q', '-am', 'name reference')
+        before = path.read_text()
+        result = self.run_tool('--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('manifest: names', result.stdout)
+        after = path.read_text()
+        self.assertEqual(after.replace('sandbox-ref-2', 'sandbox-ref-1').replace(self.new_commit, self.old_commit)
+                         .split('MANIFEST = {')[0], before.split('MANIFEST = {')[0])
+
+    def test_manifest_without_sibling_is_refused(self):
+        path = self.target / 'tests/test_reference_copy.py'
+        path.write_text(path.read_text().replace("SIBLING = ROOT.parent / 'claude-container'\n", ''))
+        git(self.target, 'commit', '-q', '-am', 'drop sibling')
+        before = self.snapshot()
+        result = self.run_tool('--apply')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('SIBLING', result.stderr)
+        self.assertEqual(self.snapshot(), before)
+
     def test_dry_run_plans_without_writing(self):
         before = self.snapshot()
         result = self.run_tool()
@@ -138,7 +183,7 @@ class Propagation(unittest.TestCase):
         for name in ('network/a.py', 'network/b.py', 'network/c.py', 'setup/diagnostics.py', 'tests/test_new.py'):
             digest = hashlib.sha256((self.target / name).read_bytes()).hexdigest()
             self.assertIn(f"    '{name}': '{digest}',\n", manifest)
-        self.assertTrue(manifest.endswith("def differences(root):\n    return []\n"))
+        self.assertTrue(manifest.endswith("def skip():\n    return 'no sibling reference checkout'\n"))
         readme = (self.target / 'README.md').read_text()
         self.assertEqual(readme, 'Copied from tag `sandbox-ref-2`; see sandbox-ref-10 and sandbox-ref-1x.\n')
         contract = (self.target / 'docs/network-contract.md').read_text()

@@ -31,6 +31,9 @@ SKIPPED_PARTS = ('__pycache__', 'bin')
 TAG_LINE = re.compile(r"^REFERENCE_TAG = '([^']+)'$", re.M)
 COMMIT_LINE = re.compile(r"^REFERENCE_COMMIT = '([0-9a-f]{40})'$", re.M)
 ENTRY = re.compile(r"^    '([^']+)': '([0-9a-f]{64})',$")
+# The reference checkout the manifest's sibling check compares against.
+SIBLING_LINE = re.compile(r"^SIBLING = ROOT\.parent / '([^'/]+)'$", re.M)
+COPY_LINE = re.compile(r'the [\w-]+ reference copy')
 
 
 class PropagationError(Exception):
@@ -87,6 +90,9 @@ def read_manifest(target):
     tags, commits = TAG_LINE.findall(text), COMMIT_LINE.findall(text)
     if len(tags) != 1 or len(commits) != 1:
         raise PropagationError(f'{MANIFEST_FILE}: expected one REFERENCE_TAG and one REFERENCE_COMMIT line')
+    siblings = SIBLING_LINE.findall(text)
+    if len(siblings) != 1:
+        raise PropagationError(f"{MANIFEST_FILE}: expected one SIBLING = ROOT.parent / '<reference>' line")
     lines = text.splitlines(keepends=True)
     try:
         start = next(i for i, line in enumerate(lines) if line.rstrip('\n') == 'MANIFEST = {')
@@ -101,7 +107,7 @@ def read_manifest(target):
         if match[1] in entries:
             raise PropagationError(f'{MANIFEST_FILE}: duplicate manifest entry {match[1]}')
         entries[match[1]] = match[2]
-    return text, lines, (start, end), tags[0], commits[0], entries
+    return text, lines, (start, end), tags[0], commits[0], entries, siblings[0]
 
 
 def plan(target, old, new):
@@ -111,7 +117,7 @@ def plan(target, old, new):
     old_commit, new_commit = commit_of(old), commit_of(new)
     if git(target, 'status', '--porcelain').strip():
         raise PropagationError(f'{target} has uncommitted changes; commit or stash them first')
-    _, _, _, tag, commit, adopted = read_manifest(target)
+    _, _, _, tag, commit, adopted, sibling = read_manifest(target)
     if (tag, commit) != (old, old_commit):
         raise PropagationError(f'{target} adopts {tag} ({commit}), not {old} ({old_commit})')
     branch = 'adopt-' + new
@@ -151,7 +157,8 @@ def plan(target, old, new):
                 documents[name] = count
     return dict(target=target, old=old, new=new, old_commit=old_commit, new_commit=new_commit, branch=branch,
                 modified=modified, added=added, removed=removed, not_adopted=sorted(not_adopted),
-                documents=documents, modes=checklist(target, modified + added + removed), new_files=new_files)
+                documents=documents, modes=checklist(target, modified + added + removed), new_files=new_files,
+                sibling=sibling, reference_name=REFERENCE.name)
 
 
 def tag_pattern(tag):
@@ -214,7 +221,7 @@ def apply(result):
         for path in result['removed']:
             (target / path).unlink()
             written.append(path)
-        text, lines, (start, end), _, _, entries = read_manifest(target)
+        text, lines, (start, end), _, _, entries, sibling = read_manifest(target)
         for path in result['removed']:
             entries.pop(path)
         for path in result['modified'] + result['added']:
@@ -223,6 +230,11 @@ def apply(result):
         text = ''.join(lines[:start + 1] + block + lines[end:])
         text = TAG_LINE.sub(f"REFERENCE_TAG = '{new}'", text)
         text = COMMIT_LINE.sub(f"REFERENCE_COMMIT = '{result['new_commit']}'", text)
+        if sibling != result['reference_name']:
+            # The manifest names the repository this tool runs from: its sibling
+            # path, docstring and skip message.
+            text = text.replace(sibling, result['reference_name'])
+            text = COPY_LINE.sub(f"the {result['reference_name']} reference copy", text, count=1)
         manifest = target / MANIFEST_FILE
         write_atomic(manifest, text.encode(), manifest.stat().st_mode & 0o7777)
         written.append(MANIFEST_FILE)
@@ -244,6 +256,8 @@ def report(result, applied):
         out.append(f"{label.replace('_', ' ')}: " + (', '.join(result[label]) or 'none'))
     out.append('documents: ' + (', '.join(f'{n} ({c})' for n, c in result['documents'].items()) or 'none'))
     out.append('manifest: ' + MANIFEST_FILE + f" -> {result['new']} ({result['new_commit']})")
+    if result['sibling'] != result['reference_name']:
+        out.append(f"manifest: names {result['reference_name']} instead of {result['sibling']}")
     out.append('Run in the target: ' + '; '.join(
         m if m.startswith('python3') else 'bash tests/run-runtime.sh ' + m for m in result['modes']))
     copied = result['modified'] + result['added']
