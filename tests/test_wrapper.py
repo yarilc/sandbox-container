@@ -475,7 +475,7 @@ class WrapperTests(unittest.TestCase):
         shutil.copyfile(ROOT / 'network/platform_check.py', install / 'network/platform_check.py')
         for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py',
                      'network/revisions.py', 'agent/profile.json', 'setup/common.py', 'setup/toolchains.py',
-                     'Containerfile'):
+                     'Containerfile', 'launcher/core.sh', 'agent/launcher.sh'):
             (install / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, install / name)
         (install / 'network/qualify.py').write_text('# Synthetic argument fixture only.\n')

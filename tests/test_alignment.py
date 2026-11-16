@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox_profile import PROFILE as FIXTURE_PROFILE, REAL_PROFILE as PROFILE, REAL_ROOT as ROOT
 import agent_profile
 
-SHARED_DIRECTORIES = ('network', 'setup')
+SHARED_DIRECTORIES = ('network', 'setup', 'launcher')
 SHARED_TESTS = (
     'tests/sandbox_profile.py', 'tests/test_alignment.py', 'tests/test_agent_profile.py',
     'tests/test_network_policy.py', 'tests/test_mux.py', 'tests/test_tls_client_hello.py',
