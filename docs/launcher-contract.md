@@ -122,9 +122,9 @@ authentication methods (none in S). The core reads these values through
 | `<P>_PODMAN=1` outside unrestricted | refused | refused | refused | refused | refused | refused | same | - |
 | Boolean parsing (`1/true/yes`, `''/0/false/no`) | `boolean()` | `boolean()` | `boolean()` | `boolean()` | `case` | `case` | same: `boolean()` | - |
 | Empty `<P>_TOOLCHAINS` | mounted | mounted | mounted | **not mounted** (`${...-1}`) | mounted | mounted | same: empty means default (mounted); visible change for A | - |
-| Approval bypass variable | n/a | `CLAUDE_YOLO` | `CODEX_YOLO` adds `--yolo` | `ANTIGRAVITY_YOLO` | `OPENCODE_CONTAINER_YOLO`, refused with `OPENCODE_PERMISSION` | `PI_CONTAINER_YOLO`, notice only | union: the core validates the profile's `approval_bypass_env` and never applies it in shell mode | `agent_approval_bypass` |
+| Approval bypass variable | n/a | `CLAUDE_YOLO` | `CODEX_YOLO` adds `--yolo` | `ANTIGRAVITY_YOLO` | `OPENCODE_CONTAINER_YOLO`, refused with `OPENCODE_PERMISSION`, applied in shell mode too | `PI_CONTAINER_YOLO`, notice only | union: the core validates the profile's `approval_bypass_env` and never applies it in shell mode (visible for O) | `agent_approval_bypass` |
 | `STATE_DIR` with the native config variable | conflict with `CONFIG_DIR` | conflict with `CLAUDE_CONFIG_DIR` | conflict with `CODEX_HOME` | checked later | conflict | conflict | same: conflict with the profile's `config_dir_env` | - |
-| `CONFIG_DIR` absolute, no colon, CR or LF | never | n/a | n/a | here | here | here | union, checked here | - |
+| Configuration override (`config_dir_env`) absolute, no colon, CR or LF | never | never (`CLAUDE_CONFIG_DIR`) | never (`CODEX_HOME`) | here | here | here | union, checked here for every profile's `config_dir_env` (M14) | - |
 | `<P>_IMAGE` without whitespace or control characters | no | no | no | no | yes | no | union | - |
 | Provider credential follows the network profile | n/a | phase 5 | phase 5 | `GEMINI_API_KEY` for `gemini-api` | per profile | per profile | union from profile data; see phase 5 | - |
 | Provider variable forwarding (`PROVIDER`, `ENV_VARS`, reserved names, notices) | no | no | no | no | yes | no | hook | `agent_environment` |
@@ -173,7 +173,7 @@ differs.
 | Empty `STATE_DIR` | same as unset | same | same | shared state | same as unset | same as unset | same as unset (U4) | - |
 | Shared state sources | profile `config_home` and `shared_dirs` | as S | as S | `.gemini` | as S, `private_shared_dirs` | as S, `private_shared_dirs` | same: from profile data | - |
 | `CONFIG_DIR` override of the configuration directory | `SANDBOX_CONTAINER_CONFIG_DIR` | `CLAUDE_CONFIG_DIR` | `CODEX_HOME` | `<P>_CONFIG_DIR`, shared state only | `<P>_CONFIG_DIR` | `<P>_CONFIG_DIR` (`.pi` only) | same: the profile's `config_dir_env` | - |
-| Isolated home children and CA mount parent resolved before creation | contained, private | as S | contained, private | `.gemini`: only `! -L`, privacy not checked, existing 0755 kept | `mkdir -p`, no containment check | private, containment not checked | union (M4): every child contained and private | - |
+| Isolated home children and CA mount parent resolved before creation | children contained; `.config/openspec` privacy not checked; `ca` created without containment check | as S | contained, private | `.gemini`: only `! -L`, privacy not checked, existing 0755 kept | `mkdir -p`, no containment check | private, containment not checked | union (M4): every child contained and private | - |
 | Read-only state (`PI_READONLY_CONFIG`) | no | no | no | no | no | yes | user (U6): `<P>_READONLY_STATE` in the core for every wrapper | - |
 | `ENV_VARS` extra variables by name (`<P>_ENV_VARS`, `PI_ENV_VARS`) | no | no | no | no | yes | yes | user (U5): `<P>_ENV_VARS` in the core for every wrapper; reserved names are core and profile data | - |
 | Workspace-derived container name prefix | phase 6 | phase 6 | sanitized basename here | phase 6 | `sanitize_name` here | phase 6 | see phase 6 | - |
@@ -209,13 +209,14 @@ Covering tests: `test_sensitive_workspaces_refused_before_engine`, `test_state_*
 | Home in shared-state mode | image home (read-only root) | as S | tmpfs, exec, no size | tmpfs, exec, 64m | tmpfs, exec, 512m | tmpfs, **noexec**, 64M, plus `~/.npm` tmpfs (`PI_NPM_CACHE_SIZE`) | union and U7: always a 512m tmpfs home, `noexec` unless the profile declares executable temporary storage; extra agent tmpfs through a hook | `agent_mounts` |
 | Native configuration variable inside the session | `SANDBOX_CONTAINER_CONFIG_DIR`, `HISTFILE` | `CLAUDE_CONFIG_DIR` | `CODEX_HOME` | `<P>_CONFIG_DIR` | XDG variables and `<P>_CONFIG_DIR` | `PI_CONTAINER_CONFIG_DIR=/pi-home/.pi` | same: the profile's `config_dir_env` points at `<home>/<config_home>`; other fixed variables through data | `agent_environment` |
 | `TERM` forwarded | with a terminal | with a terminal | no | with a terminal | whenever set (base allowlist with `COLORTERM`, `LANG`, `LC_ALL`) | with a terminal | union (U11): `TERM`, `COLORTERM`, `LANG`, `LC_ALL` whenever set | - |
-| `EDITOR`, `VISUAL` | `nano` | `nano` | unset | `nano` | unset | host value or `nano` | union: host value or `nano` (P) | - |
+| `EDITOR`, `VISUAL` | `nano` | `nano` | unset | `nano` | unset | host value or `nano` | user (U15): always `nano`, as the `runtime-image` spec requires | - |
 | `USER` | unset | unset | unset | unset | host user name | unset | union | - |
 | CA bundle at `<home>/ca/bundle.pem` with the four CA variables | yes | yes | yes | yes | yes | yes | same | - |
-| Fixed agent settings (telemetry, update, traffic switches) | none | provider mode (6 variables) | none | always (`AGY_CLI_DISABLE_AUTO_UPDATE`, `--unsetenv DBUS_SESSION_BUS_ADDRESS`) | restricted modes (`OPENCODE_DISABLE_*`) | restricted modes (`PI_OFFLINE`, `PI_SKIP_VERSION_CHECK`, `PI_TELEMETRY`) | same: data in `agent/launcher.sh` per scope (always, restricted, provider; M2), applied after every forwarded variable so they win | - |
+| Fixed agent settings (telemetry, update, traffic switches) | `HISTFILE` (and the config variable) | provider mode (6 variables) | none | always (`AGY_CLI_DISABLE_AUTO_UPDATE`, `--unsetenv DBUS_SESSION_BUS_ADDRESS`) | restricted modes (`OPENCODE_DISABLE_*`) | restricted modes (`PI_OFFLINE`, `PI_SKIP_VERSION_CHECK`, `PI_TELEMETRY`) | same: data in `agent/launcher.sh` per scope (always, restricted, provider; M2), applied after every forwarded variable so they win; S declares `HISTFILE` in `AGENT_SESSION_ENV` | - |
 | Podman delegation mount at `/run/podman/podman.sock`, `CONTAINER_HOST` set; otherwise unset | yes | yes | yes | yes | yes | yes, also unsets `CONTAINER_CONNECTION` | union: unset both | - |
 | Credential forwarding | n/a | own `--env ANTHROPIC_API_KEY` in provider mode, both policy profiles; none unrestricted | own `--env OPENAI_API_KEY` for `openai-api` and `openai-api-docs`; none unrestricted | profile credential; `GEMINI_API_KEY` unrestricted | profile credential; `PROVIDER` names unrestricted | profile credential; `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY` unrestricted | user (U10): provider forwards the `credential_env` of the selected policy profile's method only; unrestricted forwards none (use `<P>_ENV_VARS`) | `agent_environment` (O `PROVIDER`) |
 | Opt-in read-only host files (O `AGENTS_DIR`, `SYSTEM_CONFIG`; P `GITCONFIG`) | no | no | no | no | yes | yes | hook | `agent_mounts` |
+| OpenCode native-variable allowlist (`OPENCODE_CONFIG`, `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG_CONTENT`, `OPENCODE_PERMISSION`, `OPENCODE_SERVER_USERNAME`, `OPENCODE_SERVER_PASSWORD`, `OPENCODE_DISABLE_*` outside restricted modes) forwarded by name | no | no | no | no | yes | no | hook (H-g) | `agent_environment` (`NAME` entries) |
 | Bind validation (absolute, no colon, CR, LF; no shadowing of temporary mounts; destination conflicts) | partial | partial | partial | partial | `add_bind` | partial | union: every bind through one validated builder (O) | - |
 | OpenCode labels `io.opencode-container.*` (managed, workspace, workspace name) | no | no | no | no | yes | no | see phase 6 (ownership labels) | - |
 | Image build trigger | `--container-build` or missing image | as S | as S | as S, explicit build uses `--no-cache` | as S | as S, plus a stale image is refused (`build-inputs-hash` label) | user (U8): `--container-build` or missing image builds; a stale `build-inputs-hash` is refused with rebuild guidance; no `--no-cache` | - |
@@ -250,7 +251,7 @@ deferred exit at checkpoints).
 
 | Behavior | S | C | X | A | O | P | Core decision | Hook |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Name prefix: sanitized workspace basename with a numeric suffix | fallback wrapper name | as S | as S, computed in phase 3 | as S | `sanitize_name` (also strips `_`), fallback `workspace` | as S, truncated to 64 characters with `LC_ALL=C` | same: S, fallback wrapper name, truncated to 64 characters (P) | - |
+| Name prefix: sanitized workspace basename with a numeric suffix | fallback wrapper name | as S | as S, computed in phase 3 | as S | `sanitize_name` (also strips `_`), fallback `workspace` | as S, truncated to 64 characters with `LC_ALL=C` | same: S, fallback `AGENT_NAME`, truncated to 64 characters (P) | - |
 | Ownership label `io.<wrapper>.session=<token>` on create | yes | yes | yes | yes | yes, plus `io.opencode-container.*` labels | yes | same; O's extra labels dropped (unused by any check) | - |
 | Private session directory (provider mode: inside `NETWORK_RUNTIME_DIR`) | `mktemp -d` | as X | yes | yes | yes | yes | same | - |
 | Network mode notice on stderr | yes | yes | yes | yes | yes | yes | same | - |
@@ -302,12 +303,12 @@ destination. Totals (488 cases):
 
 | Repository | Cases | Shared | Shared (rewrite) | Shared (duplicate) | Hook | Obsolete | Fake engine |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| S | 80 | 79 | 1 | 0 | 0 | 0 | 0 |
-| C | 83 | 4 | 3 | 73 | 3 | 0 | 0 |
-| X | 85 | 64 | 7 | 10 | 4 | 0 | 0 |
-| A | 80 | 26 | 6 | 45 | 3 | 0 | 0 |
-| O | 69 | 21 | 4 | 30 | 11 | 2 | 1 |
-| P | 91 | 15 | 4 | 59 | 7 | 3 | 3 |
+| S | 80 | 73 | 7 | 0 | 0 | 0 | 0 |
+| C | 83 | 4 | 9 | 67 | 3 | 0 | 0 |
+| X | 85 | 64 | 8 | 10 | 3 | 0 | 0 |
+| A | 80 | 26 | 7 | 45 | 2 | 0 | 0 |
+| O | 69 | 21 | 5 | 30 | 10 | 2 | 1 |
+| P | 91 | 15 | 5 | 59 | 6 | 3 | 3 |
 
 The shared suite starts from the reference's 80 cases (family A) and adds the
 cases only family B or OpenCode cover, for example `test_owned_name_is_not_a_collision`,
@@ -338,12 +339,16 @@ harness can import it; it rejects unknown commands (Pi's
 
 | File | Owner | Content |
 | --- | --- | --- |
-| `<wrapper>-container.sh` | wrapper (identical in every wrapper up to its name) | sets `set -Eeuo pipefail`, keeps the invoked path in `WRAPPER_INVOKED=${BASH_SOURCE[0]}`, resolves its own path with GNU `readlink -f` (stopping with the GNU readlink diagnosis when it is missing), and runs `source "$dir/launcher/core.sh" "$dir/agent/launcher.sh" "$@"`; nothing else |
+| `<wrapper>-container.sh` | wrapper (identical in every wrapper up to its name) | sets `set -Eeuo pipefail`, keeps the invoked path in `WRAPPER_INVOKED=${BASH_SOURCE[0]}`, resolves its own directory with GNU `readlink -f` or, when readlink is missing, with `${BASH_SOURCE[0]%/*}` (the core reports the missing tool later, in S's order; H-b), and runs `source "$dir/launcher/core.sh" "$dir/agent/launcher.sh" "$@"`; nothing else |
 | `launcher/core.sh` | shared, reference copy | the whole launcher: phases 1-7 of this document |
 | `agent/launcher.sh` | wrapper | the profile data the core needs and the agent hooks |
 | `agent/profile.json` | wrapper | unchanged role; new fields `native.exec_tmp` (U7) and `native.exec` (H2); `install.runtime_build` removed (U8); validated by `network/agent_profile.py` |
 | `setup/common.py` `MANIFEST` | shared | adds `launcher/core.sh` and `agent/launcher.sh`, so installations contain the core (H1) |
 | `network/qualification_records.py` `code_files` | shared | binds `launcher/core.sh` (in `SHARED_CODE`) and `agent/launcher.sh`, so a core or agent-part change invalidates qualification (H1) |
+| `network/control.py` preflight, `setup/launch.py` trust checks | shared | also require `launcher/core.sh` and `agent/launcher.sh` to be protected files (H-e) |
+| `network/qualify.py`, `network/qualification_records.py`, `setup/common.py` | shared | derive a missing `<P>_NETWORK` from the profile (`provider` with authentication methods, otherwise `offline`); the core also exports the resolved mode to every Python helper it starts (H-a) |
+| `network/agent_profile.py` `SUFFIXES`, `setup/common.py` `runtime_environment` | shared | know `ENV_VARS` and `READONLY_STATE`; setup and smoke runs drop host values of both (M3) |
+| `tests/test_alignment.py`, `tests/test_setup.py`, `tests/test_agent_profile.py` | shared | follow the thin entry script, `agent/launcher.sh`, the new profile fields and the removed `runtime_build` (see `docs/launcher-test-map.md`) |
 | `tests/fake_podman.py` | shared | the fake engine |
 | `tests/test_launcher.py` | shared | the shared launcher tests, run with a fixture `agent/launcher.sh` |
 | `tests/test_wrapper.py` | wrapper | hook and agent data tests only |
@@ -384,9 +389,15 @@ Agent data with no profile counterpart:
 Derived by the core, never declared: the default network mode (`provider`
 when the profile declares authentication methods, that is when
 `AGENT_CREDENTIALS` is not empty, account methods included; otherwise
-`offline`; U1, M10), whether
-`--container-shell` is a no-op (`AGENT_COMMAND` is the shell), and every
-`<P>_*` variable name.
+`offline`; U1, M10), shell profiles (H-c: when `AGENT_COMMAND` is a shell,
+the session is always in shell mode, runs `/bin/<command>` with the arguments,
+and `--container-shell` is a no-op), and every `<P>_*` variable name.
+
+`native.exec` is an optional absolute path (default `/usr/local/bin/<command>`;
+unused for shell profiles); `native.exec_tmp` is an optional boolean (default
+`false`). The alignment test also compares `AGENT_CREDENTIALS` with
+`agent/policies/default.json`. An operator policy profile absent from the
+default policy forwards no credential, as today.
 
 ### Hooks
 
@@ -406,9 +417,9 @@ may read the core state listed below and must not change any other variable.
 | `agent_mounts` | after the state mounts (phase 5) | mode, home | `agent_mount_specs` entries `ro:<source>:<destination>` or `tmpfs:<destination>:<size>` | writable binds; relative paths; colon, CR or LF; a destination equal to, or containing, `/tmp`, `/var/tmp`, `/run`, the workspace, `/toolchains`, the home, the CA file or another mount (destinations below the home are allowed, M7); a missing source; a size not matching `[1-9][0-9]{0,5}[kmgKMG]` | none |
 | `agent_build_args` | before every build and before the freshness check (U8) | - | `agent_build_args` (`NAME=VALUE`), `agent_build_inputs` (files inside the installation, added to `build-inputs-hash`) | values with CR or LF; inputs outside the installation | none |
 
-Core state a hook may read: `network_mode`, `shell_mode`, `restricted`, `podman_access`,
+Core state a hook may read: `network_mode`, `network_profile` (selected policy profile, empty outside provider mode), `shell_mode`, `restricted`, `podman_access`, `qualification_probe`,
 `workspace`, `workspace_mount`, `state_dir` (empty in shared mode),
-`script_dir`, `caller_uid`, `caller_gid`, and every `AGENT_*` value.
+`script_dir`, `caller_uid`, `caller_gid`, every `AGENT_*` value, and any host variable that is not a core `<P>_*` setting (for example `PI_NPM_CACHE_SIZE`, `OPENCODE_PERMISSION`).
 
 Agent tmpfs mounts get `rw,noexec,nosuid,nodev,mode=0700,U` and the given
 size.
@@ -423,7 +434,10 @@ size.
   `USER`, `EDITOR`, `VISUAL`, the config variable, the CA variables,
   `CONTAINER_NAME`, `CONTAINER_HOST`); fixed agent settings (session, then
   restricted, then provider); finally `--unsetenv` for `AGENT_UNSET_ENV`,
-  `CONTAINER_CONNECTION` and, without delegation, `CONTAINER_HOST`.
+  `CONTAINER_CONNECTION` and, without delegation, `CONTAINER_HOST`. The output
+  of `session.py agent-args` (its proxy `--unsetenv`, provider proxy values and
+  guard `--entrypoint`) follows every core engine argument; the core adds no
+  `--entrypoint` in restricted modes.
 - **Reserved names for `<P>_ENV_VARS` (M5, U13).** Always: every name the core
   sets, `AGENT_RESERVED_ENV`, `AGENT_UNSET_ENV`. Restricted modes: also the
   proxy and CA variables and the names in `AGENT_RESTRICTED_ENV` and
@@ -443,11 +457,40 @@ size.
   excluded. A build first pulls any missing exact `FROM` base, then runs
   `podman build --pull=never --format docker` with `</dev/null`, as setup's
   recipe build does today; `create` also runs with `</dev/null` (L9).
-- **Build-only path (U3, M11).** `--container-build` alone runs the help,
-  toolchain, qualify and setup dispatch, mode validation, the maintenance
-  check, the host tool and launch-engine checks, CA selection and the build,
-  then exits. It skips the workspace refusal, state, toolchains, cgroup checks,
-  restricted preparation and the session.
+- **Build-only path (U3, M11, U16, U17).** `--container-build` with no
+  application argument (`--container-git-worktree` and `--container-shell` do
+  not count) builds and exits. It first validates every launch setting: mode,
+  maintenance, budgets, lifetime, image name, state and configuration paths
+  (lexically), delegation settings and socket, host tools, the launch engine
+  and CA selection. It skips the workspace refusal, state creation, toolchains,
+  cgroup checks, restricted preparation and the session. With an application
+  argument, `--container-build` builds and then starts the session.
+- **Build hash (M12).** `build-inputs-hash` is the SHA-256 of the lines
+  `<relative path> <sha256 of content>` for each input, in the order above,
+  each path once.
+- **Probe (M1).** `--container-qualify-probe` follows the restricted session
+  path without the toolchain library, the qualification check, the application
+  command, `agent_command_args`, `agent_approval_bypass` and `<P>_ENV_VARS`;
+  every other core step and hook applies.
+- **Variable syntax (U18).** `<P>_ENV_VARS` is split on whitespace; a name that
+  is not `[A-Za-z_][A-Za-z0-9_]*` stops the launch; unset or empty variables are
+  not forwarded. `<P>_READONLY_STATE` is a `boolean()`. U11's proxy set is
+  `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lowercase
+  forms.
+- **Help (M8).** The core prints the usage line from `AGENT_WRAPPER`, a
+  description from `AGENT_DISPLAY_NAME`, the common options and variables, and
+  the provider disclosure with each base policy profile's hosts from
+  `agent/policies/default.json`; `agent_help` adds the agent part after the
+  common variables.
+- **Shutdown slicing (U9).** As S's `control()`: a call is skipped when less
+  than 2 s remain before the deadline minus a 2 s reserve; otherwise its
+  duration is min(2 s, remaining minus 1 s).
+- **Agent mount sources.** The core resolves each `ro` source physically and
+  requires an existing file or directory (as O and P do).
+- **Messages.** A missing `podman` uses `die` (O's exit 127 ends); cleanup
+  warnings name the proxy ID when one exists (C); an unresolvable `HOME` falls
+  back to its lexical path (S, not P's stop); `PI_DEBUG` output is dropped
+  except what `agent_validate` prints.
 - **Engine query timeouts (M8).** Every read-only engine query (`info`,
   `version`, `ps`, `image exists`, `image inspect`, `container exists`,
   `inspect`, the delegation socket query) runs under `timeout --kill-after=1s
@@ -475,6 +518,8 @@ size.
 | P `select_ca_bundle` | core CA selection, done before the build-only exit |
 | P `build_runtime_image` | core build plus `agent_build_args` (`PI_VERSION` from `.version`, which is a build input) |
 | P `select_setting` | removed (U2) |
+| O native-variable allowlist | `agent_environment` (H-g) |
+| O toolchain-environment filter | dropped: redundant with `setup/toolchains.py` protected names |
 | P `debug` (`PI_DEBUG`) | `agent_validate` |
 | P `~/.npm` tmpfs (`PI_NPM_CACHE_SIZE`), `GITCONFIG` | `agent_validate` and `agent_mounts` |
 | X protected `-c` overrides, `--no-daemon` | `agent_command_args` |
@@ -502,7 +547,7 @@ core. Each entry has a row in "Spec deltas for the implementation change".
 | Every engine query is bounded by a timeout | S, C, X, A, O | phase 3-4 |
 | One temporary-storage layout; `exec` only where the profile declares it | all | U7 |
 | A stale image is refused until rebuilt; Antigravity's explicit build no longer skips the cache | all | U8 |
-| `TERM`, `EDITOR`/`VISUAL` (host value or `nano`) and `USER` set in every session | X, O (`TERM`, `EDITOR`); S, C, A (host `EDITOR`/`VISUAL` instead of fixed `nano`); all but O (`USER`) | phase 5 |
+| `TERM` and `USER` set in every session; `EDITOR`/`VISUAL` always `nano` | X, O (`TERM`, `EDITOR`); P (host `EDITOR`/`VISUAL` no longer kept, U15); all but O (`USER`) | phase 5 |
 | Claude's provider sessions forward `ANTHROPIC_API_KEY` only with the API policy profile | C | U10 |
 | Unrestricted sessions forward no API key unless listed in `<P>_ENV_VARS` | A, P (O: `PROVIDER` stays as an agent hook) | U10 |
 | Unrestricted sessions forward the proxy variables, `COLORTERM`, `LANG` and `LC_ALL` | S, C, X, A (P: `COLORTERM`, `LANG`, `LC_ALL`) | U11 |
@@ -511,6 +556,14 @@ core. Each entry has a row in "Spec deltas for the implementation change".
 | `<P>_ENV_VARS` cannot forward another method's credential in provider mode | O | U13 |
 | Isolated home children must be contained and private | A, O, P | M4 |
 | `/run` is not executable | X | L7 |
+| A missing `<P>_NETWORK` resolves to the same mode in the launcher and in every Python helper | C, X, A, O, P | H-a |
+| `STATE_DIR` and the configuration override are refused before the engine when not absolute or with colon, CR or LF | S, C, X (`CLAUDE_CONFIG_DIR`, `CODEX_HOME` included) | phase 3-4, M14 |
+| OpenCode's approval bypass no longer applies in shell mode | O | phase 1-2 |
+| OpenCode's `io.opencode-container.*` labels are dropped | O | phase 6 |
+| `.config/openspec` and the CA parent in an isolated home must be private and contained | S, C | M4 |
+| `--container-build` without application arguments validates every setting, builds and exits, also through a worktree launcher | all | U16, U17 |
+| Invalid `<P>_ENV_VARS` names stop the launch; `<P>_READONLY_STATE` accepts `boolean()` values; `ALL_PROXY` is forwarded in unrestricted mode | O, P | U18 |
+| Missing `podman` exits 1 instead of 127; an unresolvable `HOME` no longer stops P; `PI_DEBUG` output is dropped | O, P | low findings |
 | Shutdown is bounded by one 20 s deadline | X, A, P | U9 |
 | Shell mode passes its arguments to the shell in every mode | C, X, A, O, P | U14 |
 
@@ -527,7 +580,7 @@ adoption change; the reference rows are marked "reference: none".
 | contract | `reference-propagation` | Exact propagation within the adopted scope | MODIFIED: the copied scope includes `launcher/`, `tests/test_launcher.py` and `tests/fake_podman.py` |
 | U1 | `container-launcher` | Offline is the default runtime mode | reference: none (a profile without methods keeps `offline`); each agent adoption MODIFIES its required-mode requirement to "provider by default" |
 | U2 | wrapper specs | legacy names | reference: none; O and P adoptions REMOVE their alias, shim and notice requirements |
-| U3 | `container-launcher` | Predictable image operations | MODIFIED: `--container-build` alone builds and exits without a session |
+| U3, U16, U17 | `container-launcher` | Predictable image operations | MODIFIED: `--container-build` with no application argument builds and exits without a session, after validating every launch setting |
 | U3, U8 | `container-setup` | Mode-specific image and guard preparation; Wrapper-built runtime receives host CA trust | MODIFIED: setup always builds through the wrapper's build-only operation; `runtime_build` removed from the profile |
 | U4 | `persistent-state` | Shared shell state by default | reference: none (already shared); the Antigravity adoption MODIFIES its default-state requirement |
 | U5 | `container-launcher` | Extra variables forwarded by name | ADDED: `<P>_ENV_VARS` forwards listed names, never values, and skips reserved names with a notice |
@@ -538,7 +591,7 @@ adoption change; the reference rows are marked "reference: none".
 | phase 1-2 | `container-launcher` | Predictable image operations | MODIFIED: an image name with whitespace or control characters is refused before any engine operation |
 | phase 1-2 | `persistent-state` | Resolved state paths and isolation scope | MODIFIED: `STATE_DIR` and the configuration override are absolute, without colon, CR or LF, checked before the engine |
 | phase 3-4 | `container-launcher` | Verified launch engine | MODIFIED: every engine query is bounded by a timeout; responses with CR or extra records are refused |
-| phase 5 | `container-launcher` | Transparent invocation and terminal handling | MODIFIED: `USER` is set; `TERM` is forwarded; `EDITOR` and `VISUAL` keep the host value or default to `nano` |
+| phase 5 | `container-launcher` | Transparent invocation and terminal handling | MODIFIED: `USER` is set; `TERM` is forwarded; `EDITOR` and `VISUAL` are `nano` (the `runtime-image` editor requirement is unchanged, U15) |
 | phase 1-2 (A) | wrapper specs | toolchain switch | reference: none; the Antigravity adoption treats an empty `<P>_TOOLCHAINS` as the default |
 | U9 | `container-launcher` | Bounded session shutdown | reference: none (already family A); X, A and P adoptions state the shared 20 s deadline |
 | H1 | `container-setup` | Protected complete installation | MODIFIED: the installation contains `launcher/core.sh` and `agent/launcher.sh` |
@@ -551,6 +604,13 @@ adoption change; the reference rows are marked "reference: none".
 | U12 | `container-podman-access` | Access policy applies across launch modes | MODIFIED: delegated sessions get private tmpfs `/var/lib/containers` and `/run/containers` |
 | U12 | `container-launcher` | Predictable image operations | MODIFIED: builds use `--format docker`, pull missing exact bases, then `--pull=never`; no build timeout |
 | M4 | `persistent-state` | Resolved state paths and isolation scope | MODIFIED: every isolated-home child is contained and private |
+| H-a | `container-launcher` | Restricted launches require current local qualification | MODIFIED: qualification checks use the mode the launcher resolved, including a profile's provider default |
+| H-e | `network-egress` | Profile-bound restricted identity | MODIFIED: preflight requires the core and agent launcher files to be protected |
+| H-e | `container-setup` | Protected complete installation | MODIFIED: managed launches verify the core and agent launcher files as protected (with H1) |
+| M8 | `network-egress` | Residual exfiltration disclosure | MODIFIED: the core prints each base policy profile's hosts from the default policy |
+| U16, U17 | `container-launcher` | Predictable image operations | (see U3 row) |
+| U18 | `container-launcher` | Extra variables forwarded by name | (part of the U5 ADDED requirement: syntax and invalid names) |
+| H-c | `container-launcher` | Transparent invocation and terminal handling | reference: none (S stays a Bash session); shell profiles are always in shell mode |
 | phase 6 | `container-launcher` | Owned container lifecycle | MODIFIED: a failed create whose name holds this session's container is never a collision; that container is removed or reported unresolved |
 | U14 | wrapper specs | shell mode | reference: none; C, X, A, O and P adoptions pass shell-mode arguments to the shell in every mode |
 
@@ -603,3 +663,45 @@ decisions U10-U14 on the findings that needed one:
 | L7 mount modes | Core rules: Temporary mount modes |
 | L8 test-map phases | `docs/launcher-test-map.md` regenerated |
 | L9 `</dev/null` for create and build | Core rules: Build |
+
+### Second review
+
+A second independent review (2026-11-16) checked the corrected document and
+found 7 high, 14 medium and 13 low findings. The user decided:
+
+- **U15.** `EDITOR` and `VISUAL` are always `nano`, as the `runtime-image`
+  editor requirement states; the host value is not kept (changes P).
+- **U16.** The build-only path validates every launch setting before building
+  and skips only workspace refusal, state creation, toolchains, cgroups,
+  restricted preparation and the session.
+- **U17.** `--container-build` builds and exits when no application argument
+  is given; `--container-git-worktree` (added by managed worktree launchers) and
+  `--container-shell` do not count.
+- **U18.** `<P>_ENV_VARS` is whitespace-separated, an invalid name stops the
+  launch and empty variables are not forwarded; `<P>_READONLY_STATE` is a
+  `boolean()`; the unrestricted proxy set includes `ALL_PROXY`.
+
+| Finding | Resolution |
+| --- | --- |
+| H-a missing mode is offline in the Python helpers | Files: Python helpers derive the mode from the profile; the core exports the resolved mode; delta |
+| H-b entry script without readlink | Files: entry falls back to `${BASH_SOURCE[0]%/*}`; the core keeps S's diagnosis order |
+| H-c reference command | shell profiles are always in shell mode and run `/bin/<command>` |
+| H-d build-only versus tests | U16, U17; tests marked "shared (rewrite)" |
+| H-e preflight and managed-launch trust lists | Files: `control.py`, `setup/launch.py`; deltas |
+| H-f editor versus `runtime-image` spec | U15 |
+| H-g OpenCode native-variable allowlist | phase 5 row and helper table: `agent_environment` |
+| M1 probe path | Core rules: Probe |
+| M2 combined build flags | U17 |
+| M3 setup unaware of new variables | Files: `agent_profile.py`, `common.py` |
+| M4 variable syntax | U18 |
+| M5 credential tests classified as hook | test map: "shared (rewrite)" U10 with the hook part noted |
+| M6 S tests depending on U7 and U16 | test map: "shared (rewrite)" |
+| M7 non-wrapper tests | Files row and test map section "Other shared test files" |
+| M8 help composition | Core rules: Help; delta |
+| M9 `session.py agent-args` ordering | Core rules: Ordering |
+| M10 OpenCode bypass in shell mode | Visible changes |
+| M11 data for hooks | readable state: `network_profile`, `qualification_probe`, agent host variables |
+| M12 build-hash construction | Core rules: Build hash |
+| M13 profile field types and policy credentials | profile data paragraph |
+| M14 `CONFIG_DIR` check scope | phase 1-2 row; Visible changes |
+| Low findings | visible-change rows added; S cells (CA parent, `HISTFILE`) corrected; fallback name `AGENT_NAME`; U9 slicing stated; agent mount sources resolved; `ALL_PROXY` (U18); messages (`exit 127`, proxy ID, `HOME`, `PI_DEBUG`); O toolchain filter dropped; P `IMAGE` default tag follows the profile image with `:latest` |

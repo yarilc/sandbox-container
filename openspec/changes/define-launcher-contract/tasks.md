@@ -51,6 +51,13 @@ section of `docs/launcher-contract.md`, each with its resolution.
 - [x] 4.3 Correct the low findings L1-L9 and regenerate `docs/launcher-test-map.md`, adding a "shared (rewrite)" destination for tests a decision changes. Verify that the totals still match the `def test_` counts.
 - [x] 4.4 Update the `docs/validation.md` entry (review performed, finding counts and resolutions), run `openspec validate define-launcher-contract --strict` and `git diff --check`, and commit.
 
+## 5. Second independent review fixes
+
+- [x] 5.1 Record decisions U15-U18 and resolve the second review's high findings (H-a to H-g) in the contract: resolved mode exported to the Python helpers, entry-script fallback without readlink, shell profiles always in shell mode, build-only validation, preflight and managed-launch trust lists, editor default, OpenCode's native-variable allowlist. Verify each finding has a recorded resolution and a delta row where behavior changes.
+- [x] 5.2 Resolve the medium and low findings: probe path, combined build flags, setup awareness of the new variables, variable syntax, help composition, `session.py agent-args` ordering, build-hash construction, profile field types, hook state, cell corrections and missing visible changes. Verify as in 5.1.
+- [x] 5.3 Regenerate `docs/launcher-test-map.md` (credential and decision-dependent rewrites) and add the affected non-wrapper test files; verify the totals still match the `def test_` counts.
+- [x] 5.4 Update the `docs/validation.md` entry, run `openspec validate define-launcher-contract --strict` and `git diff --check`, and commit.
+
 ## Workflow follow-up
 
 - The user reviews `docs/launcher-contract.md`; archive this change with `--skip-specs`.
