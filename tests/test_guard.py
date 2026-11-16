@@ -388,6 +388,11 @@ class GuardTests(unittest.TestCase):
         harness.setUp()
         self.addCleanup(harness.doCleanups)
         context, environment = harness.provider_fixture()
+        # The harness belongs to the wrapper and uses its variable names; find
+        # the proxy image without naming them.
+        images = [value for key, value in environment.items() if key.endswith('_EGRESS_IMAGE')]
+        self.assertEqual(len(images), 1, 'expected one *_EGRESS_IMAGE entry in the harness environment: '
+                         + ', '.join(sorted(environment)))
         transport = self.fixture / 'transport'
         transport.mkdir(mode=0o700)
         config = self.fixture / 'config'
@@ -413,7 +418,7 @@ class GuardTests(unittest.TestCase):
                               '--volume', f'{logs}:/logs:rw',
                               '--env', 'EGRESS_PROFILE=controlled-test',
                               '--env', 'EGRESS_SESSION=guarded-synthetic',
-                              environment[profile_env('EGRESS_IMAGE')])
+                              images[0])
         self.addCleanup(harness.podman, 'rm', '--force', '--time', '0', '--ignore', name)
         harness.podman('start', name)
         deadline = time.monotonic() + 10
