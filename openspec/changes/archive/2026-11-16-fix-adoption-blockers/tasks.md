@@ -14,7 +14,7 @@
 ## 3. Integration and tag
 
 - [x] 3.1 Run the unit discovery, `--guard` and `--network`, and `git diff --check`; verify they pass.
-- [ ] 3.2 Add a `sandbox-ref-20` section to `docs/validation.md` with each check and its result; commit, merge into `main` and create the annotated tag `sandbox-ref-20`; verify `git describe --exact-match main` prints `sandbox-ref-20` and the parity table's reference cell names it.
+- [x] 3.2 Add a `sandbox-ref-20` section to `docs/validation.md` with each check and its result; commit, merge into `main` and create the annotated tag `sandbox-ref-20`; verify `git describe --exact-match main` prints `sandbox-ref-20` and the parity table's reference cell names it.
 
 ## Workflow follow-up
 
