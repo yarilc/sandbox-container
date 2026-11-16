@@ -166,489 +166,508 @@ EOF
     printf '%s' "$text"
 }
 
-# Setup must diagnose prerequisites before normal runtime configuration exists.
-# Help takes precedence regardless of option order and never loads setup code.
-for arg in "$@"; do
-    [[ "$arg" != --container-help ]] || { usage; exit 0; }
-done
-# Toolchain management runs on the host and never starts a session.
-if [[ "${1:-}" == --container-toolchain ]]; then
-    [[ "${2:-}" != launch-env ]] || die 'usage: --container-toolchain add <recipe.json> | list | remove <name> | verify [<name>]'
-    command -v python3 >/dev/null || die 'host Python 3 is required for the toolchain library'
-    exec python3 -I "$wrapper_dir/setup/toolchains.py" "${@:2}"
-fi
-for arg in "$@"; do
-    if [[ "$arg" == --container-qualify ]]; then
-        [[ $# == 1 ]] || die '--container-qualify must be used alone'
-        command -v python3 >/dev/null || die 'host Python 3 is required for qualification'
-        exec python3 -I "$wrapper_dir/network/qualify.py" qualify
-    fi
-done
-for arg in "$@"; do
-    if [[ "$arg" == --container-setup ]]; then
-        [[ $# == 1 ]] || die '--container-setup must be used alone'
-        [[ -t 0 && -t 1 ]] || die '--container-setup requires an interactive terminal'
-        command -v python3 >/dev/null || die 'host Python 3 is required for interactive setup'
-        exec python3 -I "$wrapper_dir/setup/setup.py"
-    fi
-done
-
-build_image=0
-qualification_probe=0
-git_worktree=0
-args=()
-for arg in "$@"; do
-    case "$arg" in
-        --container-qualify-probe)
-            [[ $# == 1 ]] || die 'the fixed qualification probe must be used alone'
-            qualification_probe=1 ;;
-        --container-help) usage; exit 0 ;;
-        --container-build) build_image=1 ;;
-        --container-shell) ;;  # The session is always Bash.
-        --container-git-worktree) git_worktree=1 ;;
-        --container-toolchain) die '--container-toolchain must be the first argument' ;;
-        *) args+=("$arg") ;;
-    esac
-done
-
-# Offline is the default runtime mode; unrestricted applies only when explicit.
-network_mode=${cfg_NETWORK:-offline}
-case "$network_mode" in
-    offline|unrestricted) ;;
-    provider) die "${P}_NETWORK=provider is unavailable: the reference profile declares no authentication method; use offline or unrestricted" ;;
-    *) die "${P}_NETWORK must be offline or unrestricted" ;;
-esac
-# Host tools are diagnosed later, so a missing readlink leaves the path empty here.
-script_path=$WRAPPER_PATH
-script_dir=${script_path%/*}
-# An offline session needs a protected installation with the built guard and its
-# manifest. Without one, give setup guidance before any engine or state operation;
-# session.py prepare still validates the installation fully.
-if [[ "$network_mode" == offline ]] \
-    && { [[ -z "$script_path" ]] || ! compgen -G "$script_dir/network/bin/*.sha256" >/dev/null; }; then
-    setup_wrapper=$WRAPPER_INVOKED
-    [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
-    printf -v setup_command 'bash %q --container-setup' "$setup_wrapper"
-    die "setup required: offline sessions need a protected installation; run $setup_command and use the managed launcher, or set ${P}_NETWORK=unrestricted for a direct session"
-fi
-
-boolean() {
-    case "${2,,}" in
-        1|true|yes) printf 1 ;;
-        ''|0|false|no) printf 0 ;;
-        *) die "$1 must be 0, 1, true, false, yes, or no" ;;
-    esac
-}
-toolchains_enabled=$(boolean "${P}_TOOLCHAINS" "${cfg_TOOLCHAINS:-1}")
-podman_access=0
-[[ "${cfg_PODMAN:-}" != 1 ]] || podman_access=1
-trust_host_ca=$(boolean "${P}_TRUST_HOST_CA" "${cfg_TRUST_HOST_CA:-}")
-if [[ "$network_mode" != unrestricted ]] && ((podman_access)); then
-    die "restricted networking rejects ${P}_PODMAN=1: the host API bypasses egress enforcement; select explicit unrestricted mode for delegation"
-fi
-[[ -z "${cfg_STATE_DIR:-}" || -z "${cfg_CONFIG_DIR:-}" ]] \
-    || die "${P}_STATE_DIR conflicts with $AGENT_CONFIG_DIR_ENV; unset $AGENT_CONFIG_DIR_ENV to isolate state"
-
-# Agent budgets and lifetime. network/agent_budgets.py implements the same
-# rules for setup and qualification; unrestricted installs may lack host Python.
-# Only an unset budget selects its default; no value disables a budget.
-memory_text=${cfg_MEMORY_LIMIT-4g}
-cpu_text=${cfg_CPU_LIMIT-2}
-pids_text=${cfg_PIDS_LIMIT-512}
-timeout_text=${cfg_RUN_TIMEOUT:-0}
-memory_bytes=0
-if [[ "$memory_text" =~ ^([1-9][0-9]{0,15})([kmgKMG])$ ]]; then
-    case "${BASH_REMATCH[2],,}" in
-        k) unit=1024 ;;
-        m) unit=1048576 ;;
-        *) unit=1073741824 ;;
-    esac
-    ((10#${BASH_REMATCH[1]} > (1 << 50) / unit)) || memory_bytes=$((10#${BASH_REMATCH[1]} * unit))
-fi
-((memory_bytes > 0)) || die "${P}_MEMORY_LIMIT must be a positive integer with unit k, m or g, for example 4g"
-cpu_nano=0
-if [[ "$cpu_text" =~ ^([0-9]{1,4})(\.([0-9]{1,3}))?$ ]]; then
-    fraction=${BASH_REMATCH[3]}000
-    cpu_nano=$((10#${BASH_REMATCH[1]} * 1000000000 + 10#${fraction:0:3} * 1000000))
-    ((cpu_nano <= 1024000000000)) || cpu_nano=0
-fi
-((cpu_nano > 0)) || die "${P}_CPU_LIMIT must be a positive number of CPUs with at most 3 decimals, for example 2 or 1.5"
-[[ "$pids_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((pids_text > 0 && pids_text <= 4194304)) \
-    || die "${P}_PIDS_LIMIT must be a positive integer process count up to 4194304"
-[[ "$timeout_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((timeout_text <= 2147483647)) \
-    || die "${P}_RUN_TIMEOUT must be whole seconds; 0 disables the lifetime limit"
-pids_limit=$((10#$pids_text))
-run_timeout=$((10#$timeout_text))
-
-# Refuse sensitive writable workspaces before any engine or state operation.
-workspace=$(pwd -P)
-workspace_mount=$workspace
-((git_worktree == 0)) || workspace_mount=$(dirname -- "$workspace")
-[[ "${HOME:-}" == /* ]] || die 'HOME must be an absolute path'
-# Builtins only: tool prerequisites are diagnosed later. A missing home cannot
-# be a workspace, so its lexical path is sufficient then.
-physical_home=$(cd -- "$HOME" 2>/dev/null && pwd -P) || physical_home=$HOME
-unsafe_workspace=0
-case "$workspace_mount" in
-    /|/home|/root|/etc|/usr|/var|/bin|/sbin|/lib|/lib64|/boot|/opt|/srv|/mnt|/media|/proc|/sys|/dev|/run|/tmp)
-        unsafe_workspace=1 ;;
-esac
-[[ "$workspace_mount" != "$physical_home" && ! "$workspace_mount" =~ ^/mnt/[A-Za-z]$ ]] || unsafe_workspace=1
-if ((unsafe_workspace)); then
-    [[ "${cfg_ALLOW_UNSAFE_WORKSPACE:-}" == 1 ]] \
-        || die "refusing sensitive workspace $workspace_mount; launch from a project subdirectory or set exact ${P}_ALLOW_UNSAFE_WORKSPACE=1"
-    printf '%s: WARNING: sensitive workspace explicitly exposed read/write: %s\n' "$AGENT_NAME" "$workspace_mount" >&2
-fi
-
-command -v podman >/dev/null || die 'Podman is required on the host'
-command -v timeout >/dev/null && [[ $(timeout --version 2>/dev/null) == *'GNU coreutils'* ]] \
-    || die 'GNU timeout is required on the host; install GNU coreutils'
-[[ -n "$script_path" ]] || die 'GNU readlink is required on the host; install GNU coreutils'
-# Isolated credentials and history must never land in, or contain, the workspace.
-# Compare physical paths; readlink -m also resolves a directory not created yet.
-if [[ -n "${cfg_STATE_DIR:-}" ]]; then
-    state_physical=$(readlink -m -- "$cfg_STATE_DIR")
-    [[ "$state_physical/" != "$workspace_mount/"* && "$workspace_mount/" != "$state_physical/"* ]] \
-        || die "${P}_STATE_DIR must not overlap the workspace: $cfg_STATE_DIR"
-fi
-# Unix service access also supports running this wrapper inside another container
-# on the same host. TCP/SSH transports and Podman Machine are not supported.
-[[ -z "${CONTAINER_CONNECTION:-}" ]] || die 'named remote connections are not supported; use local Podman or a local Unix CONTAINER_HOST'
-case "${CONTAINER_HOST:-}" in
-    '') ;;
-    unix://*)
-        launch_socket=${CONTAINER_HOST#unix://}
-        [[ "$launch_socket" == /* && -n "${launch_socket//\//}" ]] \
-            || die 'CONTAINER_HOST requires an absolute Unix socket path beyond /'
-        ;;
-    *) die 'remote TCP/SSH Podman contexts are not supported; use a local Unix socket' ;;
-esac
-capture_response runtime_info podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}' \
-    || die 'cannot query Podman; check the local rootless service'
-runtime_info=${runtime_info%$'\n'}
-[[ "$runtime_info" != *$'\n'* ]] || die 'invalid Podman engine response: expected one record with at most one final LF'
-[[ "$runtime_info" == "true linux false" || "$runtime_info" == "true linux true" ]] || die 'a verified Linux rootless Podman engine is required (unexpected engine response)'
-read -r _ _ remote <<< "$runtime_info"
-if [[ "$remote" == true && "${CONTAINER_HOST:-}" != unix:///* ]]; then
-    die 'remote Podman contexts are not supported; set CONTAINER_HOST to a local Unix socket'
-fi
-
-# A budget is enforced only when the verified engine reports its cgroup v2
-# controller as delegated. Unenforced budgets are not requested, are announced,
-# and must be absent from the created configuration (see network/agent_budgets.py).
-capture_response cgroup_controllers podman info --format '{{.Host.CgroupControllers}}' \
-    || die 'cannot query the rootless cgroup controllers'
-cgroup_controllers=${cgroup_controllers%$'\n'}
-[[ "$cgroup_controllers" =~ ^\[([a-z_]+( [a-z_]+)*)?\]$ ]] \
-    || die 'unverifiable cgroup controller list from the Podman engine'
-controller_delegated() {
-    [[ " ${cgroup_controllers:1:${#cgroup_controllers}-2} " == *" $1 "* ]]
-}
-budget_args=()
-expected_memory=0
-expected_cpu=0
-pids_enforced=0
-if controller_delegated memory; then
-    budget_args+=("--memory=$memory_bytes")
-    expected_memory=$memory_bytes
-else
-    printf '%s: agent memory budget not enforced: cgroup controller memory is not delegated to the rootless engine\n' "$AGENT_NAME" >&2
-fi
-if controller_delegated cpu; then
-    budget_args+=("--cpus=$cpu_text")
-    expected_cpu=$cpu_nano
-else
-    printf '%s: agent CPU budget not enforced: cgroup controller cpu is not delegated to the rootless engine\n' "$AGENT_NAME" >&2
-fi
-if controller_delegated pids; then
-    budget_args+=("--pids-limit=$pids_limit")
-    pids_enforced=1
-else
-    # Override any containers.conf default that would request the missing controller.
-    budget_args+=(--pids-limit=-1)
-    printf '%s: agent process budget not enforced: cgroup controller pids is not delegated to the rootless engine\n' "$AGENT_NAME" >&2
-fi
-if [[ "$network_mode" != unrestricted ]]; then
-    command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
-    [[ "$remote" == true ]] || die 'restricted networking currently requires the tested same-host Unix service; local-engine enforcement is unverified'
-    capture_response network_backend podman info --format '{{.Host.NetworkBackend}}' \
-        || die 'cannot verify restricted network backend'
-    capture_response network_version podman version --format '{{.Server.Version}}' \
-        || die 'cannot verify restricted network server version'
-    capture_response network_platform podman info --format '{{json .Host}}' \
-        || die 'cannot verify restricted platform security policy'
-elif ((qualification_probe)); then
-    die 'qualification probes require restricted networking'
-fi
-
-caller_uid=$(id -u)
-caller_gid=$(id -g)
-socket="${cfg_PODMAN_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$caller_uid}/podman/podman.sock}"
-if [[ -z "${cfg_PODMAN_SOCKET:-}" && "${CONTAINER_HOST:-}" == unix:///* ]]; then
-    socket=${CONTAINER_HOST#unix://}
-fi
-if ((podman_access)); then
-    [[ "$socket" == /* ]] || die "Podman socket must be an absolute path: $socket"
-    [[ -S "$socket" && -r "$socket" && -w "$socket" ]] || die "Podman socket not accessible: $socket; enable 'systemctl --user start podman.socket' or start 'podman system service --time=0'"
-    socket=$(readlink -f -- "$socket")
-    capture_response socket_info podman --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}' \
-        || die "cannot query Podman socket: $socket; check the rootless service, permissions and SELinux policy"
-    [[ "$socket_info" != *$'\r'* ]] || die "invalid Podman socket response: $socket"
-    socket_info=${socket_info%$'\n'}
-    [[ "$socket_info" != *$'\n'* ]] || die "invalid Podman socket response: $socket"
-    read -r socket_rootless host_socket <<< "$socket_info"
-    # Podman 5 reports the service socket as a unix:// URL; earlier releases report the bare path.
-    host_socket=${host_socket#unix://}
-    [[ "$socket_rootless" == true ]] || die "Podman socket must serve a rootless engine: $socket"
-    # A wrapper already inside a container sees a remapped Unix socket. Bind
-    # sources are resolved by the service, so use its host-side socket path.
-    [[ "$host_socket" == /* && "$host_socket" != *$'\n'* ]] || die "Podman socket $socket did not report an absolute host socket path"
-fi
-
-image="${cfg_IMAGE:-$AGENT_IMAGE:latest}"
-state_dir="${cfg_STATE_DIR:-}"
-
-private_directory() {
-    local path=$1 mode
-    [[ -d "$path" && -r "$path" && -w "$path" && -x "$path" ]] \
-        || die "state directory is not accessible: $path"
-    [[ $(stat -c '%u' -- "$path") == "$caller_uid" ]] \
-        || die "state directory must belong to the calling user: $path"
-    mode=$(stat -c '%a' -- "$path")
-    (( (8#$mode & 077) == 0 )) \
-        || die "state directory must be private: $path (chmod 700; use native Linux storage if permissions are not enforced)"
-}
-
-create_private_directory() (
-    umask 077
-    mkdir -p -- "$@"
-)
-
-state_mounts=()
-# Host directories the session can write: the toolchain library must avoid
-# them and restricted preparation declares them writable.
-writable_state=()
-if [[ -n "$state_dir" ]]; then
-    create_private_directory "$state_dir"
-    state_dir=$(cd -- "$state_dir" && pwd -P)
-    private_directory "$state_dir"
-    # Resolve before creating children so an existing parent symlink cannot
-    # redirect configuration creation outside the dedicated application home.
-    for relative in "$AGENT_CONFIG_HOME" "${AGENT_SHARED_DIRS[@]}"; do
-        resolved=$(readlink -m -- "$state_dir/$relative")
-        [[ "$resolved" == "$state_dir/"* ]] \
-            || die "isolated configuration escapes state home: $state_dir/$relative"
-        create_private_directory "$state_dir/$relative"
+# Phase 1: help, toolchain, qualify and setup dispatch, option parsing.
+core_arguments() {
+    # Setup must diagnose prerequisites before normal runtime configuration exists.
+    # Help takes precedence regardless of option order and never loads setup code.
+    for arg in "$@"; do
+        [[ "$arg" != --container-help ]] || { usage; exit 0; }
     done
-    private_directory "$state_dir/$AGENT_CONFIG_HOME"
-    if ((trust_host_ca)); then
-        # Prevent the engine from creating a nested CA mount parent owned by a
-        # subordinate mapped UID inside the writable isolated home.
-        create_private_directory "$state_dir/ca"
-        private_directory "$state_dir/ca"
+    # Toolchain management runs on the host and never starts a session.
+    if [[ "${1:-}" == --container-toolchain ]]; then
+        [[ "${2:-}" != launch-env ]] || die 'usage: --container-toolchain add <recipe.json> | list | remove <name> | verify [<name>]'
+        command -v python3 >/dev/null || die 'host Python 3 is required for the toolchain library'
+        exec python3 -I "$wrapper_dir/setup/toolchains.py" "${@:2}"
     fi
-    state_mounts+=(--volume "$state_dir:$AGENT_HOME:rw")
-    writable_state+=("$state_dir")
-else
-    config_dir="${cfg_CONFIG_DIR:-$HOME/$AGENT_CONFIG_HOME}"
-    create_private_directory "$config_dir"
-    config_dir=$(cd -- "$config_dir" && pwd -P)
-    private_directory "$config_dir"
-    state_mounts+=(--volume "$config_dir:$AGENT_HOME/$AGENT_CONFIG_HOME:rw")
-    writable_state+=("$config_dir")
-    for relative in "${AGENT_SHARED_DIRS[@]}"; do
-        create_private_directory "$HOME/$relative"
-        shared_path=$(cd -- "$HOME/$relative" && pwd -P)
-        ((AGENT_PRIVATE_SHARED_DIRS == 0)) || private_directory "$shared_path"
-        state_mounts+=(--volume "$shared_path:$AGENT_HOME/$relative:rw")
-        writable_state+=("$shared_path")
+    for arg in "$@"; do
+        if [[ "$arg" == --container-qualify ]]; then
+            [[ $# == 1 ]] || die '--container-qualify must be used alone'
+            command -v python3 >/dev/null || die 'host Python 3 is required for qualification'
+            exec python3 -I "$wrapper_dir/network/qualify.py" qualify
+        fi
     done
-fi
-
-ca_bundle=""
-if ((trust_host_ca)); then
-    if [[ -n "${cfg_CA_BUNDLE:-}" ]]; then
-        [[ -f "$cfg_CA_BUNDLE" ]] || die "${P}_CA_BUNDLE is not a file: $cfg_CA_BUNDLE"
-        ca_bundle=$(readlink -f -- "$cfg_CA_BUNDLE")
-    else
-        for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
-            if [[ -f "$candidate" ]]; then
-                ca_bundle=$candidate
-                break
-            fi
-        done
-        [[ -n "$ca_bundle" ]] || die "no default CA bundle found; set ${P}_CA_BUNDLE to a bundle file"
-    fi
-fi
-
-# The operator's toolchain library is mounted read-only; the shared module
-# checks it stays private and outside every writable mount and the installation,
-# and lists the default toolchains verified for this runtime recipe.
-toolchain_library=''
-toolchain_path=''
-toolchain_env=()
-if ((toolchains_enabled && ! qualification_probe)); then
-    command -v python3 >/dev/null \
-        || die "host Python 3 is required for the toolchain library; set ${P}_TOOLCHAINS=0 to omit it"
-    toolchain_avoid=(--avoid "$workspace_mount")
-    for core_path in "${writable_state[@]}"; do
-        toolchain_avoid+=(--avoid "$core_path")
+    for arg in "$@"; do
+        if [[ "$arg" == --container-setup ]]; then
+            [[ $# == 1 ]] || die '--container-setup must be used alone'
+            [[ -t 0 && -t 1 ]] || die '--container-setup requires an interactive terminal'
+            command -v python3 >/dev/null || die 'host Python 3 is required for interactive setup'
+            exec python3 -I "$wrapper_dir/setup/setup.py"
+        fi
     done
-    toolchain_output=$(python3 -I "$script_dir/setup/toolchains.py" launch-env "${toolchain_avoid[@]}") \
-        || die "toolchain library check failed; set ${P}_TOOLCHAINS=0 to start without it"
-    while IFS=$'\t' read -r toolchain_kind toolchain_first toolchain_second; do
-        case "$toolchain_kind" in
-            library) toolchain_library=$toolchain_first ;;
-            path) toolchain_path+=":$toolchain_first" ;;
-            env) toolchain_env+=(--env "$toolchain_first=$toolchain_second") ;;
-            *) die 'unexpected toolchain library output' ;;
+
+    build_image=0
+    qualification_probe=0
+    git_worktree=0
+    args=()
+    for arg in "$@"; do
+        case "$arg" in
+            --container-qualify-probe)
+                [[ $# == 1 ]] || die 'the fixed qualification probe must be used alone'
+                qualification_probe=1 ;;
+            --container-help) usage; exit 0 ;;
+            --container-build) build_image=1 ;;
+            --container-shell) ;;  # The session is always Bash.
+            --container-git-worktree) git_worktree=1 ;;
+            --container-toolchain) die '--container-toolchain must be the first argument' ;;
+            *) args+=("$arg") ;;
         esac
-    done <<<"$toolchain_output"
-    [[ "$toolchain_library" == /* ]] || die 'toolchain library check returned no library'
-fi
-
-# Restricted sessions use the shared helper; this wrapper keeps only the
-# agent-specific command, environment, state and credentials.
-session_helper=(python3 -I "$script_dir/network/session.py")
-network_inputs=()
-qualification_inputs=()
-guard_digest=''
-if [[ "$network_mode" != unrestricted ]]; then
-    network_inputs=(--installation "$script_dir" --writable "$workspace_mount"
-        --mount-target "$workspace_mount" --mount-target "$AGENT_HOME")
-    [[ -z "$toolchain_library" ]] || network_inputs+=(--mount-target /toolchains)
-    for core_path in "${writable_state[@]}"; do
-        network_inputs+=(--writable "$core_path")
     done
-    prepare_inputs=(--mode "$network_mode" --server-version "${network_version%$'\n'}"
-        --backend "${network_backend%$'\n'}" --endpoint "${CONTAINER_HOST:-}" --engine "$runtime_info")
-    if ((qualification_probe)); then
-        prepare_inputs+=(--probe --qualification-input "${cfg_QUALIFICATION_INPUT:-}"
-            --workspace "$workspace")
+}
+
+# Phase 2: network mode, switches, budgets and lifetime.
+core_settings() {
+    # Offline is the default runtime mode; unrestricted applies only when explicit.
+    network_mode=${cfg_NETWORK:-offline}
+    case "$network_mode" in
+        offline|unrestricted) ;;
+        provider) die "${P}_NETWORK=provider is unavailable: the reference profile declares no authentication method; use offline or unrestricted" ;;
+        *) die "${P}_NETWORK must be offline or unrestricted" ;;
+    esac
+    # Host tools are diagnosed later, so a missing readlink leaves the path empty here.
+    script_path=$WRAPPER_PATH
+    script_dir=${script_path%/*}
+    # An offline session needs a protected installation with the built guard and its
+    # manifest. Without one, give setup guidance before any engine or state operation;
+    # session.py prepare still validates the installation fully.
+    if [[ "$network_mode" == offline ]] \
+        && { [[ -z "$script_path" ]] || ! compgen -G "$script_dir/network/bin/*.sha256" >/dev/null; }; then
+        setup_wrapper=$WRAPPER_INVOKED
+        [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
+        printf -v setup_command 'bash %q --container-setup' "$setup_wrapper"
+        die "setup required: offline sessions need a protected installation; run $setup_command and use the managed launcher, or set ${P}_NETWORK=unrestricted for a direct session"
     fi
-    prepared=$(printf '%s' "$network_platform" | "${session_helper[@]}" prepare "${network_inputs[@]}" "${prepare_inputs[@]}")
-    read -r guard_digest qualification_token qualification_tls <<< "$prepared"
-    if ((qualification_probe)); then
-        qualification_inputs=(--probe --token "$qualification_token" --workspace "$workspace"
-            --qualification-input "${cfg_QUALIFICATION_INPUT:-}")
-        [[ "$qualification_tls" != 1 ]] || qualification_inputs+=(--tls)
+
+    boolean() {
+        case "${2,,}" in
+            1|true|yes) printf 1 ;;
+            ''|0|false|no) printf 0 ;;
+            *) die "$1 must be 0, 1, true, false, yes, or no" ;;
+        esac
+    }
+    toolchains_enabled=$(boolean "${P}_TOOLCHAINS" "${cfg_TOOLCHAINS:-1}")
+    podman_access=0
+    [[ "${cfg_PODMAN:-}" != 1 ]] || podman_access=1
+    trust_host_ca=$(boolean "${P}_TRUST_HOST_CA" "${cfg_TRUST_HOST_CA:-}")
+    if [[ "$network_mode" != unrestricted ]] && ((podman_access)); then
+        die "restricted networking rejects ${P}_PODMAN=1: the host API bypasses egress enforcement; select explicit unrestricted mode for delegation"
     fi
-fi
+    [[ -z "${cfg_STATE_DIR:-}" || -z "${cfg_CONFIG_DIR:-}" ]] \
+        || die "${P}_STATE_DIR conflicts with $AGENT_CONFIG_DIR_ENV; unset $AGENT_CONFIG_DIR_ENV to isolate state"
 
-# The opted-in host CA bundle also verifies the runtime build's package fetches.
-# It is a build secret: mounted only for its RUN step and never stored in a layer.
-build_secret=()
-if [[ -n "$ca_bundle" ]]; then
-    build_secret=(--secret "id=build-ca,src=$ca_bundle")
-fi
-if ((build_image)); then
-    [[ "${cfg_MAINTENANCE:-}" == 1 ]] || die "image refresh requires exact ${P}_MAINTENANCE=1; host pulls/build RUN steps are outside runtime filtering"
-    podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
-elif podman image exists "$image"; then
-    :
-else
-    image_status=$?
-    [[ "$image_status" == 1 ]] || die "cannot inspect image: $image"
-    [[ "${cfg_MAINTENANCE:-}" == 1 ]] || die "image is absent; prepare it with exact ${P}_MAINTENANCE=1 (build traffic is outside runtime filtering)"
-    podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
-fi
+    # Agent budgets and lifetime. network/agent_budgets.py implements the same
+    # rules for setup and qualification; unrestricted installs may lack host Python.
+    # Only an unset budget selects its default; no value disables a budget.
+    memory_text=${cfg_MEMORY_LIMIT-4g}
+    cpu_text=${cfg_CPU_LIMIT-2}
+    pids_text=${cfg_PIDS_LIMIT-512}
+    timeout_text=${cfg_RUN_TIMEOUT:-0}
+    memory_bytes=0
+    if [[ "$memory_text" =~ ^([1-9][0-9]{0,15})([kmgKMG])$ ]]; then
+        case "${BASH_REMATCH[2],,}" in
+            k) unit=1024 ;;
+            m) unit=1048576 ;;
+            *) unit=1073741824 ;;
+        esac
+        ((10#${BASH_REMATCH[1]} > (1 << 50) / unit)) || memory_bytes=$((10#${BASH_REMATCH[1]} * unit))
+    fi
+    ((memory_bytes > 0)) || die "${P}_MEMORY_LIMIT must be a positive integer with unit k, m or g, for example 4g"
+    cpu_nano=0
+    if [[ "$cpu_text" =~ ^([0-9]{1,4})(\.([0-9]{1,3}))?$ ]]; then
+        fraction=${BASH_REMATCH[3]}000
+        cpu_nano=$((10#${BASH_REMATCH[1]} * 1000000000 + 10#${fraction:0:3} * 1000000))
+        ((cpu_nano <= 1024000000000)) || cpu_nano=0
+    fi
+    ((cpu_nano > 0)) || die "${P}_CPU_LIMIT must be a positive number of CPUs with at most 3 decimals, for example 2 or 1.5"
+    [[ "$pids_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((pids_text > 0 && pids_text <= 4194304)) \
+        || die "${P}_PIDS_LIMIT must be a positive integer process count up to 4194304"
+    [[ "$timeout_text" =~ ^(0|[1-9][0-9]{0,9})$ ]] && ((timeout_text <= 2147483647)) \
+        || die "${P}_RUN_TIMEOUT must be whole seconds; 0 disables the lifetime limit"
+    pids_limit=$((10#$pids_text))
+    run_timeout=$((10#$timeout_text))
+}
 
-if [[ "$network_mode" != unrestricted ]]; then
-    capture_response runtime_image_id podman image inspect --format '{{.Id}}' "$image" \
-        || die 'cannot resolve restricted runtime image identity'
-    runtime_image_id=${runtime_image_id%$'\n'}
-    [[ "$runtime_image_id" =~ ^(sha256:)?[a-f0-9]{64}$ ]] || die 'invalid restricted runtime image identity'
-    image=$runtime_image_id
-fi
-# Default toolchain entries follow the image PATH, so they never replace the
-# runtime's own node or python3; env.sh puts a toolchain first explicitly.
-if [[ -n "$toolchain_path" ]]; then
-    capture_response image_environment podman image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" \
-        || die 'cannot inspect the runtime image environment'
-    image_path=''
-    while IFS= read -r image_variable; do
-        [[ "$image_variable" != PATH=* ]] || { image_path=${image_variable#PATH=}; break; }
-    done <<<"$image_environment"
-    [[ -n "$image_path" ]] || image_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-    toolchain_env=(--env "PATH=$image_path$toolchain_path" "${toolchain_env[@]}")
-fi
+# Phase 3: workspace refusal, host tools and state overlap.
+core_workspace() {
+    # Refuse sensitive writable workspaces before any engine or state operation.
+    workspace=$(pwd -P)
+    workspace_mount=$workspace
+    ((git_worktree == 0)) || workspace_mount=$(dirname -- "$workspace")
+    [[ "${HOME:-}" == /* ]] || die 'HOME must be an absolute path'
+    # Builtins only: tool prerequisites are diagnosed later. A missing home cannot
+    # be a workspace, so its lexical path is sufficient then.
+    physical_home=$(cd -- "$HOME" 2>/dev/null && pwd -P) || physical_home=$HOME
+    unsafe_workspace=0
+    case "$workspace_mount" in
+        /|/home|/root|/etc|/usr|/var|/bin|/sbin|/lib|/lib64|/boot|/opt|/srv|/mnt|/media|/proc|/sys|/dev|/run|/tmp)
+            unsafe_workspace=1 ;;
+    esac
+    [[ "$workspace_mount" != "$physical_home" && ! "$workspace_mount" =~ ^/mnt/[A-Za-z]$ ]] || unsafe_workspace=1
+    if ((unsafe_workspace)); then
+        [[ "${cfg_ALLOW_UNSAFE_WORKSPACE:-}" == 1 ]] \
+            || die "refusing sensitive workspace $workspace_mount; launch from a project subdirectory or set exact ${P}_ALLOW_UNSAFE_WORKSPACE=1"
+        printf '%s: WARNING: sensitive workspace explicitly exposed read/write: %s\n' "$AGENT_NAME" "$workspace_mount" >&2
+    fi
 
-container_args=(
-    --rm --interactive --read-only
-    --userns=keep-id --user "$caller_uid:$caller_gid"
-    --cap-drop=all --security-opt=no-new-privileges
-    "${budget_args[@]}"
-    --workdir "$workspace"
-    --tmpfs '/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'
-    --tmpfs '/run:rw,nosuid,nodev,noexec,size=16m'
-    --tmpfs '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'
-    # Mask engine default mounts at /run/secrets (RHEL subscription secrets from
-    # mounts.conf): Podman skips its own mount there, leaving an empty read-only
-    # tmpfs that the guard accepts and that exposes no host material.
-    --mount type=tmpfs,destination=/run/secrets,ro=true
-    # Podman forces /dev read-only with --read-only-tmpfs=false, and crun >= 1.27
-    # must replace /dev/console to attach a terminal, so automatic provisioning
-    # stays on. /dev and /dev/pts are left to the engine: an explicit /dev/pts mount
-    # gets ptmxmode=000 (Podman rejects the option), so no pseudo-terminal could
-    # be opened. Only /dev/shm is overridden, with an empty read-only tmpfs.
-    --mount type=tmpfs,destination=/dev/shm,ro=true
-    --env "HOME=$AGENT_HOME"
-    --env EDITOR=nano --env VISUAL=nano
-    --volume "$workspace_mount:$workspace_mount:rw"
-    "${state_mounts[@]}"
-)
-if [[ -n "$toolchain_library" ]]; then
-    container_args+=(--volume "$toolchain_library:/toolchains:ro,nosuid,nodev" "${toolchain_env[@]}")
-fi
-# The shell's own state follows the toolchain environment, so a toolchain cannot
-# move the configuration directory or the Bash history.
-container_args+=(--env "$AGENT_CONFIG_DIR_ENV=$AGENT_HOME/$AGENT_CONFIG_HOME")
-for core_setting in "${AGENT_SESSION_ENV[@]}"; do
-    container_args+=(--env "$core_setting")
-done
-((run_timeout == 0)) || container_args+=(--timeout "$run_timeout")
-if [[ -t 0 && -t 1 ]]; then
-    container_args+=(--tty)
-    [[ -z "${TERM:-}" ]] || container_args+=(--env TERM)
-fi
-if ((podman_access)); then
-    container_args+=(
-        --volume "$host_socket:/run/podman/podman.sock:rw"
-        --env CONTAINER_HOST=unix:///run/podman/podman.sock
+    command -v podman >/dev/null || die 'Podman is required on the host'
+    command -v timeout >/dev/null && [[ $(timeout --version 2>/dev/null) == *'GNU coreutils'* ]] \
+        || die 'GNU timeout is required on the host; install GNU coreutils'
+    [[ -n "$script_path" ]] || die 'GNU readlink is required on the host; install GNU coreutils'
+    # Isolated credentials and history must never land in, or contain, the workspace.
+    # Compare physical paths; readlink -m also resolves a directory not created yet.
+    if [[ -n "${cfg_STATE_DIR:-}" ]]; then
+        state_physical=$(readlink -m -- "$cfg_STATE_DIR")
+        [[ "$state_physical/" != "$workspace_mount/"* && "$workspace_mount/" != "$state_physical/"* ]] \
+            || die "${P}_STATE_DIR must not overlap the workspace: $cfg_STATE_DIR"
+    fi
+}
+
+# Phase 4: launch engine, cgroup controllers, restricted queries, delegation socket.
+core_engine() {
+    # Unix service access also supports running this wrapper inside another container
+    # on the same host. TCP/SSH transports and Podman Machine are not supported.
+    [[ -z "${CONTAINER_CONNECTION:-}" ]] || die 'named remote connections are not supported; use local Podman or a local Unix CONTAINER_HOST'
+    case "${CONTAINER_HOST:-}" in
+        '') ;;
+        unix://*)
+            launch_socket=${CONTAINER_HOST#unix://}
+            [[ "$launch_socket" == /* && -n "${launch_socket//\//}" ]] \
+                || die 'CONTAINER_HOST requires an absolute Unix socket path beyond /'
+            ;;
+        *) die 'remote TCP/SSH Podman contexts are not supported; use a local Unix socket' ;;
+    esac
+    capture_response runtime_info podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}' \
+        || die 'cannot query Podman; check the local rootless service'
+    runtime_info=${runtime_info%$'\n'}
+    [[ "$runtime_info" != *$'\n'* ]] || die 'invalid Podman engine response: expected one record with at most one final LF'
+    [[ "$runtime_info" == "true linux false" || "$runtime_info" == "true linux true" ]] || die 'a verified Linux rootless Podman engine is required (unexpected engine response)'
+    read -r _ _ remote <<< "$runtime_info"
+    if [[ "$remote" == true && "${CONTAINER_HOST:-}" != unix:///* ]]; then
+        die 'remote Podman contexts are not supported; set CONTAINER_HOST to a local Unix socket'
+    fi
+
+    # A budget is enforced only when the verified engine reports its cgroup v2
+    # controller as delegated. Unenforced budgets are not requested, are announced,
+    # and must be absent from the created configuration (see network/agent_budgets.py).
+    capture_response cgroup_controllers podman info --format '{{.Host.CgroupControllers}}' \
+        || die 'cannot query the rootless cgroup controllers'
+    cgroup_controllers=${cgroup_controllers%$'\n'}
+    [[ "$cgroup_controllers" =~ ^\[([a-z_]+( [a-z_]+)*)?\]$ ]] \
+        || die 'unverifiable cgroup controller list from the Podman engine'
+    controller_delegated() {
+        [[ " ${cgroup_controllers:1:${#cgroup_controllers}-2} " == *" $1 "* ]]
+    }
+    budget_args=()
+    expected_memory=0
+    expected_cpu=0
+    pids_enforced=0
+    if controller_delegated memory; then
+        budget_args+=("--memory=$memory_bytes")
+        expected_memory=$memory_bytes
+    else
+        printf '%s: agent memory budget not enforced: cgroup controller memory is not delegated to the rootless engine\n' "$AGENT_NAME" >&2
+    fi
+    if controller_delegated cpu; then
+        budget_args+=("--cpus=$cpu_text")
+        expected_cpu=$cpu_nano
+    else
+        printf '%s: agent CPU budget not enforced: cgroup controller cpu is not delegated to the rootless engine\n' "$AGENT_NAME" >&2
+    fi
+    if controller_delegated pids; then
+        budget_args+=("--pids-limit=$pids_limit")
+        pids_enforced=1
+    else
+        # Override any containers.conf default that would request the missing controller.
+        budget_args+=(--pids-limit=-1)
+        printf '%s: agent process budget not enforced: cgroup controller pids is not delegated to the rootless engine\n' "$AGENT_NAME" >&2
+    fi
+    if [[ "$network_mode" != unrestricted ]]; then
+        command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
+        [[ "$remote" == true ]] || die 'restricted networking currently requires the tested same-host Unix service; local-engine enforcement is unverified'
+        capture_response network_backend podman info --format '{{.Host.NetworkBackend}}' \
+            || die 'cannot verify restricted network backend'
+        capture_response network_version podman version --format '{{.Server.Version}}' \
+            || die 'cannot verify restricted network server version'
+        capture_response network_platform podman info --format '{{json .Host}}' \
+            || die 'cannot verify restricted platform security policy'
+    elif ((qualification_probe)); then
+        die 'qualification probes require restricted networking'
+    fi
+
+    caller_uid=$(id -u)
+    caller_gid=$(id -g)
+    socket="${cfg_PODMAN_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$caller_uid}/podman/podman.sock}"
+    if [[ -z "${cfg_PODMAN_SOCKET:-}" && "${CONTAINER_HOST:-}" == unix:///* ]]; then
+        socket=${CONTAINER_HOST#unix://}
+    fi
+    if ((podman_access)); then
+        [[ "$socket" == /* ]] || die "Podman socket must be an absolute path: $socket"
+        [[ -S "$socket" && -r "$socket" && -w "$socket" ]] || die "Podman socket not accessible: $socket; enable 'systemctl --user start podman.socket' or start 'podman system service --time=0'"
+        socket=$(readlink -f -- "$socket")
+        capture_response socket_info podman --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}' \
+            || die "cannot query Podman socket: $socket; check the rootless service, permissions and SELinux policy"
+        [[ "$socket_info" != *$'\r'* ]] || die "invalid Podman socket response: $socket"
+        socket_info=${socket_info%$'\n'}
+        [[ "$socket_info" != *$'\n'* ]] || die "invalid Podman socket response: $socket"
+        read -r socket_rootless host_socket <<< "$socket_info"
+        # Podman 5 reports the service socket as a unix:// URL; earlier releases report the bare path.
+        host_socket=${host_socket#unix://}
+        [[ "$socket_rootless" == true ]] || die "Podman socket must serve a rootless engine: $socket"
+        # A wrapper already inside a container sees a remapped Unix socket. Bind
+        # sources are resolved by the service, so use its host-side socket path.
+        [[ "$host_socket" == /* && "$host_socket" != *$'\n'* ]] || die "Podman socket $socket did not report an absolute host socket path"
+    fi
+}
+
+# Phase 3 (after the engine): state directories and CA bundle.
+core_state() {
+    image="${cfg_IMAGE:-$AGENT_IMAGE:latest}"
+    state_dir="${cfg_STATE_DIR:-}"
+
+    private_directory() {
+        local path=$1 mode
+        [[ -d "$path" && -r "$path" && -w "$path" && -x "$path" ]] \
+            || die "state directory is not accessible: $path"
+        [[ $(stat -c '%u' -- "$path") == "$caller_uid" ]] \
+            || die "state directory must belong to the calling user: $path"
+        mode=$(stat -c '%a' -- "$path")
+        (( (8#$mode & 077) == 0 )) \
+            || die "state directory must be private: $path (chmod 700; use native Linux storage if permissions are not enforced)"
+    }
+
+    create_private_directory() (
+        umask 077
+        mkdir -p -- "$@"
     )
-else
-    container_args+=(--unsetenv CONTAINER_HOST)
-fi
-if ((trust_host_ca)); then
-    container_args+=(
-        --volume "$ca_bundle:$AGENT_HOME/ca/bundle.pem:ro"
-        --env "SSL_CERT_FILE=$AGENT_HOME/ca/bundle.pem"
-        --env "REQUESTS_CA_BUNDLE=$AGENT_HOME/ca/bundle.pem"
-        --env "CURL_CA_BUNDLE=$AGENT_HOME/ca/bundle.pem"
-        --env "NODE_EXTRA_CA_CERTS=$AGENT_HOME/ca/bundle.pem"
+
+    state_mounts=()
+    # Host directories the session can write: the toolchain library must avoid
+    # them and restricted preparation declares them writable.
+    writable_state=()
+    if [[ -n "$state_dir" ]]; then
+        create_private_directory "$state_dir"
+        state_dir=$(cd -- "$state_dir" && pwd -P)
+        private_directory "$state_dir"
+        # Resolve before creating children so an existing parent symlink cannot
+        # redirect configuration creation outside the dedicated application home.
+        for relative in "$AGENT_CONFIG_HOME" "${AGENT_SHARED_DIRS[@]}"; do
+            resolved=$(readlink -m -- "$state_dir/$relative")
+            [[ "$resolved" == "$state_dir/"* ]] \
+                || die "isolated configuration escapes state home: $state_dir/$relative"
+            create_private_directory "$state_dir/$relative"
+        done
+        private_directory "$state_dir/$AGENT_CONFIG_HOME"
+        if ((trust_host_ca)); then
+            # Prevent the engine from creating a nested CA mount parent owned by a
+            # subordinate mapped UID inside the writable isolated home.
+            create_private_directory "$state_dir/ca"
+            private_directory "$state_dir/ca"
+        fi
+        state_mounts+=(--volume "$state_dir:$AGENT_HOME:rw")
+        writable_state+=("$state_dir")
+    else
+        config_dir="${cfg_CONFIG_DIR:-$HOME/$AGENT_CONFIG_HOME}"
+        create_private_directory "$config_dir"
+        config_dir=$(cd -- "$config_dir" && pwd -P)
+        private_directory "$config_dir"
+        state_mounts+=(--volume "$config_dir:$AGENT_HOME/$AGENT_CONFIG_HOME:rw")
+        writable_state+=("$config_dir")
+        for relative in "${AGENT_SHARED_DIRS[@]}"; do
+            create_private_directory "$HOME/$relative"
+            shared_path=$(cd -- "$HOME/$relative" && pwd -P)
+            ((AGENT_PRIVATE_SHARED_DIRS == 0)) || private_directory "$shared_path"
+            state_mounts+=(--volume "$shared_path:$AGENT_HOME/$relative:rw")
+            writable_state+=("$shared_path")
+        done
+    fi
+
+    ca_bundle=""
+    if ((trust_host_ca)); then
+        if [[ -n "${cfg_CA_BUNDLE:-}" ]]; then
+            [[ -f "$cfg_CA_BUNDLE" ]] || die "${P}_CA_BUNDLE is not a file: $cfg_CA_BUNDLE"
+            ca_bundle=$(readlink -f -- "$cfg_CA_BUNDLE")
+        else
+            for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+                if [[ -f "$candidate" ]]; then
+                    ca_bundle=$candidate
+                    break
+                fi
+            done
+            [[ -n "$ca_bundle" ]] || die "no default CA bundle found; set ${P}_CA_BUNDLE to a bundle file"
+        fi
+    fi
+}
+
+# Phase 5: toolchains, restricted preparation, image, container arguments, names.
+core_mounts_image() {
+    # The operator's toolchain library is mounted read-only; the shared module
+    # checks it stays private and outside every writable mount and the installation,
+    # and lists the default toolchains verified for this runtime recipe.
+    toolchain_library=''
+    toolchain_path=''
+    toolchain_env=()
+    if ((toolchains_enabled && ! qualification_probe)); then
+        command -v python3 >/dev/null \
+            || die "host Python 3 is required for the toolchain library; set ${P}_TOOLCHAINS=0 to omit it"
+        toolchain_avoid=(--avoid "$workspace_mount")
+        for core_path in "${writable_state[@]}"; do
+            toolchain_avoid+=(--avoid "$core_path")
+        done
+        toolchain_output=$(python3 -I "$script_dir/setup/toolchains.py" launch-env "${toolchain_avoid[@]}") \
+            || die "toolchain library check failed; set ${P}_TOOLCHAINS=0 to start without it"
+        while IFS=$'\t' read -r toolchain_kind toolchain_first toolchain_second; do
+            case "$toolchain_kind" in
+                library) toolchain_library=$toolchain_first ;;
+                path) toolchain_path+=":$toolchain_first" ;;
+                env) toolchain_env+=(--env "$toolchain_first=$toolchain_second") ;;
+                *) die 'unexpected toolchain library output' ;;
+            esac
+        done <<<"$toolchain_output"
+        [[ "$toolchain_library" == /* ]] || die 'toolchain library check returned no library'
+    fi
+
+    # Restricted sessions use the shared helper; this wrapper keeps only the
+    # agent-specific command, environment, state and credentials.
+    session_helper=(python3 -I "$script_dir/network/session.py")
+    network_inputs=()
+    qualification_inputs=()
+    guard_digest=''
+    if [[ "$network_mode" != unrestricted ]]; then
+        network_inputs=(--installation "$script_dir" --writable "$workspace_mount"
+            --mount-target "$workspace_mount" --mount-target "$AGENT_HOME")
+        [[ -z "$toolchain_library" ]] || network_inputs+=(--mount-target /toolchains)
+        for core_path in "${writable_state[@]}"; do
+            network_inputs+=(--writable "$core_path")
+        done
+        prepare_inputs=(--mode "$network_mode" --server-version "${network_version%$'\n'}"
+            --backend "${network_backend%$'\n'}" --endpoint "${CONTAINER_HOST:-}" --engine "$runtime_info")
+        if ((qualification_probe)); then
+            prepare_inputs+=(--probe --qualification-input "${cfg_QUALIFICATION_INPUT:-}"
+                --workspace "$workspace")
+        fi
+        prepared=$(printf '%s' "$network_platform" | "${session_helper[@]}" prepare "${network_inputs[@]}" "${prepare_inputs[@]}")
+        read -r guard_digest qualification_token qualification_tls <<< "$prepared"
+        if ((qualification_probe)); then
+            qualification_inputs=(--probe --token "$qualification_token" --workspace "$workspace"
+                --qualification-input "${cfg_QUALIFICATION_INPUT:-}")
+            [[ "$qualification_tls" != 1 ]] || qualification_inputs+=(--tls)
+        fi
+    fi
+
+    # The opted-in host CA bundle also verifies the runtime build's package fetches.
+    # It is a build secret: mounted only for its RUN step and never stored in a layer.
+    build_secret=()
+    if [[ -n "$ca_bundle" ]]; then
+        build_secret=(--secret "id=build-ca,src=$ca_bundle")
+    fi
+    if ((build_image)); then
+        [[ "${cfg_MAINTENANCE:-}" == 1 ]] || die "image refresh requires exact ${P}_MAINTENANCE=1; host pulls/build RUN steps are outside runtime filtering"
+        podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
+    elif podman image exists "$image"; then
+        :
+    else
+        image_status=$?
+        [[ "$image_status" == 1 ]] || die "cannot inspect image: $image"
+        [[ "${cfg_MAINTENANCE:-}" == 1 ]] || die "image is absent; prepare it with exact ${P}_MAINTENANCE=1 (build traffic is outside runtime filtering)"
+        podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
+    fi
+
+    if [[ "$network_mode" != unrestricted ]]; then
+        capture_response runtime_image_id podman image inspect --format '{{.Id}}' "$image" \
+            || die 'cannot resolve restricted runtime image identity'
+        runtime_image_id=${runtime_image_id%$'\n'}
+        [[ "$runtime_image_id" =~ ^(sha256:)?[a-f0-9]{64}$ ]] || die 'invalid restricted runtime image identity'
+        image=$runtime_image_id
+    fi
+    # Default toolchain entries follow the image PATH, so they never replace the
+    # runtime's own node or python3; env.sh puts a toolchain first explicitly.
+    if [[ -n "$toolchain_path" ]]; then
+        capture_response image_environment podman image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" \
+            || die 'cannot inspect the runtime image environment'
+        image_path=''
+        while IFS= read -r image_variable; do
+            [[ "$image_variable" != PATH=* ]] || { image_path=${image_variable#PATH=}; break; }
+        done <<<"$image_environment"
+        [[ -n "$image_path" ]] || image_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        toolchain_env=(--env "PATH=$image_path$toolchain_path" "${toolchain_env[@]}")
+    fi
+
+    container_args=(
+        --rm --interactive --read-only
+        --userns=keep-id --user "$caller_uid:$caller_gid"
+        --cap-drop=all --security-opt=no-new-privileges
+        "${budget_args[@]}"
+        --workdir "$workspace"
+        --tmpfs '/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'
+        --tmpfs '/run:rw,nosuid,nodev,noexec,size=16m'
+        --tmpfs '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'
+        # Mask engine default mounts at /run/secrets (RHEL subscription secrets from
+        # mounts.conf): Podman skips its own mount there, leaving an empty read-only
+        # tmpfs that the guard accepts and that exposes no host material.
+        --mount type=tmpfs,destination=/run/secrets,ro=true
+        # Podman forces /dev read-only with --read-only-tmpfs=false, and crun >= 1.27
+        # must replace /dev/console to attach a terminal, so automatic provisioning
+        # stays on. /dev and /dev/pts are left to the engine: an explicit /dev/pts mount
+        # gets ptmxmode=000 (Podman rejects the option), so no pseudo-terminal could
+        # be opened. Only /dev/shm is overridden, with an empty read-only tmpfs.
+        --mount type=tmpfs,destination=/dev/shm,ro=true
+        --env "HOME=$AGENT_HOME"
+        --env EDITOR=nano --env VISUAL=nano
+        --volume "$workspace_mount:$workspace_mount:rw"
+        "${state_mounts[@]}"
     )
-fi
+    if [[ -n "$toolchain_library" ]]; then
+        container_args+=(--volume "$toolchain_library:/toolchains:ro,nosuid,nodev" "${toolchain_env[@]}")
+    fi
+    # The shell's own state follows the toolchain environment, so a toolchain cannot
+    # move the configuration directory or the Bash history.
+    container_args+=(--env "$AGENT_CONFIG_DIR_ENV=$AGENT_HOME/$AGENT_CONFIG_HOME")
+    for core_setting in "${AGENT_SESSION_ENV[@]}"; do
+        container_args+=(--env "$core_setting")
+    done
+    ((run_timeout == 0)) || container_args+=(--timeout "$run_timeout")
+    if [[ -t 0 && -t 1 ]]; then
+        container_args+=(--tty)
+        [[ -z "${TERM:-}" ]] || container_args+=(--env TERM)
+    fi
+    if ((podman_access)); then
+        container_args+=(
+            --volume "$host_socket:/run/podman/podman.sock:rw"
+            --env CONTAINER_HOST=unix:///run/podman/podman.sock
+        )
+    else
+        container_args+=(--unsetenv CONTAINER_HOST)
+    fi
+    if ((trust_host_ca)); then
+        container_args+=(
+            --volume "$ca_bundle:$AGENT_HOME/ca/bundle.pem:ro"
+            --env "SSL_CERT_FILE=$AGENT_HOME/ca/bundle.pem"
+            --env "REQUESTS_CA_BUNDLE=$AGENT_HOME/ca/bundle.pem"
+            --env "CURL_CA_BUNDLE=$AGENT_HOME/ca/bundle.pem"
+            --env "NODE_EXTRA_CA_CERTS=$AGENT_HOME/ca/bundle.pem"
+        )
+    fi
 
-# The session is always Bash; --container-shell is accepted as a no-op and the
-# remaining arguments go to Bash unchanged.
-if ((qualification_probe)); then
-    args=()  # The shared helper supplies the fixed probe command.
-else
-    container_args+=(--entrypoint /bin/bash)
-fi
+    # The session is always Bash; --container-shell is accepted as a no-op and the
+    # remaining arguments go to Bash unchanged.
+    if ((qualification_probe)); then
+        args=()  # The shared helper supplies the fixed probe command.
+    else
+        container_args+=(--entrypoint /bin/bash)
+    fi
 
-prefix=${workspace##*/}
-prefix=$(printf '%s' "$prefix" | sed -E 's/[^a-zA-Z0-9_.-]+/-/g; s/^[.-]+//; s/[.-]+$//')
-prefix=${prefix:-$AGENT_NAME}
-names=$(podman ps --all --format '{{.Names}}') || die 'cannot list Podman containers'
-next_index=0
-while IFS= read -r name; do
-    [[ "$name" == "$prefix-"* ]] || continue
-    suffix=${name#"$prefix-"}
-    [[ "$suffix" =~ ^[0-9]+$ && ${#suffix} -lt 10 ]] || continue
-    numeric=$((10#$suffix))
-    ((numeric < next_index)) || next_index=$((numeric + 1))
-done <<< "$names"
+    prefix=${workspace##*/}
+    prefix=$(printf '%s' "$prefix" | sed -E 's/[^a-zA-Z0-9_.-]+/-/g; s/^[.-]+//; s/[.-]+$//')
+    prefix=${prefix:-$AGENT_NAME}
+    names=$(podman ps --all --format '{{.Names}}') || die 'cannot list Podman containers'
+    next_index=0
+    while IFS= read -r name; do
+        [[ "$name" == "$prefix-"* ]] || continue
+        suffix=${name#"$prefix-"}
+        [[ "$suffix" =~ ^[0-9]+$ && ${#suffix} -lt 10 ]] || continue
+        numeric=$((10#$suffix))
+        ((numeric < next_index)) || next_index=$((numeric + 1))
+    done <<< "$names"
+}
 
 # Reserve the name with create, so an actual process exit code 125 is never
 # confused with a create-time naming collision. Remove only our own container.
@@ -811,118 +830,147 @@ shutdown() {
     fi
     exit "$primary_status"
 }
-trap 'shutdown "$?"' EXIT
-trap 'shutdown 143 TERM' TERM
-trap 'shutdown 130 INT' INT
-trap 'shutdown 129 HUP' HUP
-session_dir=$(umask 077; mktemp -d)
-session_token=${session_dir##*/}
-printf '%s: network mode=%s\n' "$AGENT_NAME" "$network_mode" >&2
-if [[ "$network_mode" != unrestricted ]] && ((qualification_probe == 0)); then
-    env "${P}_IMAGE=$image" python3 -I "$script_dir/network/qualify.py" check &
-    qualification_check_pid=$!
-    if wait "$qualification_check_pid"; then
-        qualification_check_pid=''
-    else
-        qualification_status=$?
-        qualification_check_pid=''
-        exit "$qualification_status"
-    fi
-fi
-if [[ "$network_mode" != unrestricted ]]; then
-    application=()
-    ((qualification_probe)) || application=(/bin/bash "${args[@]}")
-    "${session_helper[@]}" agent-args --installation "$script_dir" --mode "$network_mode" \
-        --session "$session_dir" --guard-digest "$guard_digest" "${qualification_inputs[@]}" \
-        -- "${application[@]}" >"$session_dir/agent.args"
-    mapfile -d '' -t restricted <"$session_dir/agent.args"
-    [[ "${restricted[0]:-}" =~ ^[0-9]+$ ]] || die 'invalid restricted session arguments'
-    container_args+=("${restricted[@]:1:${restricted[0]}}")
-    args=("${restricted[@]:$((1 + restricted[0]))}")
-fi
-# Measure the session from just before the container is created, so the
-# engine's lifetime limit cannot have started earlier, with a monotonic clock:
-# WSL2 steps the wall clock to resynchronise with the host, which moves
-# EPOCHREALTIME and SECONDS by seconds at a time, and whole-second SECONDS would
-# also report a short failing session crossing a second boundary as a reached
-# limit. /proc/uptime counts centiseconds since boot.
-elapsed_centiseconds() {
-    local now=''
-    read -r now _ 2>/dev/null </proc/uptime || now=''
-    now=${now//[!0-9]/}
-    [[ -n "$now" ]] || now=$((SECONDS * 100))
-    printf '%s' "$((10#$now - ${1:-0}))"
-}
-started_at=$(elapsed_centiseconds)
-for ((attempt=0; attempt<20; attempt++)); do
-    name="$prefix-$next_index"
-    cid_file=$session_dir/$attempt.cid
-    create_output=$session_dir/$attempt.stdout
-    create_error=$session_dir/$attempt.stderr
-    creation_pending=1
-    podman create --name "$name" --cidfile "$cid_file" --label "$ownership_label=$session_token" \
-        "${container_args[@]}" "$image" "${args[@]}" >"$create_output" 2>"$create_error" &
-    create_pid=$!
-    if wait "$create_pid"; then
-        create_pid=''
-        container_id=$(<"$create_output")
-        [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] || die 'invalid container ID returned by Podman create'
-        creation_pending=0
-        break
-    else
-        create_status=$?
-        create_pid=''
-        if [[ ! -s "$cid_file" && ! -s "$create_output" ]] && creation_lookup container exists "$name" \
-            && creation_lookup inspect --type container --format "{{index .Config.Labels \"$ownership_label\"}}" "$name" \
-            && [[ $(<"$session_dir/lookup") != "$session_token" ]]; then
-            creation_pending=0
-            next_index=$((next_index + 1))
+# Phases 6-7: session directory, qualification check, creation, budget
+# verification, start and lifetime notice; shutdown runs from the traps.
+core_create_start() {
+    trap 'shutdown "$?"' EXIT
+    trap 'shutdown 143 TERM' TERM
+    trap 'shutdown 130 INT' INT
+    trap 'shutdown 129 HUP' HUP
+    session_dir=$(umask 077; mktemp -d)
+    session_token=${session_dir##*/}
+    printf '%s: network mode=%s\n' "$AGENT_NAME" "$network_mode" >&2
+    if [[ "$network_mode" != unrestricted ]] && ((qualification_probe == 0)); then
+        env "${P}_IMAGE=$image" python3 -I "$script_dir/network/qualify.py" check &
+        qualification_check_pid=$!
+        if wait "$qualification_check_pid"; then
+            qualification_check_pid=''
         else
-            cat -- "$create_error" >&2
-            exit "$create_status"
+            qualification_status=$?
+            qualification_check_pid=''
+            exit "$qualification_status"
         fi
     fi
-done
-[[ -n "$container_id" ]] || die 'could not reserve a container name after 20 attempts'
-
-# Engine flags alone are not evidence: require the created configuration to
-# carry every enforced budget and no unenforced one. Setup smoke and
-# qualification measure the effective cgroups.
-capture_response configured_budgets timeout --kill-after=1s 10s podman inspect --type container \
-    --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$container_id" \
-    || die 'cannot inspect agent resource budgets; agent not started'
-read -r configured_memory configured_cpu configured_pids extra <<< "${configured_budgets%$'\n'}"
-budgets_applied=0
-if [[ -z "${extra:-}" && "$configured_memory" == "$expected_memory" && "$configured_cpu" == "$expected_cpu" ]]; then
-    if ((pids_enforced)); then
-        [[ "$configured_pids" == "$pids_limit" ]] && budgets_applied=1
-    else
-        [[ "$configured_pids" =~ ^(0|-1)$ ]] && budgets_applied=1
+    if [[ "$network_mode" != unrestricted ]]; then
+        application=()
+        ((qualification_probe)) || application=(/bin/bash "${args[@]}")
+        "${session_helper[@]}" agent-args --installation "$script_dir" --mode "$network_mode" \
+            --session "$session_dir" --guard-digest "$guard_digest" "${qualification_inputs[@]}" \
+            -- "${application[@]}" >"$session_dir/agent.args"
+        mapfile -d '' -t restricted <"$session_dir/agent.args"
+        [[ "${restricted[0]:-}" =~ ^[0-9]+$ ]] || die 'invalid restricted session arguments'
+        container_args+=("${restricted[@]:1:${restricted[0]}}")
+        args=("${restricted[@]:$((1 + restricted[0]))}")
     fi
-fi
-((budgets_applied)) \
-    || die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu pids=$( ((pids_enforced)) && printf '%s' "$pids_limit" || printf 'unenforced')); engine reports controllers $cgroup_controllers; check rootless cgroup v2 controller delegation; agent not started"
+    # Measure the session from just before the container is created, so the
+    # engine's lifetime limit cannot have started earlier, with a monotonic clock:
+    # WSL2 steps the wall clock to resynchronise with the host, which moves
+    # EPOCHREALTIME and SECONDS by seconds at a time, and whole-second SECONDS would
+    # also report a short failing session crossing a second boundary as a reached
+    # limit. /proc/uptime counts centiseconds since boot.
+    elapsed_centiseconds() {
+        local now=''
+        read -r now _ 2>/dev/null </proc/uptime || now=''
+        now=${now//[!0-9]/}
+        [[ -n "$now" ]] || now=$((SECONDS * 100))
+        printf '%s' "$((10#$now - ${1:-0}))"
+    }
+    started_at=$(elapsed_centiseconds)
+    for ((attempt=0; attempt<20; attempt++)); do
+        name="$prefix-$next_index"
+        cid_file=$session_dir/$attempt.cid
+        create_output=$session_dir/$attempt.stdout
+        create_error=$session_dir/$attempt.stderr
+        creation_pending=1
+        podman create --name "$name" --cidfile "$cid_file" --label "$ownership_label=$session_token" \
+            "${container_args[@]}" "$image" "${args[@]}" >"$create_output" 2>"$create_error" &
+        create_pid=$!
+        if wait "$create_pid"; then
+            create_pid=''
+            container_id=$(<"$create_output")
+            [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] || die 'invalid container ID returned by Podman create'
+            creation_pending=0
+            break
+        else
+            create_status=$?
+            create_pid=''
+            if [[ ! -s "$cid_file" && ! -s "$create_output" ]] && creation_lookup container exists "$name" \
+                && creation_lookup inspect --type container --format "{{index .Config.Labels \"$ownership_label\"}}" "$name" \
+                && [[ $(<"$session_dir/lookup") != "$session_token" ]]; then
+                creation_pending=0
+                next_index=$((next_index + 1))
+            else
+                cat -- "$create_error" >&2
+                exit "$create_status"
+            fi
+        fi
+    done
+    [[ -n "$container_id" ]] || die 'could not reserve a container name after 20 attempts'
 
-# Explicit stdin redirection prevents Bash from replacing stdin with /dev/null
-# for the background client; traps can forward signals while wait is active.
-if [[ -f "$script_dir/setup/diagnostics.py" ]] && command -v python3 >/dev/null; then
-    # Optional for legacy unrestricted installs without host Python. Only the
-    # exact successful Podman 4.3 restart-check line changes level; errors pass.
-    mkfifo -- "$session_dir/diagnostics.pipe"
-    python3 -I "$script_dir/setup/diagnostics.py" <"$session_dir/diagnostics.pipe" >&2 &
-    diagnostics_pid=$!
-    exec {diagnostics_fd}>"$session_dir/diagnostics.pipe"
-    podman start --attach --interactive --sig-proxy=false "$container_id" <&0 2>&"$diagnostics_fd" {diagnostics_fd}>&- &
-    client_pid=$!
-    exec {diagnostics_fd}>&-
-    diagnostics_fd=''
-else
-    podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
-    client_pid=$!
-fi
-status=0
-wait "$client_pid" || status=$?
-if ((run_timeout > 0 && status != 0 && $(elapsed_centiseconds "$started_at") >= run_timeout * 100)); then
-    printf '%s: session lifetime limit reached (%s s); exit status %s\n' "$AGENT_NAME" "$run_timeout" "$status" >&2
-fi
-exit "$status"
+    # Engine flags alone are not evidence: require the created configuration to
+    # carry every enforced budget and no unenforced one. Setup smoke and
+    # qualification measure the effective cgroups.
+    capture_response configured_budgets timeout --kill-after=1s 10s podman inspect --type container \
+        --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$container_id" \
+        || die 'cannot inspect agent resource budgets; agent not started'
+    read -r configured_memory configured_cpu configured_pids extra <<< "${configured_budgets%$'\n'}"
+    budgets_applied=0
+    if [[ -z "${extra:-}" && "$configured_memory" == "$expected_memory" && "$configured_cpu" == "$expected_cpu" ]]; then
+        if ((pids_enforced)); then
+            [[ "$configured_pids" == "$pids_limit" ]] && budgets_applied=1
+        else
+            [[ "$configured_pids" =~ ^(0|-1)$ ]] && budgets_applied=1
+        fi
+    fi
+    ((budgets_applied)) \
+        || die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu pids=$( ((pids_enforced)) && printf '%s' "$pids_limit" || printf 'unenforced')); engine reports controllers $cgroup_controllers; check rootless cgroup v2 controller delegation; agent not started"
+
+    # Explicit stdin redirection prevents Bash from replacing stdin with /dev/null
+    # for the background client; traps can forward signals while wait is active.
+    if [[ -f "$script_dir/setup/diagnostics.py" ]] && command -v python3 >/dev/null; then
+        # Optional for legacy unrestricted installs without host Python. Only the
+        # exact successful Podman 4.3 restart-check line changes level; errors pass.
+        mkfifo -- "$session_dir/diagnostics.pipe"
+        python3 -I "$script_dir/setup/diagnostics.py" <"$session_dir/diagnostics.pipe" >&2 &
+        diagnostics_pid=$!
+        exec {diagnostics_fd}>"$session_dir/diagnostics.pipe"
+        podman start --attach --interactive --sig-proxy=false "$container_id" <&0 2>&"$diagnostics_fd" {diagnostics_fd}>&- &
+        client_pid=$!
+        exec {diagnostics_fd}>&-
+        diagnostics_fd=''
+    else
+        podman start --attach --interactive --sig-proxy=false "$container_id" <&0 &
+        client_pid=$!
+    fi
+    status=0
+    wait "$client_pid" || status=$?
+    if ((run_timeout > 0 && status != 0 && $(elapsed_centiseconds "$started_at") >= run_timeout * 100)); then
+        printf '%s: session lifetime limit reached (%s s); exit status %s\n' "$AGENT_NAME" "$run_timeout" "$status" >&2
+    fi
+    exit "$status"
+}
+
+# Calls an optional agent hook: empties its output arrays, runs it when the
+# agent part defines it, and stops with the hook's name when it fails. Each
+# hook's outputs are validated by the phase that reads them.
+call_hook() {
+    local hook=$1
+    shift
+    case "$hook" in
+        agent_approval_bypass) agent_bypass_args=(); agent_bypass_env=() ;;
+        agent_command_args) agent_mode_args=() ;;
+        agent_environment) agent_env=() ;;
+        agent_mounts) agent_mount_specs=() ;;
+        agent_build_args) agent_build_args=(); agent_build_inputs=() ;;
+    esac
+    declare -F "$hook" >/dev/null || return 0
+    "$hook" "$@" || die "hook $hook failed"
+}
+
+core_arguments "$@"
+core_settings
+core_workspace
+core_engine
+core_state
+core_mounts_image
+core_create_start

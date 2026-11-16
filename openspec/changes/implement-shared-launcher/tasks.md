@@ -18,7 +18,7 @@ The behavior of each task is defined by the named rows of `docs/launcher-contrac
 
 - [x] 3.1 Move `sandbox-container.sh` into `launcher/core.sh`, replacing reference literals with `AGENT_*` values; write the reference's `agent/launcher.sh` (shell profile, `AGENT_SESSION_ENV` with `HISTFILE` and the config variable); make `sandbox-container.sh` the thin entry script with the readlink fallback (H-b). Add `launcher` to `SHARED_DIRECTORIES`. Verify the 80 wrapper cases and `bash -n` pass, and that the entry scripts of the reference and the fixture differ only by name.
 - [x] 3.2 Add the alignment test comparing `agent/launcher.sh` with `agent/profile.json` and `AGENT_CREDENTIALS` with `agent/policies/default.json`, and update `tests/test_alignment.py` for the thin entry script. Verify it passes for the reference and both fixtures, and fails on a mismatched value.
-- [ ] 3.3 Restructure the core into the phase functions and `call_hook` of design decisions 2 and 3, still without behavior change. Create `tests/test_launcher.py`, add it to `SHARED_TESTS`, and move the reference's cases there, running through the fixture root with the shell fixture. Verify the moved cases pass and the count matches.
+- [x] 3.3 Restructure the core into the phase functions and `call_hook` of design decisions 2 and 3, still without behavior change. Create `tests/test_launcher.py`, add it to `SHARED_TESTS`, and move the reference's cases there, running through the fixture root with the shell fixture. Verify the moved cases pass and the count matches.
 
 ## 4. Phases 1-2: interface, modes, settings
 
