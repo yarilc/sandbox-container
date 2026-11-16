@@ -261,6 +261,10 @@ core_arguments() {
             *) args+=("$arg") ;;
         esac
     done
+    # --container-build without application arguments builds and exits (U3, U17);
+    # --container-git-worktree and --container-shell do not count. Setup uses it.
+    build_only=0
+    ((build_image == 0 || ${#args[@]} > 0)) || build_only=1
 }
 
 # Phase 2: network mode, switches, budgets and lifetime.
@@ -383,6 +387,22 @@ core_settings() {
 
 # Phase 3: workspace refusal, host tools and state overlap.
 core_workspace() {
+    # The build-only operation mounts no workspace: no refusal applies (U16).
+    ((build_only)) || core_workspace_refusal
+    command -v podman >/dev/null || die 'Podman is required on the host'
+    command -v timeout >/dev/null && [[ $(timeout --version 2>/dev/null) == *'GNU coreutils'* ]] \
+        || die 'GNU timeout is required on the host; install GNU coreutils'
+    [[ -n "$script_path" ]] || die 'GNU readlink is required on the host; install GNU coreutils'
+    # Isolated credentials and history must never land in, or contain, the workspace.
+    # Compare physical paths; readlink -m also resolves a directory not created yet.
+    if [[ -n "${cfg_STATE_DIR:-}" ]] && ((build_only == 0)); then
+        state_physical=$(readlink -m -- "$cfg_STATE_DIR")
+        [[ "$state_physical/" != "$workspace_mount/"* && "$workspace_mount/" != "$state_physical/"* ]] \
+            || die "${P}_STATE_DIR must not overlap the workspace: $cfg_STATE_DIR"
+    fi
+}
+
+core_workspace_refusal() {
     # Refuse sensitive writable workspaces before any engine or state operation.
     workspace=$(pwd -P)
     workspace_mount=$workspace
@@ -401,18 +421,6 @@ core_workspace() {
         [[ "${cfg_ALLOW_UNSAFE_WORKSPACE:-}" == 1 ]] \
             || die "refusing sensitive workspace $workspace_mount; launch from a project subdirectory or set exact ${P}_ALLOW_UNSAFE_WORKSPACE=1"
         printf '%s: WARNING: sensitive workspace explicitly exposed read/write: %s\n' "$AGENT_NAME" "$workspace_mount" >&2
-    fi
-
-    command -v podman >/dev/null || die 'Podman is required on the host'
-    command -v timeout >/dev/null && [[ $(timeout --version 2>/dev/null) == *'GNU coreutils'* ]] \
-        || die 'GNU timeout is required on the host; install GNU coreutils'
-    [[ -n "$script_path" ]] || die 'GNU readlink is required on the host; install GNU coreutils'
-    # Isolated credentials and history must never land in, or contain, the workspace.
-    # Compare physical paths; readlink -m also resolves a directory not created yet.
-    if [[ -n "${cfg_STATE_DIR:-}" ]]; then
-        state_physical=$(readlink -m -- "$cfg_STATE_DIR")
-        [[ "$state_physical/" != "$workspace_mount/"* && "$workspace_mount/" != "$state_physical/"* ]] \
-            || die "${P}_STATE_DIR must not overlap the workspace: $cfg_STATE_DIR"
     fi
 }
 
@@ -440,6 +448,11 @@ core_engine() {
         die 'remote Podman contexts are not supported; set CONTAINER_HOST to a local Unix socket'
     fi
 
+    ((build_only)) || core_engine_session
+    core_engine_delegation
+}
+
+core_engine_session() {
     # A budget is enforced only when the verified engine reports its cgroup v2
     # controller as delegated. Unenforced budgets are not requested, are announced,
     # and must be absent from the created configuration (see network/agent_budgets.py).
@@ -487,7 +500,9 @@ core_engine() {
     elif ((qualification_probe)); then
         die 'qualification probes require restricted networking'
     fi
+}
 
+core_engine_delegation() {
     caller_uid=$(id -u)
     caller_gid=$(id -g)
     socket="${cfg_PODMAN_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$caller_uid}/podman/podman.sock}"
@@ -534,10 +549,16 @@ core_state() {
         mkdir -p -- "$@"
     )
 
+    # The build-only operation creates no state; it only selects the CA bundle.
     state_mounts=()
+    writable_state=()
+    ((build_only)) || core_state_directories
+    core_ca_bundle
+}
+
+core_state_directories() {
     # Host directories the session can write: the toolchain library must avoid
     # them and restricted preparation declares them writable.
-    writable_state=()
     if [[ -n "$state_dir" ]]; then
         create_private_directory "$state_dir"
         state_dir=$(cd -- "$state_dir" && pwd -P)
@@ -574,7 +595,9 @@ core_state() {
             writable_state+=("$shared_path")
         done
     fi
+}
 
+core_ca_bundle() {
     ca_bundle=""
     if ((trust_host_ca)); then
         if [[ -n "${cfg_CA_BUNDLE:-}" ]]; then
@@ -589,6 +612,27 @@ core_state() {
             done
             [[ -n "$ca_bundle" ]] || die "no default CA bundle found; set ${P}_CA_BUNDLE to a bundle file"
         fi
+    fi
+}
+
+# The image: built on --container-build or when absent, only with maintenance.
+# The opted-in host CA bundle also verifies the runtime build's package fetches.
+# It is a build secret: mounted only for its RUN step and never stored in a layer.
+core_build_image() {
+    build_secret=()
+    if [[ -n "$ca_bundle" ]]; then
+        build_secret=(--secret "id=build-ca,src=$ca_bundle")
+    fi
+    if ((build_image)); then
+        [[ "${cfg_MAINTENANCE:-}" == 1 ]] || die "image refresh requires exact ${P}_MAINTENANCE=1; host pulls/build RUN steps are outside runtime filtering"
+        podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
+    elif podman image exists "$image"; then
+        :
+    else
+        image_status=$?
+        [[ "$image_status" == 1 ]] || die "cannot inspect image: $image"
+        [[ "${cfg_MAINTENANCE:-}" == 1 ]] || die "image is absent; prepare it with exact ${P}_MAINTENANCE=1 (build traffic is outside runtime filtering)"
+        podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
     fi
 }
 
@@ -648,23 +692,7 @@ core_mounts_image() {
         fi
     fi
 
-    # The opted-in host CA bundle also verifies the runtime build's package fetches.
-    # It is a build secret: mounted only for its RUN step and never stored in a layer.
-    build_secret=()
-    if [[ -n "$ca_bundle" ]]; then
-        build_secret=(--secret "id=build-ca,src=$ca_bundle")
-    fi
-    if ((build_image)); then
-        [[ "${cfg_MAINTENANCE:-}" == 1 ]] || die "image refresh requires exact ${P}_MAINTENANCE=1; host pulls/build RUN steps are outside runtime filtering"
-        podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
-    elif podman image exists "$image"; then
-        :
-    else
-        image_status=$?
-        [[ "$image_status" == 1 ]] || die "cannot inspect image: $image"
-        [[ "${cfg_MAINTENANCE:-}" == 1 ]] || die "image is absent; prepare it with exact ${P}_MAINTENANCE=1 (build traffic is outside runtime filtering)"
-        podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
-    fi
+    core_build_image
 
     if [[ "$network_mode" != unrestricted ]]; then
         capture_response runtime_image_id podman image inspect --format '{{.Id}}' "$image" \
@@ -1067,5 +1095,9 @@ core_settings
 core_workspace
 core_engine
 core_state
+if ((build_only)); then
+    core_build_image
+    exit 0
+fi
 core_mounts_image
 core_create_start

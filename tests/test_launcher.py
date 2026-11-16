@@ -1004,9 +1004,33 @@ if args[0]=='snapshot':
                 help_result = self.run_wrapper('--container-help', PATH=str(restricted))
                 self.assertEqual(help_result.returncode, 0, help_result.stderr)
 
+    def test_build_only_operation_builds_and_exits(self):
+        # U3, U16, U17: no application argument means build and exit, also from a
+        # managed worktree launcher; settings are still validated before the build.
+        for options in (('--container-build',), ('--container-build', '--container-git-worktree'),
+                        ('--container-build', '--container-shell')):
+            with self.subTest(options=options):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(*options)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                commands = [c[0] for c in self.calls()]
+                self.assertIn('build', commands)
+                self.assertFalse({'create', 'start', 'ps'} & set(commands), commands)
+                self.assertFalse(self.state.exists())
+        self.log.unlink(missing_ok=True)
+        self.assertEqual(self.run_wrapper('--container-build', FAKE_BUILD_STATUS='17').returncode, 17)
+        self.assertNotIn('create', [c[0] for c in self.calls()])
+        self.log.unlink(missing_ok=True)
+        result = self.run_wrapper('--container-build', FIXTURE_SHELL_MEMORY_LIMIT='lots')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.calls(), [])
+        result = self.run_wrapper('--container-build', FIXTURE_SHELL_MAINTENANCE='')
+        self.assertIn('MAINTENANCE=1', result.stderr)
+        self.assertNotIn('build', [c[0] for c in self.calls()])
+
     def test_healthy_build_and_session_outlive_shutdown_budget(self):
         started = time.monotonic()
-        result = subprocess.run([str(WRAPPER), '--container-build'], cwd=self.project,
+        result = subprocess.run([str(WRAPPER), '--container-build', '-c', 'true'], cwd=self.project,
                                 env=self.env | {'FAKE_BUILD_DELAY': '21', 'FAKE_START_DELAY': '21'},
                                 input='healthy input', text=True, capture_output=True, timeout=55)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1057,7 +1081,7 @@ if args[0]=='snapshot':
                                   (valid + '\nextra\n', False)):
                 with self.subTest(query=query, raw=repr(raw)):
                     self.log.unlink(missing_ok=True)
-                    result = self.run_wrapper('--container-build', FIXTURE_SHELL_PODMAN='1',
+                    result = self.run_wrapper('--container-build', '-c', 'true', FIXTURE_SHELL_PODMAN='1',
                                               **{f'FAKE_{query}_RAW': raw})
                     self.assertEqual(result.returncode == 0, accepted, result.stderr)
                     operations = [c for c in self.calls() if c[0] in ('image', 'build', 'create')]
@@ -1069,7 +1093,7 @@ if args[0]=='snapshot':
             for raw in (valid, valid + '\n', valid + '\n\n'):
                 with self.subTest(query=query, failed_after_output=repr(raw)):
                     self.log.unlink(missing_ok=True)
-                    result = self.run_wrapper('--container-build', FIXTURE_SHELL_PODMAN='1',
+                    result = self.run_wrapper('--container-build', '-c', 'true', FIXTURE_SHELL_PODMAN='1',
                                               **{f'FAKE_{query}_RAW': raw, f'FAKE_{query}_STATUS': '19'})
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn('cannot query Podman', result.stderr)
@@ -1194,7 +1218,7 @@ if args[0]=='snapshot':
                     home = self.base / f'home-{mask}-{isolated}'
                     state = self.base / f'state-{mask}-{isolated}'
                     umask_log = self.base / f'umask-{mask}-{isolated}.jsonl'
-                    result = self.run_wrapper('--container-build', caller_umask=mask,
+                    result = self.run_wrapper('--container-build', '-c', 'true', caller_umask=mask,
                                               HOME=str(home), FAKE_UMASK_LOG=str(umask_log),
                                               FIXTURE_SHELL_STATE_DIR=str(state) if isolated else '')
                     self.assertEqual(result.returncode, 0, result.stderr)
@@ -1366,7 +1390,7 @@ if args[0]=='snapshot':
                     for service in ('0', '1'):
                         with self.subTest(isolated=isolated, shell=shell, yolo=yolo, service=service):
                             self.log.unlink(missing_ok=True)
-                            options = ['--container-build', '--container-git-worktree']
+                            options = ['--container-build', '--container-git-worktree', '-c', 'true']
                             if shell:
                                 options.append('--container-shell')
                             result = self.run_wrapper(*options, FIXTURE_SHELL_STATE_DIR=isolated,
@@ -1388,7 +1412,7 @@ if args[0]=='snapshot':
         probe = self.bin / 'podman'
         probe.write_text(FAKE.replace("args = sys.argv[1:]",
                          "assert os.environ['CONTAINER_HOST'] == 'unix:///launch/socket'\nargs = sys.argv[1:]"))
-        result = self.run_wrapper('--container-build', CONTAINER_HOST='unix:///launch/socket')
+        result = self.run_wrapper('--container-build', '-c', 'true', CONTAINER_HOST='unix:///launch/socket')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--unsetenv', self.create())
 
@@ -1466,11 +1490,16 @@ if args[0]=='snapshot':
 
 from sandbox_profile import AGENT_FIXTURE  # noqa: E402
 
+sys.path.insert(0, str(ROOT / 'network'))
+import agent_profile  # noqa: E402
+sys.path.pop(0)
+AGENT_PROFILE = agent_profile.load(AGENT_FIXTURE / 'profile.json')
+
 # A second fixture root whose agent part defines every hook and declares
 # authentication methods: the agent-only paths of the core.
 AGENT_ROOT = fixture_root(AGENT_FIXTURE)
 atexit.register(shutil.rmtree, AGENT_ROOT, True)
-AGENT_WRAPPER = AGENT_ROOT / 'fixture-agent.sh'
+AGENT_WRAPPER = AGENT_ROOT / AGENT_PROFILE.wrapper
 
 
 class AgentProfileSettingsTests(unittest.TestCase):
@@ -1526,7 +1555,7 @@ class AgentProfileSettingsTests(unittest.TestCase):
         shutil.copytree(AGENT_ROOT, install)
         (install / 'network/bin').mkdir(exist_ok=True)
         (install / 'network/bin/guard.sha256').write_text('0' * 64 + '  guard\n')
-        result = self.run_agent(wrapper=install / 'fixture-agent.sh', FIXTURE_AGENT_NETWORK='provider')
+        result = self.run_agent(wrapper=install / AGENT_PROFILE.wrapper, FIXTURE_AGENT_NETWORK='provider')
         self.assertEqual(result.returncode, 1)
         self.assertIn('provider mode requires FIXTURE_AGENT_NETWORK_PROFILE and FIXTURE_AGENT_NETWORK_POLICY',
                       result.stderr)
@@ -1543,7 +1572,7 @@ class AgentProfileSettingsTests(unittest.TestCase):
         (self.bin / 'bash').symlink_to(shutil.which('bash'))
         result = self.run_agent('--container-help', PATH=str(self.bin))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('Usage: fixture-agent.sh', result.stdout)
+        self.assertIn('Usage: ' + AGENT_PROFILE.wrapper, result.stdout)
         self.assertIn('provider (default when unset or empty)', result.stdout)
         self.assertIn('fixture-account: api.provider.test, login.provider.test', result.stdout)
         self.assertIn('fixture-api: api.provider.test', result.stdout)

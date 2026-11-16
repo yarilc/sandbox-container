@@ -32,7 +32,7 @@ The behavior of each task is defined by the named rows of `docs/launcher-contrac
   - `agent_validate`, `agent_help` and help composition with the provider disclosure from the default policy (M8).
 
   Add the shared cases, including the new U1 case and the fixture agent cases. Verify they pass.
-- [ ] 4.2 Implement the build-only path and combined flags (U3, U16, U17). Rewrite the "shared (rewrite) U16/U17" cases; verify they pass.
+- [x] 4.2 Implement the build-only path and combined flags (U3, U16, U17). Rewrite the "shared (rewrite) U16/U17" cases; verify they pass.
 
 ## 5. Phases 3-4: workspace, state, engine
 
