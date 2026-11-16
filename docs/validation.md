@@ -2587,3 +2587,25 @@ Change `fix-guard-agent-home`, found in OpenCode's adoption of `sandbox-ref-20`.
 | `git diff --check` | Passed |
 
 No installed code, image or profile changes: installations need no new setup.
+
+## Launcher contract (2026-11-16)
+
+Change `define-launcher-contract`: analysis and contract only, no code, spec
+or shared-file change and no tag. Results in `docs/launcher-contract.md` and
+`docs/launcher-test-map.md`.
+
+Read: the six launchers and their `tests/test_wrapper.py` at sandbox-container
+`4e0f116`, claude-container `6cac46f`, codex-container `6951d1e`,
+antigravity-container `116c7a8`, opencode-container `36299d4`, pi-container
+`f6c194d` (all on `sandbox-ref-21`), and each launcher's `--container-help`
+run with an empty `HOME` and no engine.
+
+| Check | Result |
+| --- | --- |
+| Phase rows (seven phases) | 95: 59 same, 15 union, 5 hook, 11 user decisions (U1-U9), 5 cross-references to other rows |
+| User decisions | U1-U9 recorded with their answers |
+| Wrapper test cases mapped | 488 of 488 (S 80, C 83, X 85, A 80, O 69, P 91), none unmapped |
+| Hook cells naming an undefined hook | 0 |
+| Visible changes without a spec delta row | 0 |
+| `openspec validate define-launcher-contract --strict` | Passed (`skip_specs`) |
+| `git diff --check` | Passed |
