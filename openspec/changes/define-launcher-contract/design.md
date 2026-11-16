@@ -25,7 +25,7 @@ The user decided the goal (near-total unification: wrappers reduced to data and 
 **Goals:**
 - A complete, reviewed list of launcher differences, each with a decision.
 - The `shared-launcher` contract: file layout, profile bridge, hook surface, common interface and shared tests, precise enough to implement the core without new design decisions.
-- `container-launcher` deltas for every behavior the reconciliation changes.
+- The list of spec deltas the implementation change must write for every behavior the reconciliation changes. The specs themselves change in that change, together with the code.
 
 **Non-Goals:**
 - Writing the core, the shared tests or the fake engine; tagging.
@@ -64,13 +64,13 @@ The user decided the goal (near-total unification: wrappers reduced to data and 
 ## Risks / Trade-offs
 
 - [The inventory grows too large to review] → Work phase by phase, and record decisions in the document as each phase closes; the user reviews per phase.
-- [A reconciled behavior changes what users of one wrapper see, for example a different message or status] → Record it as a `container-launcher` delta and in the document's "visible changes" list, so each adoption change names it.
+- [A reconciled behavior changes what users of one wrapper see, for example a different message or status] → Record it in the document's "visible changes" list and its spec delta in the list for the implementation change, so each adoption change names it.
 - [Bash as a library language: global state, `set -e` interactions] → Decision 5 keeps all process state in the core. The contract lists every variable a hook may read or set.
 - [Hooks become a back door for divergence] → The contract fixes the hook list. A new hook needs a reference change, and the shared tests run the core with a fixture agent part that defines none of the optional hooks and one that defines all of them.
 
 ## Migration Plan
 
-This change ships documents and specs only. Then:
+This change ships documents only and is archived without spec sync. Then:
 
 1. `sandbox-container` implements the core, the shared fake engine and the shared launcher tests under a new tag.
 2. Claude adopts first, being the closest to the reference.
