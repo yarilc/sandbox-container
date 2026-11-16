@@ -6,7 +6,7 @@ OpenCode's adoption of `sandbox-ref-20` found a defect in the shared `tests/test
 
 ## What Changes
 
-- `tests/test_guard.py` (`production_container`) mounts the writable home of the checkout's real profile (`REAL_PROFILE.home`), which belongs to the real image it runs.
+- `tests/test_guard.py` (`production_container`) mounts the writable home of the checkout's real profile, which belongs to the real image it runs. `tests/sandbox_profile.py` exposes it as `AGENT_HOME`, next to `AGENT_COMMAND`, so shared tests keep reading no checkout profile directly.
 - The change ends with the annotated tag `sandbox-ref-21`. Every wrapper then adopts `sandbox-ref-21` in its own change.
 
 ## Capabilities
@@ -21,5 +21,5 @@ None.
 
 ## Impact
 
-- Shared file: `tests/test_guard.py` (new tag needed; wrappers adopt it with `tools/propagate.py`).
+- Shared files: `tests/test_guard.py` and `tests/sandbox_profile.py` (new tag needed; wrappers adopt it with `tools/propagate.py`).
 - No production code, image, profile or qualification identity changes, so installations need no new setup.
