@@ -2568,3 +2568,22 @@ appears when a failing session has lasted at least the limit.
 | `bash -n` on the launcher | Passed |
 
 No installed code, image or profile changes: installations need no new setup.
+
+## Guard test home (`sandbox-ref-21`): 2026-11-16
+
+Change `fix-guard-agent-home`, found in OpenCode's adoption of `sandbox-ref-20`.
+
+- **Shared `tests/test_guard.py`:** `production_container` ran the real agent
+  image with the fixture profile's home (`/fixture-home`) as its writable tmpfs.
+  It now mounts `AGENT_HOME`, the checkout's real home, which
+  `tests/sandbox_profile.py` exposes next to `AGENT_COMMAND`.
+
+| Check | Result |
+| --- | --- |
+| `opencode-container` on `sandbox-ref-20`, `bash tests/run-runtime.sh --guard` | Failed as expected: `test_production_filter_and_landlock_on_real_rootless_kernel`, `EROFS: read-only file system, mkdir '/opencode-home/.local'` |
+| Same checkout with the changed `tests/test_guard.py` and `tests/sandbox_profile.py` (temporary, restored) | Passed: 20 tests, 1 skipped |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 402 tests, 66 skipped |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
+| `git diff --check` | Passed |
+
+No installed code, image or profile changes: installations need no new setup.
