@@ -67,7 +67,7 @@ defaults. Only the wording differs ("shell", "agent" or "session").
 | --- | --- | --- | --- | --- | --- | --- |
 | `NETWORK` | offline (default) or unrestricted; provider unavailable | offline, provider or unrestricted; required or supplied by the managed launcher | same as C, "required for every launch" | as X | as X | as X |
 | `NETWORK_PROFILE`, `NETWORK_POLICY`, `NETWORK_RUNTIME_DIR`, `EGRESS_IMAGE` | absent (no provider mode) | yes | yes | yes | yes | yes |
-| `MAINTENANCE` scope | image preparation | image preparation | image builds and proxy pulls, including a missing image | as X | as X | as X |
+| `MAINTENANCE` scope | image preparation | image preparation and proxy pulls | image builds and proxy pulls, including a missing image | as X | as X | as X |
 | `PODMAN` | requires explicit unrestricted | rejected in offline (wording) | rejected in offline and provider | as X | as X | as X |
 | `IMAGE` default tag | `:latest` | `:latest` | `:latest` | `:latest` | `:latest` | no tag (`localhost/pi-container`) |
 | `STATE_DIR` | optional isolated home; unset keeps shared configuration | as S | isolated home at `/codex-home`; conflicts with a nonempty `CODEX_HOME` | unset: dedicated home under `~/.local/share/antigravity-container/home`; path: isolated home; empty: shared | persistent isolated home; unset or empty: shared OpenCode directories below an ephemeral home | holds `.pi` and `.agents` instead of `~/.pi` and `~/.agents` |
@@ -124,7 +124,7 @@ authentication methods (none in S). The core reads these values through
 | Empty `<P>_TOOLCHAINS` | mounted | mounted | mounted | **not mounted** (`${...-1}`) | mounted | mounted | same: empty means default (mounted); visible change for A | - |
 | Approval bypass variable | n/a | `CLAUDE_YOLO` | `CODEX_YOLO` adds `--yolo` | `ANTIGRAVITY_YOLO` | `OPENCODE_CONTAINER_YOLO`, refused with `OPENCODE_PERMISSION` | `PI_CONTAINER_YOLO`, notice only | union: the core validates the profile's `approval_bypass_env` and never applies it in shell mode | `agent_approval_bypass` |
 | `STATE_DIR` with the native config variable | conflict with `CONFIG_DIR` | conflict with `CLAUDE_CONFIG_DIR` | conflict with `CODEX_HOME` | checked later | conflict | conflict | same: conflict with the profile's `config_dir_env` | - |
-| `CONFIG_DIR` absolute, no colon, CR or LF | later | n/a | n/a | later | here | here | union, checked here | - |
+| `CONFIG_DIR` absolute, no colon, CR or LF | never | n/a | n/a | here | here | here | union, checked here | - |
 | `<P>_IMAGE` without whitespace or control characters | no | no | no | no | yes | no | union | - |
 | Provider credential follows the network profile | n/a | phase 5 | phase 5 | `GEMINI_API_KEY` for `gemini-api` | per profile | per profile | union from profile data; see phase 5 | - |
 | Provider variable forwarding (`PROVIDER`, `ENV_VARS`, reserved names, notices) | no | no | no | no | yes | no | hook | `agent_environment` |
@@ -173,7 +173,7 @@ differs.
 | Empty `STATE_DIR` | same as unset | same | same | shared state | same as unset | same as unset | same as unset (U4) | - |
 | Shared state sources | profile `config_home` and `shared_dirs` | as S | as S | `.gemini` | as S, `private_shared_dirs` | as S, `private_shared_dirs` | same: from profile data | - |
 | `CONFIG_DIR` override of the configuration directory | `SANDBOX_CONTAINER_CONFIG_DIR` | `CLAUDE_CONFIG_DIR` | `CODEX_HOME` | `<P>_CONFIG_DIR`, shared state only | `<P>_CONFIG_DIR` | `<P>_CONFIG_DIR` (`.pi` only) | same: the profile's `config_dir_env` | - |
-| Isolated home children and CA mount parent resolved before creation | yes | yes | yes | yes | yes | yes | same | - |
+| Isolated home children and CA mount parent resolved before creation | contained, private | as S | contained, private | `.gemini`: only `! -L`, privacy not checked, existing 0755 kept | `mkdir -p`, no containment check | private, containment not checked | union (M4): every child contained and private | - |
 | Read-only state (`PI_READONLY_CONFIG`) | no | no | no | no | no | yes | user (U6): `<P>_READONLY_STATE` in the core for every wrapper | - |
 | `ENV_VARS` extra variables by name (`<P>_ENV_VARS`, `PI_ENV_VARS`) | no | no | no | no | yes | yes | user (U5): `<P>_ENV_VARS` in the core for every wrapper; reserved names are core and profile data | - |
 | Workspace-derived container name prefix | phase 6 | phase 6 | sanitized basename here | phase 6 | `sanitize_name` here | phase 6 | see phase 6 | - |
@@ -207,14 +207,14 @@ Covering tests: `test_sensitive_workspaces_refused_before_engine`, `test_state_*
 | `/var/tmp` tmpfs | noexec 256m | as S | **exec** 512m | noexec 512m | noexec 512m | noexec 256M | user (U7): 512m, always `noexec` | - |
 | `/run` tmpfs | 16m | 16m | 32m | 32m | 32m | 32M | same: 32m, `noexec` | - |
 | Home in shared-state mode | image home (read-only root) | as S | tmpfs, exec, no size | tmpfs, exec, 64m | tmpfs, exec, 512m | tmpfs, **noexec**, 64M, plus `~/.npm` tmpfs (`PI_NPM_CACHE_SIZE`) | union and U7: always a 512m tmpfs home, `noexec` unless the profile declares executable temporary storage; extra agent tmpfs through a hook | `agent_mounts` |
-| Native configuration variable inside the session | `SANDBOX_CONTAINER_CONFIG_DIR`, `HISTFILE` | `CLAUDE_CONFIG_DIR` | `CODEX_HOME` | `<P>_CONFIG_DIR` | XDG variables and `<P>_CONFIG_DIR` | none | same: the profile's `config_dir_env` points at `<home>/<config_home>`; other fixed variables through data | `agent_environment` |
-| `TERM` forwarded with a terminal | yes | yes | no | yes | no | yes | union | - |
+| Native configuration variable inside the session | `SANDBOX_CONTAINER_CONFIG_DIR`, `HISTFILE` | `CLAUDE_CONFIG_DIR` | `CODEX_HOME` | `<P>_CONFIG_DIR` | XDG variables and `<P>_CONFIG_DIR` | `PI_CONTAINER_CONFIG_DIR=/pi-home/.pi` | same: the profile's `config_dir_env` points at `<home>/<config_home>`; other fixed variables through data | `agent_environment` |
+| `TERM` forwarded | with a terminal | with a terminal | no | with a terminal | whenever set (base allowlist with `COLORTERM`, `LANG`, `LC_ALL`) | with a terminal | union (U11): `TERM`, `COLORTERM`, `LANG`, `LC_ALL` whenever set | - |
 | `EDITOR`, `VISUAL` | `nano` | `nano` | unset | `nano` | unset | host value or `nano` | union: host value or `nano` (P) | - |
 | `USER` | unset | unset | unset | unset | host user name | unset | union | - |
 | CA bundle at `<home>/ca/bundle.pem` with the four CA variables | yes | yes | yes | yes | yes | yes | same | - |
-| Fixed agent settings (telemetry, update, traffic switches) | none | provider mode (6 variables) | none | always (`AGY_CLI_DISABLE_AUTO_UPDATE`, `--unsetenv DBUS_SESSION_BUS_ADDRESS`) | restricted modes (`OPENCODE_DISABLE_*`) | restricted modes (`PI_OFFLINE`, `PI_SKIP_VERSION_CHECK`, `PI_TELEMETRY`) | same: data in `agent/launcher.sh` per scope (always or restricted), applied after every forwarded variable so they win | - |
+| Fixed agent settings (telemetry, update, traffic switches) | none | provider mode (6 variables) | none | always (`AGY_CLI_DISABLE_AUTO_UPDATE`, `--unsetenv DBUS_SESSION_BUS_ADDRESS`) | restricted modes (`OPENCODE_DISABLE_*`) | restricted modes (`PI_OFFLINE`, `PI_SKIP_VERSION_CHECK`, `PI_TELEMETRY`) | same: data in `agent/launcher.sh` per scope (always, restricted, provider; M2), applied after every forwarded variable so they win | - |
 | Podman delegation mount at `/run/podman/podman.sock`, `CONTAINER_HOST` set; otherwise unset | yes | yes | yes | yes | yes | yes, also unsets `CONTAINER_CONNECTION` | union: unset both | - |
-| Provider credential forwarding | n/a | through `session.py` | through `session.py` | profile credential, `GEMINI_API_KEY` in unrestricted | profile credential, `PROVIDER`, `ENV_VARS` | profile credential, `PI_ENV_VARS` | same: the profile credential of the selected method; `ENV_VARS` by U5 | `agent_environment` |
+| Credential forwarding | n/a | own `--env ANTHROPIC_API_KEY` in provider mode, both policy profiles; none unrestricted | own `--env OPENAI_API_KEY` for `openai-api` and `openai-api-docs`; none unrestricted | profile credential; `GEMINI_API_KEY` unrestricted | profile credential; `PROVIDER` names unrestricted | profile credential; `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY` unrestricted | user (U10): provider forwards the `credential_env` of the selected policy profile's method only; unrestricted forwards none (use `<P>_ENV_VARS`) | `agent_environment` (O `PROVIDER`) |
 | Opt-in read-only host files (O `AGENTS_DIR`, `SYSTEM_CONFIG`; P `GITCONFIG`) | no | no | no | no | yes | yes | hook | `agent_mounts` |
 | Bind validation (absolute, no colon, CR, LF; no shadowing of temporary mounts; destination conflicts) | partial | partial | partial | partial | `add_bind` | partial | union: every bind through one validated builder (O) | - |
 | OpenCode labels `io.opencode-container.*` (managed, workspace, workspace name) | no | no | no | no | yes | no | see phase 6 (ownership labels) | - |
@@ -250,14 +250,14 @@ deferred exit at checkpoints).
 
 | Behavior | S | C | X | A | O | P | Core decision | Hook |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Name prefix: sanitized workspace basename with a numeric suffix | fallback wrapper name | as S | as S, computed in phase 3 | as S | `sanitize_name`, fallback `workspace` | as S | same: S, fallback wrapper name | - |
+| Name prefix: sanitized workspace basename with a numeric suffix | fallback wrapper name | as S | as S, computed in phase 3 | as S | `sanitize_name` (also strips `_`), fallback `workspace` | as S, truncated to 64 characters with `LC_ALL=C` | same: S, fallback wrapper name, truncated to 64 characters (P) | - |
 | Ownership label `io.<wrapper>.session=<token>` on create | yes | yes | yes | yes | yes, plus `io.opencode-container.*` labels | yes | same; O's extra labels dropped (unused by any check) | - |
 | Private session directory (provider mode: inside `NETWORK_RUNTIME_DIR`) | `mktemp -d` | as X | yes | yes | yes | yes | same | - |
 | Network mode notice on stderr | yes | yes | yes | yes | yes | yes | same | - |
 | Restricted launch requires a current qualification (`qualify.py check`) | yes | yes | yes | yes | yes | yes | same | - |
 | Provider proxy started by `session.py start` in its own process group | n/a | yes | yes | yes | yes | yes | same | - |
-| Restricted application command | `/bin/bash` + args | shell: `/bin/bash` without args; agent: `/usr/local/bin/claude` + args | shell as C; agent: `codex --no-daemon -c sandbox_mode=...` plus provider-only `-c` overrides | as C | as C | as C | same: shell mode runs the profile shell with the arguments (S); the agent command comes from the profile | `agent_command_args` (mode-specific protected arguments, X) |
-| Provider credential variable | n/a | `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` for the API profiles | profile credential | profile credential | profile credential | same: the `credential_env` of the selected authentication method | - |
+| Application command | `/bin/bash` + args in every mode | shell: `/bin/bash`, args dropped in every mode; agent restricted: `/usr/local/bin/claude` + args; agent unrestricted: image `ENTRYPOINT` | shell as C; agent restricted: `codex --no-daemon -c sandbox_mode=...` plus provider-only `-c` overrides | shell as C; agent restricted: `/usr/local/bin/antigravity-entrypoint` (D-Bus, keyring, remote sign-in) | as C (`/usr/local/bin/opencode`) | as C (`/usr/local/bin/pi`) | U14: shell mode runs the shell with the arguments in every mode; H2: restricted agent sessions run `AGENT_EXEC`, unrestricted ones the image `ENTRYPOINT` | `agent_command_args` (mode-specific protected arguments, X) |
+| Provider credential variable | n/a | `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` for the API profiles | profile credential | profile credential | profile credential | U10: from `AGENT_CREDENTIALS`, keyed by policy profile | - |
 | Name reservation by `create`, up to 20 attempts; another session's name advances the index | yes | yes | yes | yes | yes | yes | same | - |
 | Create interruptible (background client, `wait`) | yes | yes | `wait_for_create` | yes | yes | `wait_for_create` | same | - |
 | Own container behind a failed create (name owned by this session) | reported, recovered by label at shutdown | as S | `owned_collision`, reported as unresolved if not recovered | as X | tested (`test_owned_name_is_not_a_collision`) | as X | union: never treated as a collision; removed, or reported as unresolved | - |
@@ -271,10 +271,10 @@ deferred exit at checkpoints).
 | Behavior | S | C | X | A | O | P | Core decision | Hook |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Signal model | trap runs `shutdown` at once | as S | first signal recorded; exit when a client or helper is waited on, otherwise at the next checkpoint | as X | as S | as X | user (U9): family A, immediate shutdown from the trap | - |
-| Shutdown budget | 20 s shared deadline; each engine call gets the remaining time (`control`) | as S | 20 s for the proxy stop; each engine call a fixed 5 s timeout | as X | as S | as X | user (U9): one 20 s deadline shared by every shutdown engine call | - |
+| Shutdown budget | 20 s shared deadline; each engine call at most 2 s within it (`control`) | as S | 20 s for the proxy stop; each engine call a fixed 5 s timeout | as X | as S | as X | user (U9): one 20 s deadline; each shutdown engine call bounded by min(2 s, time left minus the reserve for local clients) (M1) | - |
 | Signal forwarded to an attached session, then forced removal | `podman kill`, 5 s grace | as S | as S | as S | as S | as S | same | - |
 | Owned container removed (`rm --force --time 0 --ignore`), failures reported without changing the status | yes | yes | yes | yes | yes | yes | same | - |
-| Recovery of an interrupted creation: CID record, create output, then ownership label lookup confirmed by inspect | yes | yes | CID record, then label lookup | as X | as S | as X | same: S's order, X's record validation | - |
+| Recovery of an interrupted creation: CID record, create output, then ownership label lookup confirmed by inspect | yes | yes | CID record, then label lookup | as X | CID record cross-checked with the create output ("inconsistent creation IDs"), then label lookup | as X | same: S's order, X's record validation, O's cross-check | - |
 | Restricted helpers (qualification check, proxy start) stopped with TERM, grace, KILL | yes | yes, process group | yes, process group | yes | yes | yes | same: process group for the proxy helper | - |
 | Diagnostics filter drained before it is reaped | yes | yes | yes | yes | yes | yes | same | - |
 | Provider proxy stopped by `session.py stop` within the remaining budget | n/a | yes | yes | yes | yes | yes | same | - |
@@ -290,8 +290,8 @@ Covering tests (both families): `test_exit_status_and_owned_cleanup`,
 ### Decisions (user, 2026-11-16)
 
 - **U9.** The core uses family A's lifecycle: the signal trap starts shutdown
-  at once, and every shutdown engine call takes the time left in one 20 s
-  deadline. It adds family B's CID record validation and its explicit handling
+  at once, and every shutdown engine call is bounded by min(2 s, time left in
+  one 20 s deadline minus the reserve for local clients). It adds family B's CID record validation and its explicit handling
   of this session's own container behind a failed create. The signal, stall
   and collision tests of both families become shared core tests.
 
@@ -300,14 +300,14 @@ Covering tests (both families): `test_exit_status_and_owned_cleanup`,
 Every case is listed in `docs/launcher-test-map.md` with its phase and
 destination. Totals (488 cases):
 
-| Repository | Cases | Shared | Shared (duplicate) | Hook | Obsolete | Fake engine |
-| --- | --- | --- | --- | --- | --- | --- |
-| S | 80 | 80 | 0 | 0 | 0 | 0 |
-| C | 83 | 5 | 74 | 4 | 0 | 0 |
-| X | 85 | 71 | 10 | 4 | 0 | 0 |
-| A | 80 | 28 | 46 | 5 | 1 | 0 |
-| O | 69 | 22 | 32 | 11 | 3 | 1 |
-| P | 91 | 15 | 62 | 8 | 3 | 3 |
+| Repository | Cases | Shared | Shared (rewrite) | Shared (duplicate) | Hook | Obsolete | Fake engine |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| S | 80 | 79 | 1 | 0 | 0 | 0 | 0 |
+| C | 83 | 4 | 3 | 73 | 3 | 0 | 0 |
+| X | 85 | 64 | 7 | 10 | 4 | 0 | 0 |
+| A | 80 | 26 | 6 | 45 | 3 | 0 | 0 |
+| O | 69 | 21 | 4 | 30 | 11 | 2 | 1 |
+| P | 91 | 15 | 4 | 59 | 7 | 3 | 3 |
 
 The shared suite starts from the reference's 80 cases (family A) and adds the
 cases only family B or OpenCode cover, for example `test_owned_name_is_not_a_collision`,
@@ -338,10 +338,12 @@ harness can import it; it rejects unknown commands (Pi's
 
 | File | Owner | Content |
 | --- | --- | --- |
-| `<wrapper>-container.sh` | wrapper (identical in every wrapper up to its name) | resolves its own path with GNU `readlink -f` and runs `source "$dir/launcher/core.sh" "$dir/agent/launcher.sh" "$@"`; nothing else |
+| `<wrapper>-container.sh` | wrapper (identical in every wrapper up to its name) | sets `set -Eeuo pipefail`, keeps the invoked path in `WRAPPER_INVOKED=${BASH_SOURCE[0]}`, resolves its own path with GNU `readlink -f` (stopping with the GNU readlink diagnosis when it is missing), and runs `source "$dir/launcher/core.sh" "$dir/agent/launcher.sh" "$@"`; nothing else |
 | `launcher/core.sh` | shared, reference copy | the whole launcher: phases 1-7 of this document |
 | `agent/launcher.sh` | wrapper | the profile data the core needs and the agent hooks |
-| `agent/profile.json` | wrapper | unchanged role; new field `native.exec_tmp` (U7); `install.runtime_build` removed (U8) |
+| `agent/profile.json` | wrapper | unchanged role; new fields `native.exec_tmp` (U7) and `native.exec` (H2); `install.runtime_build` removed (U8); validated by `network/agent_profile.py` |
+| `setup/common.py` `MANIFEST` | shared | adds `launcher/core.sh` and `agent/launcher.sh`, so installations contain the core (H1) |
+| `network/qualification_records.py` `code_files` | shared | binds `launcher/core.sh` (in `SHARED_CODE`) and `agent/launcher.sh`, so a core or agent-part change invalidates qualification (H1) |
 | `tests/fake_podman.py` | shared | the fake engine |
 | `tests/test_launcher.py` | shared | the shared launcher tests, run with a fixture `agent/launcher.sh` |
 | `tests/test_wrapper.py` | wrapper | hook and agent data tests only |
@@ -362,11 +364,12 @@ clean Bash and compares each value with `agent/profile.json`.
 | `AGENT_LABEL_NAMESPACE` | `label_namespace` |
 | `AGENT_IMAGE`, `AGENT_PROXY_IMAGE` | `images.agent`, `images.proxy` |
 | `AGENT_HOME`, `AGENT_COMMAND` | `native.home`, `native.command` |
+| `AGENT_EXEC` | `native.exec`: absolute in-container application path for restricted agent sessions (default `/usr/local/bin/<command>`; A: `/usr/local/bin/antigravity-entrypoint`) |
 | `AGENT_CONFIG_DIR_ENV`, `AGENT_CONFIG_HOME` | `native.config_dir_env`, `native.config_home` |
 | `AGENT_SHARED_DIRS` (array), `AGENT_PRIVATE_SHARED_DIRS` | `native.shared_dirs`, `native.private_shared_dirs` |
 | `AGENT_APPROVAL_BYPASS_ENV` | `native.approval_bypass_env` (empty when absent) |
 | `AGENT_EXEC_TMP` | `native.exec_tmp` (U7) |
-| `AGENT_CREDENTIALS` (array of `policy_profile=credential_env`) | `auth.*` |
+| `AGENT_CREDENTIALS` (array of `policy_profile=credential_env`, empty value for account methods) | every policy profile in `agent/policies/default.json`, through its `authentication` method's `credential_env` (X `openai-api-docs` included) |
 
 Agent data with no profile counterpart:
 
@@ -374,11 +377,14 @@ Agent data with no profile counterpart:
 | --- | --- |
 | `AGENT_SESSION_ENV` (array `NAME=VALUE`) | fixed agent settings for every session |
 | `AGENT_RESTRICTED_ENV` (array `NAME=VALUE`) | fixed agent settings for offline and provider sessions |
+| `AGENT_PROVIDER_ENV` (array `NAME=VALUE`) | fixed agent settings for provider sessions only (C, M2) |
 | `AGENT_UNSET_ENV` (array) | variables removed from every session (A: `DBUS_SESSION_BUS_ADDRESS`) |
 | `AGENT_RESERVED_ENV` (array) | names the agent part sets; `<P>_ENV_VARS` skips them (U5) |
 
 Derived by the core, never declared: the default network mode (`provider`
-when `AGENT_CREDENTIALS` is not empty, otherwise `offline`; U1), whether
+when the profile declares authentication methods, that is when
+`AGENT_CREDENTIALS` is not empty, account methods included; otherwise
+`offline`; U1, M10), whether
 `--container-shell` is a no-op (`AGENT_COMMAND` is the shell), and every
 `<P>_*` variable name.
 
@@ -396,16 +402,66 @@ may read the core state listed below and must not change any other variable.
 | `agent_validate` | after the common settings, before any engine or state operation (phase 2) | mode | none; may print notices or `die` | - | nothing |
 | `agent_approval_bypass` | when `AGENT_APPROVAL_BYPASS_ENV` is enabled, not in shell mode | mode | `agent_bypass_args`, `agent_bypass_env` | `NAME` reserved by the core | bypass ignored with a notice |
 | `agent_command_args` | when the application command is built, not in shell mode | mode | `agent_mode_args`, placed before the user's arguments | - | none |
-| `agent_environment` | when the session environment is built (phase 5) | mode | `agent_env` (`NAME` or `NAME=VALUE`) | names the core sets (`HOME`, `USER`, `TERM`, `EDITOR`, `VISUAL`, `PATH`, the CA and proxy variables, `CONTAINER_HOST`, the config variable) | none |
-| `agent_mounts` | after the state mounts (phase 5) | mode, home | `agent_mount_specs` entries `ro:<source>:<destination>` or `tmpfs:<destination>:<size>` | writable binds; relative paths; colon, CR or LF; a destination that shadows or contains `/tmp`, `/var/tmp`, `/run`, the workspace, `/toolchains`, the CA file or another mount; a missing source | none |
+| `agent_environment` | when the session environment is built (phase 5) | mode | `agent_env` (`NAME` or `NAME=VALUE`) | names the core sets (`HOME`, `USER`, `TERM`, `EDITOR`, `VISUAL`, `PATH`, the CA variables, `CONTAINER_HOST`, `CONTAINER_NAME`, the config variable); the proxy variables in restricted modes (U11); another method's credential in provider mode (U13) | none |
+| `agent_mounts` | after the state mounts (phase 5) | mode, home | `agent_mount_specs` entries `ro:<source>:<destination>` or `tmpfs:<destination>:<size>` | writable binds; relative paths; colon, CR or LF; a destination equal to, or containing, `/tmp`, `/var/tmp`, `/run`, the workspace, `/toolchains`, the home, the CA file or another mount (destinations below the home are allowed, M7); a missing source; a size not matching `[1-9][0-9]{0,5}[kmgKMG]` | none |
 | `agent_build_args` | before every build and before the freshness check (U8) | - | `agent_build_args` (`NAME=VALUE`), `agent_build_inputs` (files inside the installation, added to `build-inputs-hash`) | values with CR or LF; inputs outside the installation | none |
 
-Core state a hook may read: `network_mode`, `shell_mode`, `restricted`,
+Core state a hook may read: `network_mode`, `shell_mode`, `restricted`, `podman_access`,
 `workspace`, `workspace_mount`, `state_dir` (empty in shared mode),
 `script_dir`, `caller_uid`, `caller_gid`, and every `AGENT_*` value.
 
 Agent tmpfs mounts get `rw,noexec,nosuid,nodev,mode=0700,U` and the given
 size.
+
+### Core rules added by the review
+
+- **Ordering (M6).** Application arguments: `agent_mode_args`, then
+  `agent_bypass_args`, then the user's arguments. Environment, where the last
+  value wins: toolchain variables; core forwarding (`TERM`, `COLORTERM`,
+  `LANG`, `LC_ALL`, and the proxy variables in unrestricted mode, U11);
+  `agent_env`; `<P>_ENV_VARS`; `agent_bypass_env`; core-set variables (`HOME`,
+  `USER`, `EDITOR`, `VISUAL`, the config variable, the CA variables,
+  `CONTAINER_NAME`, `CONTAINER_HOST`); fixed agent settings (session, then
+  restricted, then provider); finally `--unsetenv` for `AGENT_UNSET_ENV`,
+  `CONTAINER_CONNECTION` and, without delegation, `CONTAINER_HOST`.
+- **Reserved names for `<P>_ENV_VARS` (M5, U13).** Always: every name the core
+  sets, `AGENT_RESERVED_ENV`, `AGENT_UNSET_ENV`. Restricted modes: also the
+  proxy and CA variables and the names in `AGENT_RESTRICTED_ENV` and
+  `AGENT_PROVIDER_ENV`. Provider mode: also every `credential_env` other than
+  the selected profile's. Each skipped name gets one notice.
+- **Credentials (U10, H3).** Provider mode forwards the selected policy
+  profile's `credential_env` by name when set. Offline and unrestricted forward
+  no credential; `<P>_ENV_VARS` may name one in unrestricted mode.
+- **Pi features made common (U12, H5).** Unrestricted sessions add `--init`
+  (restricted ones cannot: the guard rejects its mount below `/run`). Each
+  create attempt sets `CONTAINER_NAME=<name>`. With delegation the core adds
+  tmpfs `/var/lib/containers` (256m) and `/run/containers` (64m), `noexec`,
+  `mode=0700,U`. Builds use `--format docker` and no build timeout.
+- **Build (H6, M11, U8).** `build-inputs-hash` covers `Containerfile`,
+  `.containerignore`, `network/relay.py`, `network/mux.py`, the profile's
+  `install.files` and `agent_build_inputs`, in that order; the CA bundle is
+  excluded. A build first pulls any missing exact `FROM` base, then runs
+  `podman build --pull=never --format docker` with `</dev/null`, as setup's
+  recipe build does today; `create` also runs with `</dev/null` (L9).
+- **Build-only path (U3, M11).** `--container-build` alone runs the help,
+  toolchain, qualify and setup dispatch, mode validation, the maintenance
+  check, the host tool and launch-engine checks, CA selection and the build,
+  then exits. It skips the workspace refusal, state, toolchains, cgroup checks,
+  restricted preparation and the session.
+- **Engine query timeouts (M8).** Every read-only engine query (`info`,
+  `version`, `ps`, `image exists`, `image inspect`, `container exists`,
+  `inspect`, the delegation socket query) runs under `timeout --kill-after=1s
+  10s`. `create`, `start`, `build` and `pull` are not bounded; shutdown calls
+  follow U9.
+- **Read-only state (U6, M9).** With `<P>_READONLY_STATE=1` the core mounts
+  the configuration directory and every shared directory read-only below the
+  tmpfs home, from shared state or from the isolated home. They must already
+  exist; owner and privacy checks are skipped, and they are not writable inputs
+  of restricted preparation. The isolated home itself is not mounted.
+- **Isolated home children (M4).** Every child and the CA mount parent is
+  resolved before creation, must stay inside the home, and must be private.
+- **Temporary mount modes (L7).** `/tmp`, `/var/tmp` and the ephemeral home are
+  `mode=1777`; `/run` is `noexec` in every wrapper (X's executable `/run` ends).
 
 ### Agent-specific helpers
 
@@ -430,7 +486,7 @@ ID, and cannot add engine flags other than those their outputs describe.
 ## Visible changes
 
 Behavior that changes for users of at least one wrapper when it adopts the
-core. Each entry is also a `container-launcher` delta.
+core. Each entry has a row in "Spec deltas for the implementation change".
 
 | Change | Wrappers affected | Source |
 | --- | --- | --- |
@@ -439,16 +495,24 @@ core. Each entry is also a `container-launcher` delta.
 | `--container-build` alone builds and exits | S, C, X, A, O | U3 |
 | An empty `<P>_TOOLCHAINS` mounts the library (default) | A | phase 1-2 |
 | `<P>_IMAGE` with whitespace or control characters is refused | S, C, X, A, P | phase 1-2 |
-| `CONFIG_DIR` must be absolute without colon, CR or LF, checked before the engine | S, A | phase 1-2 |
+| `CONFIG_DIR` must be absolute without colon, CR or LF, checked before the engine | S | phase 1-2 |
 | Antigravity shares `~/.gemini` by default; its dedicated home is no longer used | A | U4 |
 | `<P>_ENV_VARS` forwards listed variable names | S, C, X, A; P renamed from `PI_ENV_VARS` | U5 |
 | `<P>_READONLY_STATE` mounts existing state read-only | S, C, X, A, O; P renamed from `PI_READONLY_CONFIG` | U6 |
 | Every engine query is bounded by a timeout | S, C, X, A, O | phase 3-4 |
 | One temporary-storage layout; `exec` only where the profile declares it | all | U7 |
 | A stale image is refused until rebuilt; Antigravity's explicit build no longer skips the cache | all | U8 |
-| `TERM`, `EDITOR`/`VISUAL` (host value or `nano`) and `USER` set in every session | X, O (TERM, EDITOR); all but O (USER) | phase 5 |
+| `TERM`, `EDITOR`/`VISUAL` (host value or `nano`) and `USER` set in every session | X, O (`TERM`, `EDITOR`); S, C, A (host `EDITOR`/`VISUAL` instead of fixed `nano`); all but O (`USER`) | phase 5 |
+| Claude's provider sessions forward `ANTHROPIC_API_KEY` only with the API policy profile | C | U10 |
+| Unrestricted sessions forward no API key unless listed in `<P>_ENV_VARS` | A, P (O: `PROVIDER` stays as an agent hook) | U10 |
+| Unrestricted sessions forward the proxy variables, `COLORTERM`, `LANG` and `LC_ALL` | S, C, X, A (P: `COLORTERM`, `LANG`, `LC_ALL`) | U11 |
+| `--init` in unrestricted sessions, `CONTAINER_NAME` in every session, delegation tmpfs mounts, `--format docker` builds | S, C, X, A, O | U12 |
+| No build timeout | P | U12 |
+| `<P>_ENV_VARS` cannot forward another method's credential in provider mode | O | U13 |
+| Isolated home children must be contained and private | A, O, P | M4 |
+| `/run` is not executable | X | L7 |
 | Shutdown is bounded by one 20 s deadline | X, A, P | U9 |
-| Shell mode in restricted modes passes its arguments to the shell | C, X, A, O, P | phase 6 |
+| Shell mode passes its arguments to the shell in every mode | C, X, A, O, P | U14 |
 
 ## Spec deltas for the implementation change
 
@@ -474,10 +538,68 @@ adoption change; the reference rows are marked "reference: none".
 | phase 1-2 | `container-launcher` | Predictable image operations | MODIFIED: an image name with whitespace or control characters is refused before any engine operation |
 | phase 1-2 | `persistent-state` | Resolved state paths and isolation scope | MODIFIED: `STATE_DIR` and the configuration override are absolute, without colon, CR or LF, checked before the engine |
 | phase 3-4 | `container-launcher` | Verified launch engine | MODIFIED: every engine query is bounded by a timeout; responses with CR or extra records are refused |
-| phase 5 | `container-launcher` | Transparent invocation and terminal handling | MODIFIED: `USER` is set; `EDITOR` and `VISUAL` keep the host value or default to `nano` |
+| phase 5 | `container-launcher` | Transparent invocation and terminal handling | MODIFIED: `USER` is set; `TERM` is forwarded; `EDITOR` and `VISUAL` keep the host value or default to `nano` |
 | phase 1-2 (A) | wrapper specs | toolchain switch | reference: none; the Antigravity adoption treats an empty `<P>_TOOLCHAINS` as the default |
 | U9 | `container-launcher` | Bounded session shutdown | reference: none (already family A); X, A and P adoptions state the shared 20 s deadline |
+| H1 | `container-setup` | Protected complete installation | MODIFIED: the installation contains `launcher/core.sh` and `agent/launcher.sh` |
+| H1 | `network-egress` | Credential-free local enforcement qualification | MODIFIED: qualification evidence binds `launcher/core.sh` and `agent/launcher.sh` |
+| H2, U7, U8 | `network-egress` | Single protected agent profile | MODIFIED: the profile declares `native.exec` and `native.exec_tmp`; `install.runtime_build` is gone |
+| U1 | `network-egress` | Runtime modes with an offline default | reference: none; each agent adoption MODIFIES it to a provider default |
+| phase 3-4 | `container-launcher` | Single-record launch verification response | MODIFIED: every read-only engine query is bounded and refuses CR and extra records |
+| U10, U11, U13 | `container-launcher` | Transparent invocation and terminal handling | MODIFIED: unrestricted sessions forward `TERM`, `COLORTERM`, `LANG`, `LC_ALL` and the proxy variables, and no credential; provider sessions forward only the selected method's credential; `<P>_ENV_VARS` reserved names |
+| U12 | `container-launcher` | Owned container lifecycle | MODIFIED: unrestricted sessions run with `--init`; every create attempt sets `CONTAINER_NAME` |
+| U12 | `container-podman-access` | Access policy applies across launch modes | MODIFIED: delegated sessions get private tmpfs `/var/lib/containers` and `/run/containers` |
+| U12 | `container-launcher` | Predictable image operations | MODIFIED: builds use `--format docker`, pull missing exact bases, then `--pull=never`; no build timeout |
+| M4 | `persistent-state` | Resolved state paths and isolation scope | MODIFIED: every isolated-home child is contained and private |
 | phase 6 | `container-launcher` | Owned container lifecycle | MODIFIED: a failed create whose name holds this session's container is never a collision; that container is removed or reported unresolved |
-| phase 6 | wrapper specs | restricted shell mode | reference: none; C, X, A, O and P adoptions pass shell-mode arguments to the shell in restricted modes |
+| U14 | wrapper specs | shell mode | reference: none; C, X, A, O and P adoptions pass shell-mode arguments to the shell in every mode |
 
 Every row of "Visible changes" maps to a row here.
+
+## Review findings
+
+An independent read-only review (2026-11-16) checked this document against the
+six launchers, their tests, the profiles and the reference specs. The user took
+decisions U10-U14 on the findings that needed one:
+
+- **U10.** Provider sessions forward the `credential_env` of the selected
+  policy profile's method only (C's account profile no longer receives
+  `ANTHROPIC_API_KEY`). Unrestricted sessions forward no credential; a user who
+  wants one lists it in `<P>_ENV_VARS`, so a key in the host shell never
+  silently changes how an agent authenticates.
+- **U11.** Unrestricted sessions forward the proxy variables (both cases),
+  `TERM`, `COLORTERM`, `LANG` and `LC_ALL`; restricted modes never forward the
+  proxy variables.
+- **U12.** Pi's `--init` (unrestricted), per-attempt `CONTAINER_NAME`,
+  delegation tmpfs mounts and `--format docker` builds become core behavior for
+  every wrapper; Pi's 300 s build timeout is dropped.
+- **U13.** `<P>_ENV_VARS` cannot forward another method's credential in
+  provider mode, nor proxy, CA or protected settings in restricted modes.
+- **U14.** Shell mode passes its arguments to the shell in every mode.
+
+| Finding | Resolution |
+| --- | --- |
+| H1 core files missing from installation and qualification | Files table (`MANIFEST`, `code_files`); deltas for `container-setup` and `network-egress` |
+| H2 Antigravity runs its entrypoint script | `AGENT_EXEC` (`native.exec`); unrestricted agent sessions use the image `ENTRYPOINT`; phase 6 row corrected |
+| H3 credential cells and model | U10; `AGENT_CREDENTIALS` keyed by every policy profile; phase 5 and 6 rows corrected |
+| H4 unrestricted proxy and locale forwarding | U11; `agent_environment` refuses proxy names only in restricted modes; `TERM` row corrected |
+| H5 Pi features with no hook | U12; `podman_access` readable by hooks |
+| H6 `build-inputs-hash` input set | Core rules: Build |
+| M1 shutdown slicing | U9 text and Shutdown budget row: min(2 s, time left) |
+| M2 Claude provider-only settings | `AGENT_PROVIDER_ENV` |
+| M3 shell-mode arguments | U14 |
+| M4 isolated home children | union; Core rules |
+| M5 mode-dependent reserved names | U13; Core rules: Reserved names |
+| M6 ordering | Core rules: Ordering |
+| M7 bind rules and tmpfs size | `agent_mounts` refusal rules |
+| M8 query timeouts | Core rules: Engine query timeouts |
+| M9 read-only layout | Core rules: Read-only state |
+| M10 credential format and default mode | `AGENT_CREDENTIALS` format; derived default mode |
+| M11 build-only path and base pulls | Core rules: Build-only path, Build |
+| M12 entry-script contract | Files: entry script |
+| M13 test-map notes | `docs/launcher-test-map.md`: "shared (rewrite)" destination and notes |
+| L1-L5 cell accuracy | rows corrected (P config variable, `CONFIG_DIR` check, C maintenance scope, O recovery, name prefix) |
+| L6 visible changes and deltas | rows added; `TERM`, single-record and profile-schema deltas |
+| L7 mount modes | Core rules: Temporary mount modes |
+| L8 test-map phases | `docs/launcher-test-map.md` regenerated |
+| L9 `</dev/null` for create and build | Core rules: Build |

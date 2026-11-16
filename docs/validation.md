@@ -2609,3 +2609,16 @@ run with an empty `HOME` and no engine.
 | Visible changes without a spec delta row | 0 |
 | `openspec validate define-launcher-contract --strict` | Passed (`skip_specs`) |
 | `git diff --check` | Passed |
+
+Independent review of the contract (2026-11-16): a read-only reviewer checked
+`docs/launcher-contract.md` and `docs/launcher-test-map.md` against the six
+launchers, tests, profiles and specs.
+
+| Check | Result |
+| --- | --- |
+| Findings | 28: 6 high (H1-H6), 13 medium (M1-M13), 9 low (L1-L9); every high finding verified against the launcher source |
+| Resolutions | all 28 recorded in "Review findings"; user decisions U10-U14 for the five that needed one |
+| Test map after regeneration | 488 of 488 cases mapped (S 80, C 83, X 85, A 80, O 69, P 91), 25 marked "shared (rewrite)" |
+| Visible changes without a spec delta row | 0 |
+| `openspec validate define-launcher-contract --strict` | Passed (`skip_specs`) |
+| `git diff --check` | Passed |
