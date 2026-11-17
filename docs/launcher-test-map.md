@@ -223,7 +223,7 @@ against the new core, and every lost behavior becomes a shared case through the 
 | X | `test_private_state_creation_and_mask` | 6 | shared |  | `test_private_creation_does_not_change_host_command_umask` (to verify at adoption) |
 | X | `test_existing_state_relative_symlink_and_spaces` | 3-4 | shared |  | `test_insecure_existing_state_rejected` (to verify at adoption) |
 | X | `test_invalid_state_before_image_operations` | 5 | shared |  | `test_launch_verification_fails_before_image_operations` (to verify at adoption) |
-| X | `test_inaccessible_state` | 3-4 | shared |  | `test_inaccessible_state_and_ignored_permissions` (to verify at adoption) |
+| X | `test_inaccessible_state` | 3-4 | shared |  | `test_inaccessible_state_and_ignored_permissions` (extended in `fix-inaccessible-state-diagnostic`: every state directory, prefix and hint) |
 | X | `test_wrong_owner_controlled_fixture` | 3-4 | shared |  | `test_private_existing_configuration_and_wrong_owner` (to verify at adoption) |
 | X | `test_non_enforcing_modes_controlled_fixture` | 1-2 | shared |  | to verify at adoption |
 | X | `test_default_state_and_help_with_invalid_state` | 3-4 | shared |  | `test_shared_state_default_and_override` (to verify at adoption) |
