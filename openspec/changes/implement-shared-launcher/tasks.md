@@ -36,7 +36,7 @@ The behavior of each task is defined by the named rows of `docs/launcher-contrac
 
 ## 5. Phases 3-4: workspace, state, engine
 
-- [ ] 5.1 Implement the phase 3-4 rows:
+- [x] 5.1 Implement the phase 3-4 rows:
   - one host-tool check, with readlink reported in the reference's order;
   - one capture function with CR and record checks and a 10 s timeout on every read-only query (M8);
   - field-parse engine check;

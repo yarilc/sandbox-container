@@ -27,6 +27,20 @@ unset core_suffix core_name
 
 die() { printf '%s: %s\n' "$AGENT_NAME" "$*" >&2; exit 1; }
 
+# Every read-only engine query is bounded, so a stalled service cannot hang a
+# launch; create, start, build and pull are not (docs/launcher-contract.md M8).
+engine() {
+    timeout --kill-after=1s 10s podman "$@"
+}
+
+# One engine record: strip one final LF; refuse CR and further records.
+single_record() {
+    local name=$1 message=$2 value
+    value=${!name%$'\n'}
+    [[ "$value" != *[$'\n'$'\r']* ]] || die "$message"
+    printf -v "$name" '%s' "$value"
+}
+
 # Keep final LF bytes while retaining the query's own exit status and stderr.
 capture_response() {
     local destination=$1 captured query_status
@@ -329,6 +343,10 @@ core_settings() {
     fi
     [[ -z "${cfg_STATE_DIR:-}" || -z "${cfg_CONFIG_DIR:-}" ]] \
         || die "${P}_STATE_DIR conflicts with $AGENT_CONFIG_DIR_ENV; unset $AGENT_CONFIG_DIR_ENV to isolate state"
+    if [[ -n "${cfg_STATE_DIR:-}" ]]; then
+        [[ "$cfg_STATE_DIR" == /* && "$cfg_STATE_DIR" != *[:$'\n'$'\r']* ]] \
+            || die "${P}_STATE_DIR must be an absolute path without colon, CR or LF: $cfg_STATE_DIR"
+    fi
     if [[ -n "${cfg_CONFIG_DIR:-}" ]]; then
         [[ "$cfg_CONFIG_DIR" == /* && "$cfg_CONFIG_DIR" != *[:$'\n'$'\r']* ]] \
             || die "$AGENT_CONFIG_DIR_ENV must be an absolute path without colon, CR or LF: $cfg_CONFIG_DIR"
@@ -389,10 +407,12 @@ core_settings() {
 core_workspace() {
     # The build-only operation mounts no workspace: no refusal applies (U16).
     ((build_only)) || core_workspace_refusal
+    # One check of every host tool the core uses, in the reference's order.
     command -v podman >/dev/null || die 'Podman is required on the host'
     command -v timeout >/dev/null && [[ $(timeout --version 2>/dev/null) == *'GNU coreutils'* ]] \
         || die 'GNU timeout is required on the host; install GNU coreutils'
     [[ -n "$script_path" ]] || die 'GNU readlink is required on the host; install GNU coreutils'
+    command -v stat >/dev/null || die 'GNU stat is required on the host; install GNU coreutils'
     # Isolated credentials and history must never land in, or contain, the workspace.
     # Compare physical paths; readlink -m also resolves a directory not created yet.
     if [[ -n "${cfg_STATE_DIR:-}" ]] && ((build_only == 0)); then
@@ -438,12 +458,13 @@ core_engine() {
             ;;
         *) die 'remote TCP/SSH Podman contexts are not supported; use a local Unix socket' ;;
     esac
-    capture_response runtime_info podman info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}' \
+    capture_response runtime_info engine info --format '{{.Host.Security.Rootless}} {{.Host.OS}} {{.Host.ServiceIsRemote}}' \
         || die 'cannot query Podman; check the local rootless service'
-    runtime_info=${runtime_info%$'\n'}
-    [[ "$runtime_info" != *$'\n'* ]] || die 'invalid Podman engine response: expected one record with at most one final LF'
-    [[ "$runtime_info" == "true linux false" || "$runtime_info" == "true linux true" ]] || die 'a verified Linux rootless Podman engine is required (unexpected engine response)'
-    read -r _ _ remote <<< "$runtime_info"
+    single_record runtime_info 'invalid Podman engine response: expected one record with at most one final LF'
+    local rootless runtime_os extra
+    read -r rootless runtime_os remote extra <<< "$runtime_info"
+    [[ "$rootless" == true && "$runtime_os" == linux && "$remote" =~ ^(true|false)$ && -z "$extra" ]] \
+        || die 'a verified Linux rootless Podman engine is required (unexpected engine response)'
     if [[ "$remote" == true && "${CONTAINER_HOST:-}" != unix:///* ]]; then
         die 'remote Podman contexts are not supported; set CONTAINER_HOST to a local Unix socket'
     fi
@@ -456,9 +477,9 @@ core_engine_session() {
     # A budget is enforced only when the verified engine reports its cgroup v2
     # controller as delegated. Unenforced budgets are not requested, are announced,
     # and must be absent from the created configuration (see network/agent_budgets.py).
-    capture_response cgroup_controllers podman info --format '{{.Host.CgroupControllers}}' \
+    capture_response cgroup_controllers engine info --format '{{.Host.CgroupControllers}}' \
         || die 'cannot query the rootless cgroup controllers'
-    cgroup_controllers=${cgroup_controllers%$'\n'}
+    single_record cgroup_controllers 'unverifiable cgroup controller list from the Podman engine'
     [[ "$cgroup_controllers" =~ ^\[([a-z_]+( [a-z_]+)*)?\]$ ]] \
         || die 'unverifiable cgroup controller list from the Podman engine'
     controller_delegated() {
@@ -491,12 +512,15 @@ core_engine_session() {
     if [[ "$network_mode" != unrestricted ]]; then
         command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
         [[ "$remote" == true ]] || die 'restricted networking currently requires the tested same-host Unix service; local-engine enforcement is unverified'
-        capture_response network_backend podman info --format '{{.Host.NetworkBackend}}' \
+        capture_response network_backend engine info --format '{{.Host.NetworkBackend}}' \
             || die 'cannot verify restricted network backend'
-        capture_response network_version podman version --format '{{.Server.Version}}' \
+        single_record network_backend 'invalid restricted network backend response'
+        capture_response network_version engine version --format '{{.Server.Version}}' \
             || die 'cannot verify restricted network server version'
-        capture_response network_platform podman info --format '{{json .Host}}' \
+        single_record network_version 'invalid restricted network server version response'
+        capture_response network_platform engine info --format '{{json .Host}}' \
             || die 'cannot verify restricted platform security policy'
+        single_record network_platform 'invalid restricted platform security policy response'
     elif ((qualification_probe)); then
         die 'qualification probes require restricted networking'
     fi
@@ -513,7 +537,7 @@ core_engine_delegation() {
         [[ "$socket" == /* ]] || die "Podman socket must be an absolute path: $socket"
         [[ -S "$socket" && -r "$socket" && -w "$socket" ]] || die "Podman socket not accessible: $socket; enable 'systemctl --user start podman.socket' or start 'podman system service --time=0'"
         socket=$(readlink -f -- "$socket")
-        capture_response socket_info podman --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}' \
+        capture_response socket_info engine --remote --url "unix://$socket" info --format '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}' \
             || die "cannot query Podman socket: $socket; check the rootless service, permissions and SELinux policy"
         [[ "$socket_info" != *$'\r'* ]] || die "invalid Podman socket response: $socket"
         socket_info=${socket_info%$'\n'}
@@ -559,25 +583,26 @@ core_state() {
 core_state_directories() {
     # Host directories the session can write: the toolchain library must avoid
     # them and restricted preparation declares them writable.
+    if ((readonly_state)); then
+        core_readonly_state
+        return
+    fi
     if [[ -n "$state_dir" ]]; then
         create_private_directory "$state_dir"
         state_dir=$(cd -- "$state_dir" && pwd -P)
         private_directory "$state_dir"
         # Resolve before creating children so an existing parent symlink cannot
-        # redirect configuration creation outside the dedicated application home.
-        for relative in "$AGENT_CONFIG_HOME" "${AGENT_SHARED_DIRS[@]}"; do
+        # redirect configuration creation outside the dedicated application home;
+        # every child, and the CA mount parent, stays inside it and private (M4).
+        local children=("$AGENT_CONFIG_HOME" "${AGENT_SHARED_DIRS[@]}")
+        ((trust_host_ca == 0)) || children+=(ca)
+        for relative in "${children[@]}"; do
             resolved=$(readlink -m -- "$state_dir/$relative")
             [[ "$resolved" == "$state_dir/"* ]] \
                 || die "isolated configuration escapes state home: $state_dir/$relative"
             create_private_directory "$state_dir/$relative"
+            private_directory "$state_dir/$relative"
         done
-        private_directory "$state_dir/$AGENT_CONFIG_HOME"
-        if ((trust_host_ca)); then
-            # Prevent the engine from creating a nested CA mount parent owned by a
-            # subordinate mapped UID inside the writable isolated home.
-            create_private_directory "$state_dir/ca"
-            private_directory "$state_dir/ca"
-        fi
         state_mounts+=(--volume "$state_dir:$AGENT_HOME:rw")
         writable_state+=("$state_dir")
     else
@@ -595,6 +620,26 @@ core_state_directories() {
             writable_state+=("$shared_path")
         done
     fi
+}
+
+# Read-only state (U6, M9): existing configuration and shared directories are
+# mounted read-only below the home, from shared state or the isolated home; the
+# isolated home itself is not mounted. Nothing is created, owner and privacy are
+# not checked, and none of them is a writable input of restricted preparation.
+core_readonly_state() {
+    local root=$HOME config relative source
+    config=${cfg_CONFIG_DIR:-$HOME/$AGENT_CONFIG_HOME}
+    if [[ -n "$state_dir" ]]; then
+        root=$state_dir
+        config=$state_dir/$AGENT_CONFIG_HOME
+    fi
+    for relative in "$AGENT_CONFIG_HOME" "${AGENT_SHARED_DIRS[@]}"; do
+        source=$root/$relative
+        [[ "$relative" != "$AGENT_CONFIG_HOME" ]] || source=$config
+        [[ -d "$source" ]] || die "read-only state needs an existing directory: $source"
+        source=$(cd -- "$source" && pwd -P)
+        state_mounts+=(--volume "$source:$AGENT_HOME/$relative:ro")
+    done
 }
 
 core_ca_bundle() {
@@ -626,7 +671,7 @@ core_build_image() {
     if ((build_image)); then
         [[ "${cfg_MAINTENANCE:-}" == 1 ]] || die "image refresh requires exact ${P}_MAINTENANCE=1; host pulls/build RUN steps are outside runtime filtering"
         podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
-    elif podman image exists "$image"; then
+    elif engine image exists "$image"; then
         :
     else
         image_status=$?
@@ -695,16 +740,16 @@ core_mounts_image() {
     core_build_image
 
     if [[ "$network_mode" != unrestricted ]]; then
-        capture_response runtime_image_id podman image inspect --format '{{.Id}}' "$image" \
+        capture_response runtime_image_id engine image inspect --format '{{.Id}}' "$image" \
             || die 'cannot resolve restricted runtime image identity'
-        runtime_image_id=${runtime_image_id%$'\n'}
+        single_record runtime_image_id 'invalid restricted runtime image identity'
         [[ "$runtime_image_id" =~ ^(sha256:)?[a-f0-9]{64}$ ]] || die 'invalid restricted runtime image identity'
         image=$runtime_image_id
     fi
     # Default toolchain entries follow the image PATH, so they never replace the
     # runtime's own node or python3; env.sh puts a toolchain first explicitly.
     if [[ -n "$toolchain_path" ]]; then
-        capture_response image_environment podman image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" \
+        capture_response image_environment engine image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" \
             || die 'cannot inspect the runtime image environment'
         image_path=''
         while IFS= read -r image_variable; do
@@ -781,7 +826,9 @@ core_mounts_image() {
     prefix=${workspace##*/}
     prefix=$(printf '%s' "$prefix" | sed -E 's/[^a-zA-Z0-9_.-]+/-/g; s/^[.-]+//; s/[.-]+$//')
     prefix=${prefix:-$AGENT_NAME}
-    names=$(podman ps --all --format '{{.Names}}') || die 'cannot list Podman containers'
+    names=$(engine ps --all --format '{{.Names}}') || die 'cannot list Podman containers'
+    [[ "$names" != *$'\r'* ]] || die 'invalid Podman container list'
+
     next_index=0
     while IFS= read -r name; do
         [[ "$name" == "$prefix-"* ]] || continue
@@ -890,11 +937,22 @@ recover_container() {
 }
 
 # Keep collision reconciliation interruptible just like the create request.
+# The engine client is a direct child, so shutdown can reap it, and the query is
+# bounded here rather than by timeout(1), whose child would survive a reap.
 creation_lookup() {
-    local lookup_status=0
+    local lookup_status=0 until=$((SECONDS + 10))
     podman "$@" >"$session_dir/lookup" &
     create_pid=$!
-    wait "$create_pid" || lookup_status=$?
+    while child_running "$create_pid" && ((SECONDS < until)); do
+        sleep 0.05
+    done
+    if child_running "$create_pid"; then
+        kill -KILL "$create_pid" 2>/dev/null || true
+        wait "$create_pid" 2>/dev/null || true
+        lookup_status=124
+    else
+        wait "$create_pid" || lookup_status=$?
+    fi
     create_pid=''
     return "$lookup_status"
 }
@@ -1033,7 +1091,7 @@ core_create_start() {
     # Engine flags alone are not evidence: require the created configuration to
     # carry every enforced budget and no unenforced one. Setup smoke and
     # qualification measure the effective cgroups.
-    capture_response configured_budgets timeout --kill-after=1s 10s podman inspect --type container \
+    capture_response configured_budgets engine inspect --type container \
         --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$container_id" \
         || die 'cannot inspect agent resource budgets; agent not started'
     read -r configured_memory configured_cpu configured_pids extra <<< "${configured_budgets%$'\n'}"

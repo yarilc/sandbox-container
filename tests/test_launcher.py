@@ -1028,6 +1028,76 @@ if args[0]=='snapshot':
         self.assertIn('MAINTENANCE=1', result.stderr)
         self.assertNotIn('build', [c[0] for c in self.calls()])
 
+    def test_engine_records_reject_carriage_returns_and_extra_records(self):
+        # One capture rule for every read-only query (phase 3-4).
+        for env in ({'FAKE_INFO_RAW': 'true linux false\r\n'}, {'FAKE_INFO_RAW': 'true linux false extra\n'},
+                    {'FAKE_CONTROLLERS': '[cpu memory pids]\r'}, {'FAKE_CONTROLLERS': '[cpu memory pids]\n[cpu]'}):
+            with self.subTest(env=env):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(**env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
+
+    def test_stalled_read_only_query_is_bounded(self):
+        started = time.monotonic()
+        result = self.run_wrapper(FAKE_STALL='info')
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('cannot query Podman', result.stderr)
+        self.assertFalse(any(c[0] in ('image', 'build', 'create') for c in self.calls()))
+
+    def test_state_paths_are_checked_before_the_engine(self):
+        for value in ('relative/state', '/with:colon', '/with\nnewline'):
+            with self.subTest(value=value):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FIXTURE_SHELL_STATE_DIR=value)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('FIXTURE_SHELL_STATE_DIR must be an absolute path without colon, CR or LF', result.stderr)
+                self.assertEqual(self.calls(), [])
+
+    def test_isolated_children_are_contained_and_private(self):
+        # M4: every child of the isolated home and the CA mount parent.
+        shared = self.state / '.config/openspec'
+        shared.mkdir(parents=True)
+        self.state.chmod(0o700)
+        (self.state / '.config').chmod(0o700)
+        shared.chmod(0o755)
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('state directory must be private: ' + str(shared.resolve()), result.stderr)
+        shared.chmod(0o700)
+        outside = self.base / 'outside-ca'
+        outside.mkdir(mode=0o700)
+        (self.state / 'ca').symlink_to(outside)
+        bundle = self.base / 'bundle.pem'
+        bundle.write_text('synthetic certificate bundle')
+        result = self.run_wrapper(FIXTURE_SHELL_TRUST_HOST_CA='1', FIXTURE_SHELL_CA_BUNDLE=str(bundle))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('isolated configuration escapes state home', result.stderr)
+        self.assertFalse(any(c[0] == 'create' for c in self.calls()))
+
+    def test_read_only_state_mounts_existing_directories_read_only(self):
+        # U6, M9: shared or isolated state, existing directories only, nothing writable.
+        home = Path(self.env['HOME'])
+        result = self.run_wrapper(FIXTURE_SHELL_STATE_DIR='', FIXTURE_SHELL_READONLY_STATE='1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('read-only state needs an existing directory', result.stderr)
+        self.assertFalse((home / '.config/fixture-shell').exists())
+        for relative in ('.config/fixture-shell', '.config/openspec'):
+            (home / relative).mkdir(parents=True, exist_ok=True)
+            (self.state / relative).mkdir(parents=True, exist_ok=True)
+        for isolated, root in (('', home), (str(self.state), self.state)):
+            with self.subTest(isolated=bool(isolated)):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FIXTURE_SHELL_STATE_DIR=isolated, FIXTURE_SHELL_READONLY_STATE='yes')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                create = self.create()
+                volumes = [create[i + 1] for i, a in enumerate(create) if a == '--volume']
+                for relative in ('.config/fixture-shell', '.config/openspec'):
+                    self.assertIn(f'{(root / relative).resolve()}:/fixture-shell-home/{relative}:ro', volumes)
+                self.assertFalse(any(v.endswith(':/fixture-shell-home:rw') for v in volumes))
+                self.assertFalse(any(v.endswith(':rw') and '/fixture-shell-home' in v for v in volumes))
+
     def test_healthy_build_and_session_outlive_shutdown_budget(self):
         started = time.monotonic()
         result = subprocess.run([str(WRAPPER), '--container-build', '-c', 'true'], cwd=self.project,
