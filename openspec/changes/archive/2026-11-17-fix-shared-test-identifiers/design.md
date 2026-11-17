@@ -10,7 +10,7 @@
    - `OTHER_AGENT_YOLO` stands for another agent's approval variable. The shell profile must ignore it (help, missing-tool and composition cases).
    - `OTHER_AGENT_BASE_URL` stands for another agent's variable that a toolchain may set for the shell profile.
    - `agent-alias` is the symlink name.
-2. **Sibling identifiers.** The siblings are `ROOT.parent/*/agent/profile.json`, excluding the checkout itself. Each is loaded with `agent_profile.load`, which fails on an invalid sibling profile instead of ignoring it. The union of their identifiers is scanned by the existing `violations()`, so the `ALLOWED` list applies to both checks. With no siblings the test is skipped, as `tests/test_reference_copy.py` does in the wrappers.
+2. **Sibling identifiers.** The siblings are `ROOT.parent/*/agent/profile.json`, excluding the checkout itself. Only each profile's `identifiers` field is read, as JSON. A sibling may be on an older tag whose profile no longer validates under this checkout's rules (for example `install.runtime_build`); a missing field or malformed JSON still fails the test. The union of their identifiers is scanned by the existing `violations()`, so the `ALLOWED` list applies to both checks. With no siblings the test is skipped, as `tests/test_reference_copy.py` does in the wrappers.
 
    In a wrapper, the same test also sees the reference and the other wrappers. That is intended: no shared file may name any agent.
 
