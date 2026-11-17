@@ -1,5 +1,8 @@
 # Launcher contract
 
+> Implemented by change `implement-shared-launcher` (`launcher/core.sh`,
+> `tests/test_launcher.py`); the agent wrappers adopt it by tag.
+
 This document is the inventory behind the shared launcher (capability
 `shared-launcher`, change `define-launcher-contract`). It lists every
 difference between the six launchers and the behavior chosen for the shared

@@ -7,8 +7,11 @@ air-gapped (offline by default) Bash shell with every sandbox feature, and the
 source of the shared components adopted by the Claude, Codex, OpenCode, Pi and
 Antigravity wrappers:
 
-- `sandbox-container.sh` is the entry-point script and owns argument parsing,
-  volume mounts, user mapping, and Podman socket validation.
+- `sandbox-container.sh` is the thin entry script, identical in every wrapper:
+  it sources the shared launcher core `launcher/core.sh` with this wrapper's
+  agent part `agent/launcher.sh` (profile values and hooks). The core owns
+  argument parsing, mounts, user mapping, Podman checks and the session
+  lifecycle; `docs/launcher-contract.md` is its contract.
 - `Containerfile` defines the shell image on the same pinned base and package
   baseline as the agent wrappers, with the pinned OpenSpec CLI and no agent CLI,
   including `nano` with `EDITOR` and `VISUAL` set to it. The image disables
@@ -40,8 +43,9 @@ Antigravity wrappers:
 
 ## Shared and agent-specific files
 
-`network/`, `setup/` and the shared tests listed in `tests/test_alignment.py`
-are written here and copied unchanged to the Claude, Codex, Antigravity,
+`network/`, `setup/`, `launcher/` and the shared tests listed in
+`tests/test_alignment.py` (including `tests/test_launcher.py` and
+`tests/fake_podman.py`) are written here and copied unchanged to the Claude, Codex, Antigravity,
 OpenCode and Pi wrappers. Never add an agent identifier (any of the profile's `identifiers`) to
 them. Read agent-specific values from the profile, or pass them from host code
 to in-container helpers. In-container paths are neutral: `/opt/sandbox-egress`,
@@ -49,7 +53,8 @@ to in-container helpers. In-container paths are neutral: `/opt/sandbox-egress`,
 
 These files are per wrapper:
 - `agent/`, `sandbox-container.sh`, `Containerfile` and `.containerignore`;
-- the end-to-end tests: `test_wrapper.py`, `test_setup_wrapper.py` (setup
+- the end-to-end tests: `test_wrapper.py` (reference shell checks only; the
+  launcher is tested by the shared `test_launcher.py`), `test_setup_wrapper.py` (setup
   checks that launch this wrapper), `test_runtime.py`,
   `test_network_runtime.py` with `network_tls_fixture.py`,
   `test_setup_runtime.py`, `test_image_pins.py`, `run-runtime.sh` and
@@ -134,7 +139,8 @@ comments, help text, and user-facing messages in English.
 
 ## Testing Guidelines
 
-Run `python3 -m unittest discover -s tests -p test_wrapper.py -v`, `bash -n`
+Run `python3 -m unittest discover -s tests -p 'test_launcher.py' -v` and
+`-p test_wrapper.py -v`, `bash -n`
 on changed shell scripts, and `git diff --check`. Run `test_image_pins.py`
 after any `Containerfile` change; image inputs stay pinned, the image installs
 no agent CLI, and inputs change only through the maintenance procedure in

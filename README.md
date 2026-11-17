@@ -292,10 +292,29 @@ accepted and changes nothing, because the session is always Bash. The exit
 status of Bash is the exit status of the wrapper. `--container-help` prints the
 options and variables without contacting Podman.
 
+The session receives `USER`, `EDITOR=nano` and `VISUAL=nano`, and by name
+`TERM`, `COLORTERM`, `LANG` and `LC_ALL` when set. Unrestricted sessions also
+receive `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their
+lowercase forms, run with `--init`, and see their container name as
+`CONTAINER_NAME`. `SANDBOX_CONTAINER_ENV_VARS` lists further host variable names
+(separated by whitespace) to forward by name, never by value; an invalid name
+stops the launch, an empty variable is not forwarded, and names the launcher
+sets itself (and, in offline mode, proxy and CA variables) are skipped with a
+notice.
+
 Image builds use the `Containerfile` beside the physical wrapper script, also
 when the wrapper is invoked through a symlink; the build context admits only
 the recipe and its declared inputs (`.containerignore`). Image absence triggers
 a build only with maintenance authorization; inspection errors stop startup.
+A build pulls the exact `FROM` base first and then runs with `--pull=never`
+and the docker format, without a timeout. Every image carries a
+`build-inputs-hash` label over its build inputs (`Containerfile`,
+`.containerignore`, `network/relay.py`, `network/mux.py`); a launch refuses an
+image built from other inputs and names the rebuild command.
+`--container-build` without other arguments, also together with
+`--container-git-worktree` or `--container-shell`, validates every setting,
+builds the image and exits without a session; setup uses this operation. With
+arguments, it builds and then starts the session.
 
 ### Allowing Podman access inside the container
 
@@ -422,9 +441,15 @@ or `SANDBOX_CONTAINER_CONFIG_DIR` when nonempty, mounted read/write at
 (`HISTFILE`), so history persists across sessions; the wrapper sets `HISTFILE`
 and the in-container `SANDBOX_CONTAINER_CONFIG_DIR` after the toolchain
 environment, so a toolchain cannot move them. Host `~/.config/openspec` is also
-mounted read/write at `/sandbox-home/.config/openspec`. The rest of
-`/sandbox-home` remains read-only in this shared mode. Commands in the session
-can read and change these mounted files.
+mounted read/write at `/sandbox-home/.config/openspec`. In this shared mode the
+rest of `/sandbox-home` is an ephemeral 512 MiB `noexec` tmpfs: files written
+there disappear with the session. Commands in the session can read and change
+the mounted files.
+
+`SANDBOX_CONTAINER_READONLY_STATE` (`1`, `true` or `yes`) mounts the existing
+configuration and shared directories read-only instead, from shared state or
+from the isolated home; the directories must exist, nothing is created, and
+the isolated home itself is not mounted.
 
 ### Optional isolated home
 
@@ -479,7 +504,10 @@ shared state, unset `SANDBOX_CONTAINER_STATE_DIR` and restore any previous
 
 The root filesystem is read-only; selected workspace/state mounts are writable.
 `/tmp`, `/run`, and `/var/tmp` are explicit ephemeral tmpfs mounts with
-`nosuid,nodev,noexec` and limits of 256 MiB, 16 MiB, and 256 MiB respectively.
+`nosuid,nodev,noexec` and limits of 512 MiB, 32 MiB, and 512 MiB respectively,
+the same in every wrapper. An agent profile that needs native runtime parts in
+`/tmp` and the ephemeral home declares `native.exec_tmp`; `/var/tmp` and `/run`
+stay `noexec` for every profile.
 Podman's automatic read-only tmpfs provisioning stays enabled: with
 `--read-only-tmpfs=false`, Podman 5 would mount `/dev` read-only, and newer
 crun releases cannot attach a terminal there. The engine provides `/dev` and
@@ -727,9 +755,15 @@ hosts that enforce them, profile the tools you add.
 
 ## Shared sandbox components and the reference role
 
-`network/`, `setup/` and the shared tests listed in `tests/test_alignment.py`
-are written here and copied unchanged to the Claude, Codex, OpenCode, Pi and
-Antigravity wrappers. They contain no agent-specific names. Every
+`network/`, `setup/`, `launcher/` and the shared tests listed in
+`tests/test_alignment.py` are written here and copied unchanged to the Claude,
+Codex, OpenCode, Pi and Antigravity wrappers. They contain no agent-specific
+names. `launcher/core.sh` is the whole launcher of every wrapper: each
+`<wrapper>-container.sh` is the same thin entry script, and `agent/launcher.sh`
+holds the profile values the core needs and the agent's hooks
+([docs/launcher-contract.md](docs/launcher-contract.md)). The shared launcher
+tests (`tests/test_launcher.py`, with the fake engine `tests/fake_podman.py`)
+run the core against fixture agent parts. Every
 agent-specific value comes from the protected `agent/profile.json`; for this
 shell:
 - the wrapper name and the `SANDBOX_CONTAINER_*` variable prefix;

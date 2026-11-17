@@ -69,7 +69,7 @@ The behavior of each task is defined by the named rows of `docs/launcher-contrac
 ## 8. Test completion and documentation
 
 - [x] 8.1 Check `tests/test_launcher.py` against `docs/launcher-test-map.md`: add a "Shared case" column naming, for every "shared" and "shared (rewrite)" case, the shared case that covers it; a case from another wrapper whose coverage is not verified here is marked "to verify at adoption" (user decision: each adoption runs its old `tests/test_wrapper.py` against the new core and turns every lost behavior into a shared case through the reference). Reduce the reference's `tests/test_wrapper.py` to shell-profile and history cases. Verify the counts and the unit discovery.
-- [ ] 8.2 Update the README (new variables, temporary storage, build-only, forwarding), `docs/network-contract.md` (parity: reference on the new tag), `network/README.md`, `AGENTS.md` (shared directories), and mark `docs/launcher-contract.md` as implemented. Verify `git diff --check` and that `grep` finds no description of the old layout.
+- [x] 8.2 Update the README (new variables, temporary storage, build-only, forwarding), `docs/network-contract.md` (parity: reference on the new tag), `network/README.md`, `AGENTS.md` (shared directories), and mark `docs/launcher-contract.md` as implemented. Verify `git diff --check` and that `grep` finds no description of the old layout.
 
 ## 9. Validation and tag
 
