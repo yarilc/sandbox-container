@@ -68,7 +68,7 @@ The behavior of each task is defined by the named rows of `docs/launcher-contrac
 
 ## 8. Test completion and documentation
 
-- [ ] 8.1 Check `tests/test_launcher.py` against `docs/launcher-test-map.md`: every "shared" and "shared (rewrite)" case is present or merged, with the source case in a comment. Reduce the reference's `tests/test_wrapper.py` to shell-profile and history cases. Verify the counts and the unit discovery.
+- [x] 8.1 Check `tests/test_launcher.py` against `docs/launcher-test-map.md`: add a "Shared case" column naming, for every "shared" and "shared (rewrite)" case, the shared case that covers it; a case from another wrapper whose coverage is not verified here is marked "to verify at adoption" (user decision: each adoption runs its old `tests/test_wrapper.py` against the new core and turns every lost behavior into a shared case through the reference). Reduce the reference's `tests/test_wrapper.py` to shell-profile and history cases. Verify the counts and the unit discovery.
 - [ ] 8.2 Update the README (new variables, temporary storage, build-only, forwarding), `docs/network-contract.md` (parity: reference on the new tag), `network/README.md`, `AGENTS.md` (shared directories), and mark `docs/launcher-contract.md` as implemented. Verify `git diff --check` and that `grep` finds no description of the old layout.
 
 ## 9. Validation and tag
@@ -80,4 +80,4 @@ The behavior of each task is defined by the named rows of `docs/launcher-contrac
 
 - The operator pushes `main` and runs `--container-setup` on the three hosts; the results go to `docs/validation.md`.
 - Create the annotated tag `sandbox-ref-22` on the merge, update the parity table's reference cell, and archive this change with spec sync.
-- Adopt `sandbox-ref-22` in Claude; then in Codex, Antigravity and Pi; then in OpenCode, each in its own change.
+- Adopt `sandbox-ref-22` in Claude; then in Codex, Antigravity and Pi; then in OpenCode, each in its own change. Before deleting its old launcher, each adoption runs its current `tests/test_wrapper.py` against the new core and resolves the map's "to verify at adoption" rows: a failure from a lost behavior becomes a shared case through a reference fix.
