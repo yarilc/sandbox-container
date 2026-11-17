@@ -2731,6 +2731,6 @@ Change `fix-inaccessible-state-diagnostic`, found in Codex's adoption of
 | `bash tests/run-runtime.sh --setup` | Passed: 67 tests |
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
 | `git diff --check` | Passed |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed |
 
 The installed launcher core changes: installations rerun `--container-setup`.
