@@ -986,6 +986,41 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(list(diagnostics.iterdir()), [])
                 self.assert_no_fake_client()
 
+    def test_signal_matrix_is_bounded_in_creation_and_attachment(self):
+        # Family B's signal and stall cases (X, A, P), rewritten for the shared
+        # 20 s deadline (U9): every signal, during creation and while attached to
+        # an application that ignores it, with a stalled removal.
+        for name, status in (('TERM', 143), ('INT', 130), ('HUP', 129)):
+            sig = getattr(signal, 'SIG' + name)
+            with self.subTest(signal=name, phase='creation'):
+                self.log.unlink(missing_ok=True)
+                Path(str(self.log) + '.creating').unlink(missing_ok=True)
+                proc, diagnostics = self.start_waiting_wrapper('.creating', FAKE_CREATE_PAUSE='after')
+                started = time.monotonic()
+                proc.send_signal(sig)
+                _, stderr = proc.communicate(timeout=25)
+                self.assertEqual(proc.returncode, status, stderr)
+                self.assertLess(time.monotonic() - started, 22)
+                self.assertIn(['rm', '--force', '--time', '0', '--ignore', OWNED_ID], self.calls())
+                self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+                self.assertEqual(list(diagnostics.iterdir()), [])
+                self.assert_no_fake_client()
+            with self.subTest(signal=name, phase='attached'):
+                self.log.unlink(missing_ok=True)
+                for suffix in ('.started', '.pid', '.container'):
+                    Path(str(self.log) + suffix).unlink(missing_ok=True)
+                proc, diagnostics = self.start_waiting_wrapper(FAKE_WAIT='1', FAKE_IGNORE_SIGNALS='1',
+                                                               FAKE_STALL='rm')
+                started = time.monotonic()
+                proc.send_signal(sig)
+                _, stderr = proc.communicate(timeout=25)
+                self.assertEqual(proc.returncode, status, stderr)
+                self.assertLess(time.monotonic() - started, 22)
+                self.assertIn(['kill', '--signal', name, OWNED_ID], self.calls())
+                self.assertIn('cleanup rm failed or timed out', stderr)
+                self.assertEqual(list(diagnostics.iterdir()), [])
+                self.assert_no_fake_client()
+
     def test_collision_reconciliation_can_be_interrupted(self):
         proc, diagnostics = self.start_waiting_wrapper('.stalled-inspect', FAKE_COLLISION='1',
                                                        FAKE_STALL='inspect')

@@ -64,7 +64,7 @@ The behavior of each task is defined by the named rows of `docs/launcher-contrac
   - the probe path (M1).
 
   Port the family B and OpenCode creation and collision cases. Verify they pass.
-- [ ] 7.2 Align shutdown slicing with the contract (U9) and port the family B signal and stall cases as rewrites. Verify they pass and every shared case finishes within the shutdown bound.
+- [x] 7.2 Align shutdown slicing with the contract (U9) and port the family B signal and stall cases as rewrites. Verify they pass and every shared case finishes within the shutdown bound.
 
 ## 8. Test completion and documentation
 
