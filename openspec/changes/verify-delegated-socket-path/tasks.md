@@ -2,7 +2,7 @@
 
 ## 1. Failing cases first
 
-- [ ] 1.1 Commit this change directory on `main` and create the branch `verify-delegated-socket-path`. Add `test_reported_host_socket_must_be_a_socket_when_visible` to `tests/test_launcher.py` and extend `test_socket_validation_rejects_rootful_and_cr_responses` in `tests/test_setup.py` (design decision 3). Verify that, in the disposable test container, the refusal subtests fail against the current core and setup, and the accepted ones pass.
+- [x] 1.1 Commit this change directory on `main` and create the branch `verify-delegated-socket-path`. Add `test_reported_host_socket_must_be_a_socket_when_visible` to `tests/test_launcher.py` and extend `test_socket_validation_rejects_rootful_and_cr_responses` in `tests/test_setup.py` (design decision 3). Verify that, in the disposable test container, the refusal subtests fail against the current core and setup, and the accepted ones pass.
 
 ## 2. Fix
 
