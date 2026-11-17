@@ -155,6 +155,19 @@ class Propagation(unittest.TestCase):
         self.assertIn('SIBLING', result.stderr)
         self.assertEqual(self.snapshot(), before)
 
+    def test_new_shared_directory_is_adopted_with_the_tag(self):
+        current = {p.relative_to(self.reference).as_posix(): p.read_text()
+                   for p in self.reference.rglob('*') if p.is_file() and '.git' not in p.parts}
+        newer = dict(current, **{'launcher/core.sh': 'core = 1\n', 'tests/test_alignment.py': ALIGNMENT.format(
+            extra=", 'tests/test_new.py'").replace("('network', 'setup')", "('network', 'setup', 'launcher')")})
+        self.commit_tag(newer, 'sandbox-ref-3')
+        result = self.run_tool(new='sandbox-ref-3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        added = next(line for line in result.stdout.splitlines() if line.startswith('added:'))
+        self.assertIn('launcher/core.sh', added)
+        self.assertNotIn('launcher/core.sh', next(line for line in result.stdout.splitlines()
+                                                  if line.startswith('not adopted:')))
+
     def test_dry_run_plans_without_writing(self):
         before = self.snapshot()
         result = self.run_tool()

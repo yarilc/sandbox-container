@@ -125,7 +125,7 @@ def plan(target, old, new):
         raise PropagationError(f'branch {branch} already exists in {target}')
     old_files, new_files = tree(old), tree(new)
     directories, old_shared, old_tests = shared_set(old, old_files)
-    _, new_shared, _ = shared_set(new, new_files)
+    new_directories, new_shared, _ = shared_set(new, new_files)
     for path in sorted(adopted):
         if path not in old_files:
             raise PropagationError(f'manifest entry {path} is not in {old}')
@@ -135,6 +135,8 @@ def plan(target, old, new):
             raise PropagationError(f'{path} differs from {old} in {target}; a fork must be fixed in sandbox-container first')
     complete_directories = {d for d in directories
                             if {p for p in old_shared if p.startswith(d + '/')} <= set(adopted)}
+    # A shared directory that the new tag introduces is adopted with the tag.
+    complete_directories |= set(new_directories) - set(directories)
     complete_tests = old_tests <= set(adopted)
     modified = sorted(p for p in adopted if p in new_files and new_files[p][1] != old_files[p][1])
     removed = sorted(p for p in adopted if p not in new_files)
