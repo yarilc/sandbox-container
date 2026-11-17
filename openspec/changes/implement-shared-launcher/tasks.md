@@ -74,7 +74,7 @@ The behavior of each task is defined by the named rows of `docs/launcher-contrac
 ## 9. Validation and tag
 
 - [x] 9.1 Run the unit discovery and every runner mode (`--setup`, `--setup-runtime`, `--qualification`, `--guard`, `--network`, `--network-policy`, `--network-feasibility`, `--wrapper`, default) with a reference image rebuilt through the new build-only path. Run `tools/propagate.py` as a dry run against a scratch clone of `claude-container` (old tag to a local test tag) and verify that it adds `launcher/`, `tests/test_launcher.py` and `tests/fake_podman.py`. Record everything in `docs/validation.md`. Verify all pass.
-- [ ] 9.2 Commit and merge into `main`; verify `openspec validate implement-shared-launcher --strict` and `git diff --check`.
+- [x] 9.2 Commit and merge into `main`; verify `openspec validate implement-shared-launcher --strict` and `git diff --check`.
 
 ## Workflow follow-up
 
