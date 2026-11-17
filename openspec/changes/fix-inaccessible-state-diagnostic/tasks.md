@@ -2,8 +2,8 @@
 
 ## 1. Core and shared test
 
-- [ ] 1.1 Commit this change directory on `main` and create the branch `fix-inaccessible-state-diagnostic`. Extend `test_inaccessible_state_and_ignored_permissions` in `tests/test_launcher.py` with the cases of design decision 4. Verify that it fails against the current core in the disposable test container, showing the raw `cd:` or `mkdir:` messages.
-- [ ] 1.2 Add `resolve_state_directory` and the creation-failure handling to `launcher/core.sh`. Use them at the four resolution points and in `core_readonly_state` (design decisions 1-3). Verify that `python3 -m unittest tests.test_launcher tests.test_wrapper tests.test_alignment` passes in the disposable test container, and that `bash -n launcher/core.sh` succeeds.
+- [x] 1.1 Commit this change directory on `main` and create the branch `fix-inaccessible-state-diagnostic`. Extend `test_inaccessible_state_and_ignored_permissions` in `tests/test_launcher.py` with the cases of design decision 4. Verify that it fails against the current core in the disposable test container, showing the raw `cd:` or `mkdir:` messages.
+- [x] 1.2 Add `resolve_state_directory` and the creation-failure handling to `launcher/core.sh`. Use them at the four resolution points and in `core_readonly_state` (design decisions 1-3). Verify that `python3 -m unittest tests.test_launcher tests.test_wrapper tests.test_alignment` passes in the disposable test container, and that `bash -n launcher/core.sh` succeeds.
 
 ## 2. Validation and release
 
