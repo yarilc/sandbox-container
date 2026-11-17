@@ -48,6 +48,18 @@ BUDGET_ACCEPTED = {
 }
 
 
+def build_inputs_hash(root, extra=()):
+    """The launcher's build-inputs-hash rule (docs/launcher-contract.md, Build hash)."""
+    import hashlib
+    lines, seen = '', set()
+    for relative in ('Containerfile', '.containerignore', 'network/relay.py', 'network/mux.py', *extra):
+        if relative in seen:
+            continue
+        seen.add(relative)
+        lines += f'{relative} {hashlib.sha256((root / relative).read_bytes()).hexdigest()}\n'
+    return hashlib.sha256(lines.encode()).hexdigest()
+
+
 def synthetic_install(base, root, wrapper_name):
     """A protected-looking installation with a synthetic guard and control helper."""
     # Argument/lifecycle instrumentation only. Real guard and protected-path
@@ -65,7 +77,8 @@ def synthetic_install(base, root, wrapper_name):
     shutil.copyfile(root / 'network/platform_check.py', install / 'network/platform_check.py')
     for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py',
                  'network/revisions.py', 'agent/profile.json', 'setup/common.py', 'setup/toolchains.py',
-                 'Containerfile', 'launcher/core.sh', 'agent/launcher.sh'):
+                 'Containerfile', '.containerignore', 'network/relay.py', 'network/mux.py',
+                 'launcher/core.sh', 'agent/launcher.sh'):
         (install / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(root / name, install / name)
     (install / 'network/qualify.py').write_text('# Synthetic argument fixture only.\n')
@@ -85,6 +98,10 @@ if args[0]=='snapshot':
     return wrapper
 
 
+# Every fixture root and synthetic installation shares the same build inputs.
+BUILD_HASH = build_inputs_hash(ROOT)
+
+
 class LauncherTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='sandbox-wrapper-', dir=os.environ.get('SANDBOX_TEST_TMPDIR'))
@@ -100,6 +117,7 @@ class LauncherTests(unittest.TestCase):
         self.log = self.base / 'calls.jsonl'
         self.state = self.base / 'state'
         self.env = {'PATH': os.environ['PATH'], 'FIXTURE_SHELL_NETWORK': 'unrestricted',
+                    'FAKE_LABEL_HASH': BUILD_HASH,
                     'FIXTURE_SHELL_MAINTENANCE': '1'}
         self.env['HOME'] = str(self.base / 'host-home')
         self.env.pop('FIXTURE_SHELL_CONFIG_DIR', None)
@@ -1607,7 +1625,7 @@ class AgentProfileSettingsTests(unittest.TestCase):
         self.log = self.base / 'calls.jsonl'
         self.hooks = self.base / 'hooks.log'
         self.env = {'PATH': str(self.bin) + ':' + os.environ['PATH'], 'HOME': str(self.base / 'home'),
-                    'FAKE_LOG': str(self.log), 'FIXTURE_HOOK_LOG': str(self.hooks)}
+                    'FAKE_LOG': str(self.log), 'FIXTURE_HOOK_LOG': str(self.hooks), 'FAKE_LABEL_HASH': BUILD_HASH}
 
     def run_agent(self, *args, wrapper=AGENT_WRAPPER, **env):
         return subprocess.run([str(wrapper), *args], cwd=self.project, env=self.env | env, input='',
@@ -1804,6 +1822,45 @@ class AgentProfileSettingsTests(unittest.TestCase):
             self.assertIn(f'FIXTURE_AGENT_ENV_VARS: skipping {skipped}', result.stderr)
         self.assertIn('/usr/local/bin/fixture', create)
         self.assertEqual(create[-3:], ['--fixture-mode', 'offline', '--first'])
+
+
+    def build_call(self):
+        return next(json.loads(line) for line in self.engine_calls() if json.loads(line)[0] == 'build')
+
+    def test_image_freshness_and_build_arguments(self):
+        # U8, U12, H6, M12: a stale image is refused; builds pull bases first and are labeled.
+        result = self.run_agent(FIXTURE_AGENT_NETWORK='unrestricted', FAKE_LABEL_HASH='0' * 64)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('is stale for the current build inputs', result.stderr)
+        self.assertIn('--container-build', result.stderr)
+        self.assertNotIn('create', [json.loads(line)[0] for line in self.engine_calls()])
+        self.log.unlink(missing_ok=True)
+        result = self.run_agent('--container-build', FIXTURE_AGENT_NETWORK='unrestricted',
+                                FIXTURE_AGENT_MAINTENANCE='1', FAKE_IMAGE_STATUS='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.engine_calls()]
+        bases = [line.split()[1] for line in (AGENT_ROOT / 'Containerfile').read_text().splitlines()
+                 if line.upper().startswith('FROM ')]
+        self.assertEqual([c[1] for c in calls if c[0] == 'pull'], bases)
+        build = self.build_call()
+        for flag in ('--pull=never', '--format', 'docker', 'build-inputs-hash=' + BUILD_HASH,
+                     '--build-arg', 'FIXTURE_VERSION=1'):
+            self.assertIn(flag, build)
+        self.assertLess(max(i for i, c in enumerate(calls) if c[0] == 'pull'), calls.index(build))
+
+    def test_agent_build_inputs_join_the_hash(self):
+        self.log.unlink(missing_ok=True)
+        result = self.run_agent('--container-build', FIXTURE_AGENT_NETWORK='unrestricted',
+                                FIXTURE_AGENT_MAINTENANCE='1', FIXTURE_HOOK_BUILD_INPUTS='agent/profile.json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected = build_inputs_hash(AGENT_ROOT, ('agent/profile.json',))
+        self.assertIn('build-inputs-hash=' + expected, self.build_call())
+        for value in ('../outside', '/etc/passwd', 'missing-file'):
+            with self.subTest(value=value):
+                result = self.run_agent('--container-build', FIXTURE_AGENT_NETWORK='unrestricted',
+                                        FIXTURE_AGENT_MAINTENANCE='1', FIXTURE_HOOK_BUILD_INPUTS=value)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('build input is not a file inside the installation', result.stderr)
 
 
 if __name__ == '__main__':

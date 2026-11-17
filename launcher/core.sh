@@ -415,6 +415,7 @@ core_workspace() {
         || die 'GNU timeout is required on the host; install GNU coreutils'
     [[ -n "$script_path" ]] || die 'GNU readlink is required on the host; install GNU coreutils'
     command -v stat >/dev/null || die 'GNU stat is required on the host; install GNU coreutils'
+    command -v sha256sum >/dev/null || die 'GNU sha256sum is required on the host; install GNU coreutils'
     # Isolated credentials and history must never land in, or contain, the workspace.
     # Compare physical paths; readlink -m also resolves a directory not created yet.
     if [[ -n "${cfg_STATE_DIR:-}" ]] && ((build_only == 0)); then
@@ -662,24 +663,72 @@ core_ca_bundle() {
     fi
 }
 
-# The image: built on --container-build or when absent, only with maintenance.
-# The opted-in host CA bundle also verifies the runtime build's package fetches.
-# It is a build secret: mounted only for its RUN step and never stored in a layer.
+# The image (U8, U12, H6, M12): built on --container-build or when absent, only
+# with maintenance, from exact bases pulled first, with --pull=never and the
+# docker format, without a timeout. Every image carries build-inputs-hash; an
+# image built from other inputs is refused until it is rebuilt. The opted-in
+# host CA bundle is a build secret: mounted only for its RUN step, never stored.
+core_build_inputs_hash() {
+    local relative sum lines='' seen=$'\n'
+    call_hook agent_build_args
+    for relative in "${agent_build_args[@]}"; do
+        [[ "$relative" =~ ^[A-Za-z_][A-Za-z0-9_]*=[^$'\n'$'\r']*$ ]] \
+            || die "hook agent_build_args returned an invalid build argument: $relative"
+    done
+    for relative in Containerfile .containerignore network/relay.py network/mux.py \
+        "${AGENT_INSTALL_FILES[@]}" "${agent_build_inputs[@]}"; do
+        [[ "$seen" != *$'\n'"$relative"$'\n'* ]] || continue
+        seen+="$relative"$'\n'
+        [[ "$relative" != /* && "/$relative/" != */../* && -f "$script_dir/$relative" ]] \
+            || die "build input is not a file inside the installation: $relative"
+        sum=$(sha256sum -- "$script_dir/$relative") || die "cannot hash build input: $relative"
+        lines+="$relative ${sum%% *}"$'\n'
+    done
+    sum=$(printf '%s' "$lines" | sha256sum) || die 'cannot hash the build inputs'
+    build_hash=${sum%% *}
+}
+
 core_build_image() {
+    local keyword base stage stages=' ' build_args=()
+    core_build_inputs_hash
     build_secret=()
     if [[ -n "$ca_bundle" ]]; then
         build_secret=(--secret "id=build-ca,src=$ca_bundle")
     fi
-    if ((build_image)); then
-        [[ "${cfg_MAINTENANCE:-}" == 1 ]] || die "image refresh requires exact ${P}_MAINTENANCE=1; host pulls/build RUN steps are outside runtime filtering"
-        podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
-    elif engine image exists "$image"; then
-        :
+    if ((build_image == 0)); then
+        if engine image exists "$image"; then
+            capture_response image_hash engine image inspect --format '{{index .Labels "build-inputs-hash"}}' "$image" \
+                || die "cannot inspect image: $image"
+            single_record image_hash "invalid image label response: $image"
+            [[ "$image_hash" == "$build_hash" ]] \
+                || die "image $image is stale for the current build inputs; rebuild it with exact ${P}_MAINTENANCE=1 and --container-build"
+            return
+        else
+            image_status=$?
+            [[ "$image_status" == 1 ]] || die "cannot inspect image: $image"
+            [[ "${cfg_MAINTENANCE:-}" == 1 ]] || die "image is absent; prepare it with exact ${P}_MAINTENANCE=1 (build traffic is outside runtime filtering)"
+        fi
     else
-        image_status=$?
-        [[ "$image_status" == 1 ]] || die "cannot inspect image: $image"
-        [[ "${cfg_MAINTENANCE:-}" == 1 ]] || die "image is absent; prepare it with exact ${P}_MAINTENANCE=1 (build traffic is outside runtime filtering)"
-        podman build "${build_secret[@]}" --tag "$image" --file "$script_dir/Containerfile" "$script_dir"
+        [[ "${cfg_MAINTENANCE:-}" == 1 ]] || die "image refresh requires exact ${P}_MAINTENANCE=1; host pulls/build RUN steps are outside runtime filtering"
+    fi
+    # Pull each exact external base once; later stages may name earlier ones.
+    while read -r keyword base _ stage _; do
+        [[ "${keyword^^}" == FROM && -n "$base" ]] || continue
+        if [[ "$stages" != *" $base "* ]] && ! engine image exists "$base"; then
+            podman pull "$base" </dev/null || die "cannot pull build base: $base"
+        fi
+        [[ -z "$stage" ]] || stages+="$stage "
+    done <"$script_dir/Containerfile"
+    for keyword in "${agent_build_args[@]}"; do
+        build_args+=(--build-arg "$keyword")
+    done
+    build_status=0
+    podman build --pull=never --format docker "${build_secret[@]}" "${build_args[@]}" \
+        --label "build-inputs-hash=$build_hash" --tag "$image" --file "$script_dir/Containerfile" "$script_dir" \
+        </dev/null || build_status=$?
+    if ((build_status)); then
+        printf '%s: image build failed: %s (status %s)\n' "$AGENT_NAME" "$image" "$build_status" >&2
+        exit "$build_status"
     fi
 }
 

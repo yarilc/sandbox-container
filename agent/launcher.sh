@@ -17,6 +17,7 @@ AGENT_SHARED_DIRS=(.config/openspec)
 AGENT_PRIVATE_SHARED_DIRS=0
 AGENT_APPROVAL_BYPASS_ENV=
 AGENT_EXEC_TMP=0
+AGENT_INSTALL_FILES=()
 AGENT_CREDENTIALS=()
 AGENT_POLICY_HOSTS=()
 # The shell keeps its history with its configuration, out of reach of toolchains.

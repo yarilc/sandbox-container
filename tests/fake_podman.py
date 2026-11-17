@@ -48,10 +48,15 @@ elif args[0] == 'version':
 elif args[:2] == ['image', 'exists']:
     sys.exit(int(os.environ.get('FAKE_IMAGE_STATUS', '0')))
 elif args[:2] == ['image', 'inspect']:
+    if any('build-inputs-hash' in a for a in args):
+        print(os.environ.get('FAKE_LABEL_HASH', ''))
+        sys.exit(int(os.environ.get('FAKE_LABEL_STATUS', '0')))
     if any('.Config.Env' in a for a in args):
         print(os.environ.get('FAKE_IMAGE_ENV', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'))
     else:
         print('d' * 64)
+elif args[0] == 'pull':
+    sys.exit(int(os.environ.get('FAKE_PULL_STATUS', '0')))
 elif args[0] == 'build':
     time.sleep(float(os.environ.get('FAKE_BUILD_DELAY', '0')))
     sys.exit(int(os.environ.get('FAKE_BUILD_STATUS', '0')))

@@ -23,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / 'sandbox-container.sh'
 OWNED_ID = 'a' * 64
 FAKE = (ROOT / 'tests/fake_podman.py').read_text()
+sys.path.insert(0, str(ROOT / 'tests'))
+from test_launcher import build_inputs_hash  # noqa: E402
 
 
 # Shared accept/reject table for the Bash wrapper and network/agent_budgets.py.
@@ -55,6 +57,7 @@ class WrapperTests(unittest.TestCase):
         self.log = self.base / 'calls.jsonl'
         self.state = self.base / 'state'
         self.env = {'PATH': os.environ['PATH'], 'SANDBOX_CONTAINER_NETWORK': 'unrestricted',
+                    'FAKE_LABEL_HASH': build_inputs_hash(ROOT),
                     'SANDBOX_CONTAINER_MAINTENANCE': '1'}
         self.env['HOME'] = str(self.base / 'host-home')
         self.env.pop('SANDBOX_CONTAINER_CONFIG_DIR', None)

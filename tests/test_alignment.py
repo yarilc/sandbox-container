@@ -154,7 +154,7 @@ ENTRY_SOURCE = 'source "$wrapper_dir/launcher/core.sh" "$wrapper_dir/agent/launc
 SCALARS = ('AGENT_NAME', 'AGENT_DISPLAY_NAME', 'AGENT_WRAPPER', 'AGENT_ENV_PREFIX', 'AGENT_LABEL_NAMESPACE',
            'AGENT_IMAGE', 'AGENT_PROXY_IMAGE', 'AGENT_HOME', 'AGENT_COMMAND', 'AGENT_EXEC', 'AGENT_CONFIG_DIR_ENV',
            'AGENT_CONFIG_HOME', 'AGENT_PRIVATE_SHARED_DIRS', 'AGENT_APPROVAL_BYPASS_ENV', 'AGENT_EXEC_TMP')
-ARRAYS = ('AGENT_SHARED_DIRS', 'AGENT_CREDENTIALS', 'AGENT_POLICY_HOSTS', 'AGENT_SESSION_ENV', 'AGENT_RESTRICTED_ENV',
+ARRAYS = ('AGENT_SHARED_DIRS', 'AGENT_INSTALL_FILES', 'AGENT_CREDENTIALS', 'AGENT_POLICY_HOSTS', 'AGENT_SESSION_ENV', 'AGENT_RESTRICTED_ENV',
           'AGENT_PROVIDER_ENV', 'AGENT_UNSET_ENV', 'AGENT_RESERVED_ENV')
 DUMP = (r'''source "$1"; for name in ''' + ' '.join(SCALARS) + r'''; do printf '%s=%s\n' "$name" "${!name}"; done
 for name in ''' + ' '.join(ARRAYS) + r'''; do declare -n items=$name; printf '%s=' "$name"
@@ -179,7 +179,8 @@ def expected_agent_part(profile, policy):
             'AGENT_PRIVATE_SHARED_DIRS': '1' if profile.private_shared_dirs else '0',
             'AGENT_APPROVAL_BYPASS_ENV': profile.approval_bypass_env or '',
             'AGENT_EXEC_TMP': '1' if profile.exec_tmp else '0',
-            'AGENT_SHARED_DIRS': list(profile.shared_dirs), 'AGENT_CREDENTIALS': credentials,
+            'AGENT_SHARED_DIRS': list(profile.shared_dirs), 'AGENT_INSTALL_FILES': list(profile.install_files),
+            'AGENT_CREDENTIALS': credentials,
             'AGENT_POLICY_HOSTS': sorted(item['policy_profile'] + '=' + ' '.join(item['hosts'])
                                          for item in profile.auth.values())}
 

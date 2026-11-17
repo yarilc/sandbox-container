@@ -17,6 +17,7 @@ AGENT_SHARED_DIRS=(.config/openspec)
 AGENT_PRIVATE_SHARED_DIRS=0
 AGENT_APPROVAL_BYPASS_ENV=FIXTURE_AGENT_YOLO
 AGENT_EXEC_TMP=1
+AGENT_INSTALL_FILES=()
 AGENT_CREDENTIALS=(fixture-api=FIXTURE_API_KEY fixture-account=)
 AGENT_POLICY_HOSTS=("fixture-account=api.provider.test login.provider.test" "fixture-api=api.provider.test")
 AGENT_SESSION_ENV=(FIXTURE_ALWAYS=1)
