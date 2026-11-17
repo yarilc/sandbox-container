@@ -2706,3 +2706,31 @@ Change `fix-shared-test-identifiers`, found in Claude's adoption of `sandbox-ref
 | `git diff --check` | Passed |
 
 No installed code, image or profile changes: installations need no new setup.
+
+## Inaccessible state diagnostic (`sandbox-ref-24`): 2026-11-17
+
+Change `fix-inaccessible-state-diagnostic`, found in Codex's adoption of
+`sandbox-ref-23` (old Codex case `test_inaccessible_state`).
+
+- **Core:** each state directory (isolated home, shared configuration, shared
+  directories, read-only state) is checked for read and search access before it
+  is resolved, so a directory the caller cannot enter stops with
+  `<wrapper>: state directory is not accessible: <path> (...)` instead of Bash's
+  `cd: ...: Permission denied`. A directory that cannot be created stops with
+  `<wrapper>: cannot create state directory: <path> (...)` instead of `mkdir:`.
+- **Shared `tests/test_launcher.py`:** `test_inaccessible_state_and_ignored_permissions`
+  covers the six cases with the prefix, the path, the hint and no image, build or
+  create call.
+
+| Check | Result |
+| --- | --- |
+| Extended shared case against the previous core | Failed as expected: 6 subtests, raw `cd:` and `mkdir:` messages |
+| `python3 -m unittest tests.test_launcher tests.test_wrapper tests.test_alignment` | Passed: 129 tests, 1 skipped |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 441 tests, 67 skipped |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 112 tests |
+| `bash tests/run-runtime.sh --setup` | Passed: 67 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
+| `git diff --check` | Passed |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+
+The installed launcher core changes: installations rerun `--container-setup`.

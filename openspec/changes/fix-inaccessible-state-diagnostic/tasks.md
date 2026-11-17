@@ -7,8 +7,8 @@
 
 ## 2. Validation and release
 
-- [ ] 2.1 Run the unit discovery in the disposable test container, then `bash tests/run-runtime.sh --wrapper`, `--setup` and the default mode, then `git diff --check`. Record the results in `docs/validation.md`. Verify that all pass.
-- [ ] 2.2 Mark the old Codex case in `docs/launcher-test-map.md` (`test_inaccessible_state`) as covered by the extended shared case. Merge into `main`. Verify that `openspec validate fix-inaccessible-state-diagnostic --strict` passes.
+- [x] 2.1 Run the unit discovery in the disposable test container, then `bash tests/run-runtime.sh --wrapper`, `--setup` and the default mode, then `git diff --check`. Record the results in `docs/validation.md`. Verify that all pass.
+- [x] 2.2 Mark the old Codex case in `docs/launcher-test-map.md` (`test_inaccessible_state`) as covered by the extended shared case. Merge into `main`. Verify that `openspec validate fix-inaccessible-state-diagnostic --strict` passes.
 
 ## Workflow follow-up
 
