@@ -95,7 +95,7 @@ Setup SHALL show selected settings, paths, service changes and required image ac
 - **AND** ordinary subsequent launches still require separate authorization for missing-image builds or refreshes
 
 ### Requirement: Protected complete installation
-Setup SHALL prepare all files needed for the selected workflow in a native installation outside writable workspace, worktree-parent and state trees. It SHALL validate ownership, ancestor permissions and overlaps, create missing private directories, and refuse unsafe existing paths without recursive permission repair, credential imports, relabeling or added privileges.
+Setup SHALL prepare all files needed for the selected workflow in a native installation outside writable workspace, worktree-parent and state trees, including the shared launcher core and the agent launcher part. It SHALL validate ownership, ancestor permissions and overlaps, create missing private directories, and refuse unsafe existing paths without recursive permission repair, credential imports, relabeling or added privileges. Managed launches SHALL verify the entry script, the launcher core and the agent launcher part as protected files. Setup and its smoke checks SHALL ignore host values of `SANDBOX_CONTAINER_ENV_VARS` and `SANDBOX_CONTAINER_READONLY_STATE`.
 
 #### Scenario: Checkout on a Windows mount
 - **WHEN** setup runs from a checkout on a permission-emulating Windows filesystem and the user selects a valid native installation
@@ -106,8 +106,12 @@ Setup SHALL prepare all files needed for the selected workflow in a native insta
 - **WHEN** a chosen path has unsafe ancestors, cannot enforce private permissions or overlaps an application-writable mount
 - **THEN** setup identifies the path and fails without modifying existing permissions or claiming completion
 
+#### Scenario: Installed launcher core
+- **WHEN** setup completes an installation
+- **THEN** the release contains `launcher/core.sh` and `agent/launcher.sh` as protected files, and a managed launch refuses a release where either is writable by others
+
 ### Requirement: Mode-specific image and guard preparation
-Setup SHALL inspect or prepare the runtime image and the additional components required by the selected mode. Restricted modes SHALL receive a validated static guard and digest manifest; provider mode, available only for profiles with authentication methods, SHALL also receive a valid selected policy, private runtime directory and immutable proxy image identity. Existing suitable artifacts SHALL be reused unless refresh is approved.
+Setup SHALL inspect or prepare the runtime image and the additional components required by the selected mode. The runtime image SHALL be built through the wrapper's build-only operation, for every profile. Restricted modes SHALL receive a validated static guard and digest manifest; provider mode, available only for profiles with authentication methods, SHALL also receive a valid selected policy, private runtime directory and immutable proxy image identity. Existing suitable artifacts SHALL be reused unless refresh is approved.
 
 #### Scenario: Fresh provider setup
 - **WHEN** provider setup is approved with no prepared artifacts for a profile with authentication methods
@@ -374,22 +378,6 @@ When host CA trust is enabled, setup SHALL give the selected CA bundle to the ru
 - **WHEN** setup prepares images with host CA trust disabled
 - **THEN** no build receives a host CA bundle, and the toolchain build verifies only against the base image's certificates
 
-### Requirement: Wrapper-built runtime receives host CA trust
-When the agent profile builds the runtime image through the wrapper and host CA trust is enabled, setup SHALL give the wrapper's build operation the trust selection and the selected bundle. The wrapper SHALL pass that bundle to its runtime build only as a non-persisted build secret. Without host CA trust, the wrapper's build SHALL receive no host CA.
-
-#### Scenario: Wrapper-built runtime with host CA trust
-- **WHEN** setup prepares the runtime image of a wrapper-built profile with host CA trust enabled
-- **THEN** the wrapper's build receives the selected bundle as the `build-ca` build secret
-- **AND** the built image contains neither the bundle nor its temporary copy
-
-#### Scenario: Wrapper-built runtime without host CA trust
-- **WHEN** setup prepares the runtime image of a wrapper-built profile with host CA trust disabled
-- **THEN** the wrapper's build receives no build secret and no host CA bundle
-
-#### Scenario: Recipe-built runtime keeps the setup-side secret
-- **WHEN** setup prepares the runtime image from the recipe with host CA trust enabled
-- **THEN** setup passes the selected bundle to the recipe build as the `build-ca` build secret
-
 ### Requirement: Shared-directory privacy is declared by the profile
 The optional boolean agent-profile field `native.private_shared_dirs` (default `false`) SHALL declare that the wrapper requires every shared directory to be private. When it is `true`, setup SHALL check each shared directory before image preparation, as it checks the configuration directory: caller-owned, private and accessible. Setup SHALL NOT report a shared directory as private unless it passed that check.
 
@@ -405,3 +393,15 @@ The optional boolean agent-profile field `native.private_shared_dirs` (default `
 #### Scenario: Invalid profile field
 - **WHEN** `native.private_shared_dirs` is present but not a boolean
 - **THEN** profile validation fails and setup does not start
+
+### Requirement: Runtime build receives host CA trust
+Setup SHALL build every runtime image through the wrapper's build-only operation. When host CA trust is enabled, setup SHALL give that operation the trust selection and the selected bundle, and the wrapper SHALL pass the bundle to its build only as a non-persisted build secret. Without host CA trust, the build SHALL receive no host CA.
+
+#### Scenario: Runtime build with host CA trust
+- **WHEN** setup prepares the runtime image with host CA trust enabled
+- **THEN** the wrapper's build receives the selected bundle as the `build-ca` build secret
+- **AND** the built image contains neither the bundle nor its temporary copy
+
+#### Scenario: Runtime build without host CA trust
+- **WHEN** setup prepares the runtime image with host CA trust disabled
+- **THEN** the wrapper's build receives no build secret and no host CA bundle

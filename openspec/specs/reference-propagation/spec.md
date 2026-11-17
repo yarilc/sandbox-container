@@ -39,7 +39,7 @@ Each refusal SHALL name the failed condition and change nothing.
 - **THEN** the tool exits nonzero naming the file and writes nothing
 
 ### Requirement: Exact propagation within the adopted scope
-The tool SHALL compute the shared files (as listed by the new tag's `tests/test_alignment.py`) modified, added or removed between the tags, limited to the target's adopted scope: its manifest files and additions under a directory it already adopts. A dry run SHALL only print the plan. An applied run SHALL write each file from the new tag byte for byte, delete removed files, and rewrite `REFERENCE_TAG`, `REFERENCE_COMMIT` and the manifest hashes.
+The tool SHALL compute the shared files (as listed by the new tag's `tests/test_alignment.py`) modified, added or removed between the tags, limited to the target's adopted scope: its manifest files, additions under a directory it already adopts, and every file of a shared directory that the new tag introduces. A dry run SHALL only print the plan. An applied run SHALL write each file from the new tag byte for byte, delete removed files, and rewrite `REFERENCE_TAG`, `REFERENCE_COMMIT` and the manifest hashes.
 
 #### Scenario: Dry run
 - **WHEN** the tool runs without `--apply`
@@ -52,6 +52,10 @@ The tool SHALL compute the shared files (as listed by the new tag's `tests/test_
 #### Scenario: Partially adopted target
 - **WHEN** a target has adopted `network/` but not yet `setup/common.py` and the new tag changes `setup/common.py`
 - **THEN** the tool leaves `setup/common.py` absent and reports it as outside the adopted scope
+
+#### Scenario: New shared directory
+- **WHEN** the new tag adds the shared directory `launcher/` and the shared tests `tests/test_launcher.py` and `tests/fake_podman.py`
+- **THEN** a target that adopts the old tag's shared tests receives all of them as additions
 
 ### Requirement: Current-state references only
 An applied run SHALL replace the old tag and commit with the new ones only in current-state documents:

@@ -7,7 +7,7 @@ Provide predictable rootless container startup, transparent CLI invocation, and 
 ## Requirements
 
 ### Requirement: Verified launch engine
-After ordinary launch configuration is admitted, the wrapper SHALL verify that the engine used for image operations and container launch reports Linux and rootless operation. Failed or unrecognized verification SHALL stop before image inspection, build, or container creation. Setup SHALL verify the engine after approved user-service preparation and before image operations or smoke container creation. Help and missing-installation refusal SHALL require no engine query.
+After ordinary launch configuration is admitted, the wrapper SHALL verify that the engine used for image operations and container launch reports Linux and rootless operation. Failed or unrecognized verification SHALL stop before image inspection, build, or container creation. Every read-only engine query (`info`, `version`, `ps`, image and container existence and inspection, the delegation socket query) SHALL be bounded by a timeout; `create`, `start`, `build` and `pull` SHALL NOT be. Setup SHALL verify the engine after approved user-service preparation and before image operations or smoke container creation. Help and missing-installation refusal SHALL require no engine query.
 
 #### Scenario: Local rootless engine without delegation
 - **WHEN** local Podman reports Linux and rootless operation and delegation is disabled
@@ -25,6 +25,10 @@ After ordinary launch configuration is admitted, the wrapper SHALL verify that t
 #### Scenario: Unconfigured invocation does not need an engine
 - **WHEN** an ordinary offline invocation runs from a checkout without a protected installation and Podman is missing or unavailable
 - **THEN** the wrapper reports the setup-required diagnostic without querying an engine
+
+#### Scenario: Stalled engine query
+- **WHEN** a read-only engine query does not answer
+- **THEN** the wrapper stops after the query timeout with the query's diagnostic and creates no container
 
 ### Requirement: Supported launch contexts
 The wrapper SHALL support local Podman and an explicit same-host absolute Unix `CONTAINER_HOST` with a socket pathname beyond `/`. It SHALL reject named connections, TCP/SSH endpoints, implicit remote contexts, and pathless Unix endpoints; malformed explicit endpoints SHALL fail before any engine query. Documentation SHALL require bind sources and build paths to exist at their original absolute host paths.
@@ -51,7 +55,7 @@ The wrapper SHALL support local Podman and an explicit same-host absolute Unix `
 - **THEN** help succeeds without contacting an engine or creating state
 
 ### Requirement: Transparent invocation and terminal handling
-The wrapper SHALL start Bash with the selected mounts and identity and forward its arguments to Bash, preserving their order, spaces and empty values. `--container-shell` SHALL be accepted and SHALL behave like an invocation without it. The wrapper SHALL preserve stdin and allocate a TTY only when stdin and stdout are terminals. Restricted invocations SHALL enter through the protected Landlock/seccomp bootstrap before untrusted initialization; arguments, stdin, terminal allocation, signals and exit status SHALL retain the same contract.
+The wrapper SHALL start Bash with the selected mounts and identity and forward its arguments to Bash, preserving their order, spaces and empty values, in every network mode. `--container-shell` SHALL be accepted and SHALL behave like an invocation without it. The wrapper SHALL preserve stdin and allocate a TTY only when stdin and stdout are terminals. The session SHALL receive `USER`, `EDITOR=nano` and `VISUAL=nano`, and `TERM`, `COLORTERM`, `LANG` and `LC_ALL` by name when set; unrestricted sessions SHALL also receive `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lowercase forms by name when set, and restricted sessions never. Offline and unrestricted sessions SHALL forward no credential variable unless `SANDBOX_CONTAINER_ENV_VARS` lists it in unrestricted mode. Restricted invocations SHALL enter through the protected Landlock/seccomp bootstrap before untrusted initialization; arguments, stdin, terminal allocation, signals and exit status SHALL retain the same contract.
 
 #### Scenario: Pipeline invocation
 - **WHEN** the wrapper is invoked with redirected stdin and Bash arguments containing spaces or empty values
@@ -80,6 +84,11 @@ The wrapper SHALL start Bash with the selected mounts and identity and forward i
 - **THEN** the bootstrap preserves empty/spaced arguments and input/terminal behavior
 - **AND** bootstrap diagnostics do not contaminate Bash stdout
 
+#### Scenario: Locale and proxy forwarding
+- **WHEN** the host sets `LANG`, `HTTPS_PROXY` and `EDITOR=vim`
+- **THEN** an unrestricted session receives `LANG` and `HTTPS_PROXY` by name and `EDITOR=nano`
+- **AND** an offline session receives `LANG` but not `HTTPS_PROXY`
+
 ### Requirement: Side effect free wrapper help
 `--container-help` SHALL display wrapper options and environment controls successfully without requiring Podman, creating state, or performing engine or image operations.
 
@@ -88,7 +97,7 @@ The wrapper SHALL start Bash with the selected mounts and identity and forward i
 - **THEN** help succeeds without creating directories or contacting an engine
 
 ### Requirement: Predictable image operations
-The wrapper SHALL build an absent image and refresh it on `--container-build` only with explicit `SANDBOX_CONTAINER_MAINTENANCE=1`, using the Containerfile beside the resolved wrapper script. Without that exact authorization, a required build SHALL fail with maintenance guidance before image acquisition or build. Runtime network mode SHALL NOT grant maintenance authority or imply filtering of host image pulls or build RUN steps. An image-inspection error other than absence SHALL fail without starting a build or container. Build failures SHALL stop launch and preserve the failure status.
+The wrapper SHALL build an absent image and refresh it on `--container-build` only with explicit `SANDBOX_CONTAINER_MAINTENANCE=1`, using the Containerfile beside the resolved wrapper script. Without that exact authorization, a required build SHALL fail with maintenance guidance before image acquisition or build. Runtime network mode SHALL NOT grant maintenance authority or imply filtering of host image pulls or build RUN steps. An image-inspection error other than absence SHALL fail without starting a build or container. Build failures SHALL stop launch and preserve the failure status. A build SHALL first pull any missing exact `FROM` base, then run `podman build --pull=never --format docker` without a timeout and with stdin from `/dev/null`, passing a trusted host CA bundle only as the `build-ca` build secret. Every image SHALL carry a `build-inputs-hash` label over its build inputs; a launch SHALL refuse an image whose label does not match the current inputs, with rebuild guidance. `--container-build` with no application argument SHALL validate every launch setting, build, and exit without a session; `--container-git-worktree` and `--container-shell` do not count as application arguments. An image name with whitespace or control characters SHALL be refused before any engine operation.
 
 #### Scenario: Image absent from an external workspace
 - **WHEN** the wrapper is invoked through a symlink outside its repository with explicit unrestricted mode, the image is absent, and maintenance is explicitly authorized
@@ -111,8 +120,17 @@ The wrapper SHALL build an absent image and refresh it on `--container-build` on
 - **WHEN** an offline invocation, including the default mode, lacks a protected installation or selects enabled socket delegation
 - **THEN** startup fails before image build even with maintenance authorization
 
+#### Scenario: Build-only operation
+- **WHEN** `--container-build` is given with maintenance authorization and no application argument, also together with `--container-git-worktree`
+- **THEN** the wrapper validates its settings, builds the image and exits with the build status without creating a container
+- **AND** an invalid setting, such as an unusable delegation socket, stops it before the build
+
+#### Scenario: Stale image
+- **WHEN** the Containerfile or another build input changed after the image was built
+- **THEN** a launch without `--container-build` stops before creation and names the rebuild command
+
 ### Requirement: Owned container lifecycle
-Concurrent sessions SHALL reserve distinct workspace-index names without removing another session's container. The wrapper SHALL clean up only its own container, propagate its process exit code, and forward INT, TERM, and HUP. Naming collisions SHALL be retried within a bounded limit; unrelated creation failures SHALL retain their diagnostics and status. Interruption during creation SHALL retain recoverable evidence of session ownership.
+Concurrent sessions SHALL reserve distinct workspace-index names without removing another session's container. The wrapper SHALL clean up only its own container, propagate its process exit code, and forward INT, TERM, and HUP. Naming collisions SHALL be retried within a bounded limit; unrelated creation failures SHALL retain their diagnostics and status. A failed create whose name holds this session's own container SHALL never count as a collision: that container SHALL be removed, or reported as unresolved. Interruption during creation SHALL retain recoverable evidence of session ownership. Each create attempt SHALL set `CONTAINER_NAME` to the reserved name and run with stdin from `/dev/null`; unrestricted sessions SHALL run with `--init`.
 
 #### Scenario: Name collision
 - **WHEN** another session reserves the candidate name between enumeration and creation
@@ -137,6 +155,14 @@ Concurrent sessions SHALL reserve distinct workspace-index names without removin
 - **WHEN** the wrapper receives INT, TERM, or HUP during creation
 - **THEN** it attempts bounded recovery and removal using evidence identifying that session's container
 - **AND** it does not start the application after the interruption or remove an unrelated container by workspace name
+
+#### Scenario: Own container behind a failed create
+- **WHEN** create fails without publishing an ID and the engine reports this session's ownership label for the name
+- **THEN** the wrapper returns the create status without retrying and removes that container
+
+#### Scenario: Session name inside the container
+- **WHEN** an unrestricted session starts as `<prefix>-3`
+- **THEN** it runs with `--init` and `CONTAINER_NAME=<prefix>-3`
 
 ### Requirement: Minimal image build context
 Automatic and explicit image builds SHALL exclude repository metadata, local credentials and state, caches, and unrelated project files from the build context. The build recipe and explicitly required build inputs SHALL remain available. This filtering SHALL apply when the wrapper is invoked through a symlink or outside its repository.
@@ -185,7 +211,7 @@ After a setup failure, session signal, or application exit, wrapper shutdown SHA
 - **AND** diagnostics identify any owned resource whose removal could not be confirmed
 
 ### Requirement: Single-record launch verification response
-Launch-engine verification SHALL accept exactly one valid response record, with no terminator or one final LF. Additional records, including empty records or extra trailing LF characters, SHALL fail before image operations or container creation. Capture SHALL preserve record boundaries and command failure status; successful-looking output from a failed query SHALL NOT verify the engine.
+Launch-engine verification SHALL accept exactly one valid response record, with no terminator or one final LF. Additional records, including empty records or extra trailing LF characters, and any CR character SHALL fail before image operations or container creation. Capture SHALL preserve record boundaries and command failure status; successful-looking output from a failed query SHALL NOT verify the engine. The same capture SHALL serve every read-only engine query.
 
 #### Scenario: Normal response terminator
 - **WHEN** a successful engine query emits one valid response with no final LF or exactly one final LF
@@ -199,8 +225,12 @@ Launch-engine verification SHALL accept exactly one valid response record, with 
 - **WHEN** the engine query emits valid-looking output but exits nonzero
 - **THEN** startup fails with the engine-query diagnostic and performs no image operation or launch
 
+#### Scenario: Carriage return in a response
+- **WHEN** an engine query response contains a CR character
+- **THEN** startup fails with the invalid-response diagnostic
+
 ### Requirement: Restricted launches require current local qualification
-Before ordinary offline/provider application execution, the wrapper SHALL validate a protected successful qualification report matching the current host, engine and enforcement inputs. Missing or mismatched evidence SHALL stop startup with requalification guidance. A report SHALL NOT replace per-launch engine, protected-path, guard, policy or readiness checks. Unrestricted launches and wrapper help SHALL NOT require this report.
+Before ordinary offline/provider application execution, the wrapper SHALL validate a protected successful qualification report matching the current host, engine and enforcement inputs, for the network mode the launcher resolved, including a profile's default mode. Missing or mismatched evidence SHALL stop startup with requalification guidance. A report SHALL NOT replace per-launch engine, protected-path, guard, policy or readiness checks. Unrestricted launches and wrapper help SHALL NOT require this report.
 
 #### Scenario: Changed environment or artifacts
 - **WHEN** kernel/boot, engine version/backend/endpoint, effective security-policy state, guard/code, runtime/proxy image identity, hardening, gate revision or selected mode/profile/policy differs from the report
@@ -216,6 +246,10 @@ Before ordinary offline/provider application execution, the wrapper SHALL valida
 - **WHEN** the operator invokes the dedicated qualification operation without a current report
 - **THEN** only the protected gate fixtures run through normal confinement and resource preparation
 - **AND** no supplied application command or writable fixture can execute through the report-check exception
+
+#### Scenario: Default mode reaches the qualification check
+- **WHEN** a launch leaves `<P>_NETWORK` unset
+- **THEN** the qualification check and every Python helper use the mode the launcher resolved from the profile
 
 ### Requirement: Consistent restricted prerequisite decisions
 Wrapper startup and interactive setup SHALL use the same protected platform eligibility rules and diagnostic categories. Malformed or unavailable engine/platform evidence SHALL fail closed. The shared rules SHALL preserve launch endpoint verification and SHALL NOT reject SELinux/AppArmor merely for being enabled.
@@ -349,3 +383,19 @@ When an ordinary offline launch, including the default mode, runs from a locatio
 - **WHEN** help, interactive setup or the standalone qualification operation is requested without a network mode
 - **THEN** that entry point retains its own argument, terminal, prerequisite and enforcement checks
 - **AND** help still takes precedence and qualification still cannot execute a supplied command
+
+### Requirement: Extra variables forwarded by name
+`SANDBOX_CONTAINER_ENV_VARS` SHALL list host variable names, separated by whitespace, to forward into the session by name, never by value. An invalid name SHALL stop the launch before any engine or state operation. Unset or empty variables SHALL NOT be forwarded. Reserved names SHALL be skipped with one notice each.
+
+#### Scenario: Listed variable reaches the session
+- **WHEN** `SANDBOX_CONTAINER_ENV_VARS="GH_TOKEN"` is set and `GH_TOKEN` has a value
+- **THEN** the session receives `GH_TOKEN` by name and the value is absent from engine arguments
+
+#### Scenario: Names reserved by mode
+- **WHEN** the list names a variable the launcher or agent part sets, a proxy, CA or restricted setting in a restricted mode, or in provider mode another method's credential variable
+- **THEN** that name is skipped with a notice
+
+#### Scenario: Reserved or invalid name
+- **WHEN** the list names `HOME`, or names `HTTPS_PROXY` in offline mode
+- **THEN** that name is skipped with a notice and the session starts
+- **AND** a name such as `1BAD` stops the launch before any engine query

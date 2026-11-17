@@ -399,7 +399,7 @@ Restricted preparation SHALL require Linux x86_64, rootless Podman server >= 4.9
 - **AND** no local-engine, rootful, different-backend or unrestricted fallback occurs
 
 ### Requirement: Credential-free local enforcement qualification
-Each restricted installation SHALL pass a bounded credential-free gate through its production launch and guard path before ordinary use. Required denial checks SHALL have controlled positive controls or demonstrate explicit enforcing syscall rejection. Missing fixtures, unrelated connectivity failure, skipped required checks and unavailable transport evidence SHALL fail qualification.
+Each restricted installation SHALL pass a bounded credential-free gate through its production launch and guard path before ordinary use. The qualified code identity SHALL include the shared launcher core and the agent launcher part, so a change to either invalidates the report. Required denial checks SHALL have controlled positive controls or demonstrate explicit enforcing syscall rejection. Missing fixtures, unrelated connectivity failure, skipped required checks and unavailable transport evidence SHALL fail qualification.
 
 #### Scenario: Mandatory IP and IPC controls
 - **WHEN** offline or provider mode is qualified
@@ -431,6 +431,10 @@ Each restricted installation SHALL pass a bounded credential-free gate through i
 - **WHEN** a report was issued for one IPv6 state and the host later runs with the other state
 - **THEN** the report is stale and restricted startup requires requalification
 
+#### Scenario: Launcher core changed after qualification
+- **WHEN** `launcher/core.sh` or `agent/launcher.sh` differs from the one recorded in the report
+- **THEN** ordinary restricted startup requires requalification
+
 ### Requirement: Session proxies have enforced resource budgets
 Each Internet-facing session proxy SHALL have a limit of 128 processes and 256 MiB memory, enforced by the engine and host cgroups, for each budget whose cgroup v2 controller (`pids`, `memory`) the verified rootless engine reports as available. Startup SHALL fail before agent execution if an enforced limit is not applied, or if an unenforced limit is unexpectedly present. These budgets SHALL coexist with existing multiplex, TLS inspection and lifecycle bounds without broadening runtime access.
 
@@ -456,7 +460,7 @@ Each Internet-facing session proxy SHALL have a limit of 128 processes and 256 M
 - **AND** other sessions retain their independent proxy resources and budgets
 
 ### Requirement: Single protected agent profile
-All agent-specific values used by the shared network sandbox and setup components SHALL come from one data-only agent profile and its policy file. Examples are wrapper and variable names, images, labels, installation and state names, native configuration and credential variables, authentication assistance and policy profiles. The profile SHALL be schema-validated, trusted-path checked and outside session-writable mounts.
+All agent-specific values used by the shared network sandbox, launcher and setup components SHALL come from one data-only agent profile and its policy file, mirrored for the launcher by the agent launcher part and checked against them. Examples are wrapper and variable names, images, labels, installation and state names, native configuration and credential variables, the in-container application path (`native.exec`), executable temporary storage (`native.exec_tmp`), authentication assistance and policy profiles. The profile SHALL NOT select who builds the runtime image. The profile SHALL be schema-validated, trusted-path checked and outside session-writable mounts.
 
 #### Scenario: Invalid or unprotected profile
 - **WHEN** the profile is missing, malformed, has duplicate or unknown keys, fails field validation, or is reachable through a writable workspace or state mount or an escaped symlink
@@ -466,12 +470,20 @@ All agent-specific values used by the shared network sandbox and setup component
 - **WHEN** the current workspace contains a file with the profile's name or layout
 - **THEN** the wrapper uses only the profile in its protected installation or checkout and ignores the workspace copy
 
+#### Scenario: Obsolete or mistyped launcher fields
+- **WHEN** the profile declares `install.runtime_build`, a relative `native.exec` or a non-boolean `native.exec_tmp`
+- **THEN** profile validation fails naming the field
+
 ### Requirement: Profile-bound restricted identity
-The agent profile and its provider policy file SHALL be part of the protected code identity recorded in local qualification reports. Any change to either SHALL invalidate matching qualification evidence.
+The agent profile, its provider policy file, the shared launcher core and the agent launcher part SHALL be part of the protected code identity recorded in local qualification reports, and restricted preflight SHALL require each of them to be a protected file. Any change to one of them SHALL invalidate matching qualification evidence.
 
 #### Scenario: Profile changed after qualification
 - **WHEN** the installed profile or provider policy differs from the one recorded in the current qualification report
 - **THEN** ordinary restricted launches are refused with setup or requalification guidance
+
+#### Scenario: Writable launcher core
+- **WHEN** `launcher/core.sh` or `agent/launcher.sh` in the installation is writable by others or reachable through a writable mount
+- **THEN** restricted preflight fails naming the file
 
 ### Requirement: Agent-neutral shared sandbox components
 The shared network sandbox and setup components, including the compiled guard, SHALL contain no agent-specific identifiers. In-container paths, the guard binary name and the multiplex protocol marker SHALL be agent-neutral. Host-visible images, labels, variables and installation paths SHALL stay per-agent, as declared by the profile.
@@ -559,7 +571,7 @@ Host-side guard probes run by restricted-session preparation and qualification S
 - **THEN** the caller stops with a message that names the guard probe, its status and the Landlock ABI or standard I/O requirement, instead of failing without output
 
 ### Requirement: Residual exfiltration disclosure
-For every profile that declares authentication methods, provider help, setup guidance, the README and the network contract SHALL state that destination and SNI binding cannot distinguish the operator's credentials from attacker-supplied ones, so each allowed host can receive workspace data sent with a foreign key or account. They SHALL name the hosts of each base profile and SHALL NOT present the disclosure or a host reduction as preventing this channel.
+For every profile that declares authentication methods, provider help, setup guidance, the README and the network contract SHALL state that destination and SNI binding cannot distinguish the operator's credentials from attacker-supplied ones, so each allowed host can receive workspace data sent with a foreign key or account. They SHALL name the hosts of each base profile and SHALL NOT present the disclosure or a host reduction as preventing this channel. The launcher core SHALL print the provider help from the profile and the default policy, so every wrapper names the same hosts its policy allows.
 
 #### Scenario: Operator reads the provider limits
 - **WHEN** an operator reads the provider help, README or network contract of a wrapper whose profile declares authentication methods
@@ -569,6 +581,10 @@ For every profile that declares authentication methods, provider help, setup gui
 #### Scenario: Reference without provider mode
 - **WHEN** an operator reads the reference README or network contract
 - **THEN** it states that the reference offers no provider mode and that the channel is described by each agent wrapper
+
+#### Scenario: Help follows the policy
+- **WHEN** the fixture agent's default policy lists two hosts for a base profile
+- **THEN** `--container-help` names both hosts in the provider disclosure
 
 ### Requirement: Credential-injecting interception remains unimplemented
 The network contract SHALL describe credential-injecting TLS interception as a separately evaluated option only. In that option the proxy holds the credentials and the agent never sees them. The contract SHALL state that it conflicts with the no-decryption guarantee, and that it requires an explicit operator decision and its own change before implementation. The proxy SHALL NOT decrypt, terminate or re-sign provider TLS.

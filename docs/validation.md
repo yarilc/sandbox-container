@@ -2679,6 +2679,6 @@ rebuilt through the new build-only path: `localhost/sandbox-container:latest`
 | `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
 | `tools/propagate.py` dry run against a clone of `claude-container` (`sandbox-ref-21` to a temporary local tag) | Passed: adds `launcher/core.sh`, `tests/test_launcher.py`, `tests/fake_podman.py` and the fixture launcher parts; nothing "not adopted" |
 | `git diff --check`, `bash -n` on the entry script and core | Passed |
-| Operator `--container-setup` on the three hosts | Pending (operator) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator-reported, 2026-11-17); `main` pushed, `sandbox-ref-22` tagged on the merge |
 
 The installed and qualified code changes: installations rerun `--container-setup`.
