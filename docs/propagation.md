@@ -71,6 +71,8 @@ The dry run prints:
 
 - the files to update, add and remove;
 - files that changed but are outside the wrapper's adopted scope ("not adopted");
+  a shared directory that the new tag introduces, such as `launcher/`, is
+  adopted with the tag and listed under the added files;
 - the documents and the number of references to update;
 - the runner modes to execute;
 - a validation-record template and a commit message.
