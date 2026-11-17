@@ -721,6 +721,137 @@ core_agent_mounts() {
     done
 }
 
+# Names the core sets itself; neither agent_environment nor <P>_ENV_VARS may.
+core_set_names() {
+    printf '%s\n' HOME USER TERM COLORTERM LANG LC_ALL EDITOR VISUAL PATH CONTAINER_HOST CONTAINER_NAME \
+        CONTAINER_CONNECTION SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE NODE_EXTRA_CA_CERTS "$AGENT_CONFIG_DIR_ENV"
+}
+proxy_names=(HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy)
+
+# The credential variable of the selected policy profile, if any (U10).
+selected_credential() {
+    local item
+    for item in "${AGENT_CREDENTIALS[@]}"; do
+        [[ "${item%%=*}" != "$network_profile" ]] || { printf '%s' "${item#*=}"; return; }
+    done
+}
+
+# Whether a variable name is reserved for this session (M5, U13): set by the
+# core or the agent part, a proxy, CA or restricted setting in restricted modes,
+# or in provider mode another method's credential.
+reserved_name() {
+    local name=$1 item
+    [[ $'\n'"$core_reserved"$'\n' != *$'\n'"$name"$'\n'* ]] || return 0
+    if ((restricted)); then
+        [[ " ${proxy_names[*]} " != *" $name "* ]] || return 0
+        for item in "${AGENT_RESTRICTED_ENV[@]}" "${AGENT_PROVIDER_ENV[@]}"; do
+            [[ "${item%%=*}" != "$name" ]] || return 0
+        done
+    fi
+    if [[ "$network_mode" == provider ]]; then
+        for item in "${AGENT_CREDENTIALS[@]}"; do
+            [[ -z "${item#*=}" || "${item#*=}" != "$name" || "${item%%=*}" == "$network_profile" ]] || return 0
+        done
+    fi
+    return 1
+}
+
+# Session environment in the contract's order; Podman keeps the last value of a
+# name, so later groups win (M6): toolchains, core forwarding, agent_environment,
+# <P>_ENV_VARS, the approval bypass, core-set values, fixed agent settings, unsets.
+core_session_environment() {
+    local name entry credential item
+    core_reserved=$(core_set_names)
+    for item in "${AGENT_RESERVED_ENV[@]}" "${AGENT_UNSET_ENV[@]}"; do
+        core_reserved+=$'\n'"$item"
+    done
+    for name in TERM COLORTERM LANG LC_ALL; do
+        [[ -z "${!name:-}" ]] || container_args+=(--env "$name")
+    done
+    if ((restricted == 0)); then
+        for name in "${proxy_names[@]}"; do
+            [[ -z "${!name:-}" ]] || container_args+=(--env "$name")
+        done
+    fi
+    if [[ "$network_mode" == provider ]]; then
+        credential=$(selected_credential)
+        [[ -z "$credential" || -z "${!credential:-}" ]] || container_args+=(--env "$credential")
+    fi
+    call_hook agent_environment "$network_mode"
+    for entry in "${agent_env[@]}"; do
+        name=${entry%%=*}
+        [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "hook agent_environment returned an invalid entry: $entry"
+        ! reserved_name "$name" || [[ " ${AGENT_RESERVED_ENV[*]} " == *" $name "* && "$entry" == *=* ]] \
+            || die "hook agent_environment returned a reserved name: $name"
+        if [[ "$entry" == *=* || -n "${!name:-}" ]]; then
+            container_args+=(--env "$entry")
+        fi
+    done
+    for name in "${env_var_names[@]}"; do
+        if reserved_name "$name"; then
+            printf '%s: %s_ENV_VARS: skipping %s, which this session sets itself\n' "$AGENT_NAME" "$P" "$name" >&2
+            continue
+        fi
+        [[ -z "${!name:-}" ]] || container_args+=(--env "$name")
+    done
+    agent_bypass_args=()
+    if ((approval_bypass && ! shell_mode)); then
+        if declare -F agent_approval_bypass >/dev/null; then
+            call_hook agent_approval_bypass "$network_mode"
+            for entry in "${agent_bypass_env[@]}"; do
+                [[ "$entry" == *=* ]] && ! reserved_name "${entry%%=*}" \
+                    || die "hook agent_approval_bypass returned a reserved or invalid entry: $entry"
+                container_args+=(--env "$entry")
+            done
+        else
+            printf '%s: %s is set but %s has no approval bypass\n' "$AGENT_NAME" "$AGENT_APPROVAL_BYPASS_ENV" \
+                "$AGENT_DISPLAY_NAME" >&2
+        fi
+    fi
+    container_args+=(--env "HOME=$AGENT_HOME" --env "USER=$(id -un)"
+        --env "EDITOR=nano" --env "VISUAL=nano"
+        --env "$AGENT_CONFIG_DIR_ENV=$AGENT_HOME/$AGENT_CONFIG_HOME")
+    if ((trust_host_ca)); then
+        for name in SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE NODE_EXTRA_CA_CERTS; do
+            container_args+=(--env "$name=$AGENT_HOME/ca/bundle.pem")
+        done
+    fi
+    ((podman_access == 0)) || container_args+=(--env CONTAINER_HOST=unix:///run/podman/podman.sock)
+    for entry in "${AGENT_SESSION_ENV[@]}"; do
+        container_args+=(--env "$entry")
+    done
+    if ((restricted)); then
+        for entry in "${AGENT_RESTRICTED_ENV[@]}"; do
+            container_args+=(--env "$entry")
+        done
+    fi
+    if [[ "$network_mode" == provider ]]; then
+        for entry in "${AGENT_PROVIDER_ENV[@]}"; do
+            container_args+=(--env "$entry")
+        done
+    fi
+    for name in "${AGENT_UNSET_ENV[@]}" CONTAINER_CONNECTION; do
+        container_args+=(--unsetenv "$name")
+    done
+    ((podman_access)) || container_args+=(--unsetenv CONTAINER_HOST)
+}
+
+# The application: Bash in shell mode, otherwise the agent with its mode and
+# bypass arguments before the user's. Unrestricted agent sessions run the image
+# entrypoint; restricted ones run AGENT_EXEC through the guard (H2).
+core_application() {
+    if ((qualification_probe)); then
+        args=()  # The shared helper supplies the fixed probe command.
+        return
+    fi
+    if ((shell_mode)); then
+        ((restricted)) || container_args+=(--entrypoint /bin/bash)
+        return
+    fi
+    call_hook agent_command_args "$network_mode"
+    args=("${agent_mode_args[@]}" "${agent_bypass_args[@]}" "${args[@]}")
+}
+
 # Phase 5: toolchains, restricted preparation, image, container arguments, names.
 core_mounts_image() {
     temporary_exec=noexec
@@ -838,8 +969,6 @@ core_mounts_image() {
         # gets ptmxmode=000 (Podman rejects the option), so no pseudo-terminal could
         # be opened. Only /dev/shm is overridden, with an empty read-only tmpfs.
         --mount type=tmpfs,destination=/dev/shm,ro=true
-        --env "HOME=$AGENT_HOME"
-        --env EDITOR=nano --env VISUAL=nano
         --volume "$workspace_mount:$workspace_mount:rw"
         "${home_mount[@]}"
         "${state_mounts[@]}"
@@ -848,46 +977,22 @@ core_mounts_image() {
     if [[ -n "$toolchain_library" ]]; then
         container_args+=(--volume "$toolchain_library:/toolchains:ro,nosuid,nodev" "${toolchain_env[@]}")
     fi
-    # The shell's own state follows the toolchain environment, so a toolchain cannot
-    # move the configuration directory or the Bash history.
-    container_args+=(--env "$AGENT_CONFIG_DIR_ENV=$AGENT_HOME/$AGENT_CONFIG_HOME")
-    for core_setting in "${AGENT_SESSION_ENV[@]}"; do
-        container_args+=(--env "$core_setting")
-    done
     ((run_timeout == 0)) || container_args+=(--timeout "$run_timeout")
-    if [[ -t 0 && -t 1 ]]; then
-        container_args+=(--tty)
-        [[ -z "${TERM:-}" ]] || container_args+=(--env TERM)
-    fi
+    [[ ! -t 0 || ! -t 1 ]] || container_args+=(--tty)
     if ((podman_access)); then
         # The nested Podman client keeps its storage in private tmpfs mounts (U12).
         container_args+=(
             --volume "$host_socket:/run/podman/podman.sock:rw"
-            --env CONTAINER_HOST=unix:///run/podman/podman.sock
             --tmpfs /var/lib/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=256m
             --tmpfs /run/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=64m
         )
-    else
-        container_args+=(--unsetenv CONTAINER_HOST)
     fi
-    if ((trust_host_ca)); then
-        container_args+=(
-            --volume "$ca_bundle:$AGENT_HOME/ca/bundle.pem:ro"
-            --env "SSL_CERT_FILE=$AGENT_HOME/ca/bundle.pem"
-            --env "REQUESTS_CA_BUNDLE=$AGENT_HOME/ca/bundle.pem"
-            --env "CURL_CA_BUNDLE=$AGENT_HOME/ca/bundle.pem"
-            --env "NODE_EXTRA_CA_CERTS=$AGENT_HOME/ca/bundle.pem"
-        )
-    fi
-
-    # The session is always Bash; --container-shell is accepted as a no-op and the
-    # remaining arguments go to Bash unchanged.
-    if ((qualification_probe)); then
-        args=()  # The shared helper supplies the fixed probe command.
-    else
-        container_args+=(--entrypoint /bin/bash)
-    fi
-
+    ((trust_host_ca == 0)) || container_args+=(--volume "$ca_bundle:$AGENT_HOME/ca/bundle.pem:ro")
+    # Unrestricted sessions run the image entrypoint, so --init reaps orphans;
+    # the guard rejects its mount below /run, so restricted sessions cannot (U12).
+    ((restricted)) || container_args+=(--init)
+    core_session_environment
+    core_application
     prefix=${workspace##*/}
     prefix=$(printf '%s' "$prefix" | sed -E 's/[^a-zA-Z0-9_.-]+/-/g; s/^[.-]+//; s/[.-]+$//')
     prefix=${prefix:-$AGENT_NAME}
@@ -1099,7 +1204,13 @@ core_create_start() {
     fi
     if [[ "$network_mode" != unrestricted ]]; then
         application=()
-        ((qualification_probe)) || application=(/bin/bash "${args[@]}")
+        if ((qualification_probe == 0)); then
+            if ((shell_mode)); then
+                application=(/bin/bash "${args[@]}")
+            else
+                application=("$AGENT_EXEC" "${args[@]}")
+            fi
+        fi
         "${session_helper[@]}" agent-args --installation "$script_dir" --mode "$network_mode" \
             --session "$session_dir" --guard-digest "$guard_digest" "${qualification_inputs[@]}" \
             -- "${application[@]}" >"$session_dir/agent.args"

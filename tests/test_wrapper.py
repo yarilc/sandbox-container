@@ -159,8 +159,9 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(self.create()[-5:], ['localhost/sandbox-container:latest', '-p', 'hello world', '', '--help'])
         self.assertNotIn('--tty', self.create())
         self.assertNotIn('--dangerously-skip-permissions', self.create())
-        self.assertIn('--unsetenv', self.create())
-        self.assertEqual(self.create()[self.create().index('--unsetenv') + 1], 'CONTAINER_HOST')
+        unsets = [a for i, a in enumerate(self.create()[1:]) if self.create()[i] == '--unsetenv']
+        self.assertIn('CONTAINER_HOST', unsets)
+        self.assertIn('CONTAINER_CONNECTION', unsets)
         self.assertIn('stdin:input payload', result.stdout)
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
 

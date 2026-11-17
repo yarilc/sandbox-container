@@ -48,6 +48,43 @@ BUDGET_ACCEPTED = {
 }
 
 
+def synthetic_install(base, root, wrapper_name):
+    """A protected-looking installation with a synthetic guard and control helper."""
+    # Argument/lifecycle instrumentation only. Real guard and protected-path
+    # acceptance lives in test_network_runtime; no production check is changed.
+    install = base / 'synthetic-install'
+    (install / 'network/bin').mkdir(parents=True)
+    wrapper = install / wrapper_name
+    shutil.copyfile(root / wrapper_name, wrapper)
+    wrapper.chmod(0o700)
+    guard = install / 'network/bin/sandbox-egress-guard'
+    guard.write_text('#!/bin/sh\nexit 0\n')
+    guard.chmod(0o700)
+    (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
+    shutil.copyfile(root / 'network/proxy_hardening.py', install / 'network/proxy_hardening.py')
+    shutil.copyfile(root / 'network/platform_check.py', install / 'network/platform_check.py')
+    for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py',
+                 'network/revisions.py', 'agent/profile.json', 'setup/common.py', 'setup/toolchains.py',
+                 'Containerfile', 'launcher/core.sh', 'agent/launcher.sh'):
+        (install / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / name, install / name)
+    (install / 'network/qualify.py').write_text('# Synthetic argument fixture only.\n')
+    (install / 'network/control.py').write_text('''import pathlib,socket,sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from revisions import TLS_ENFORCEMENT
+args=sys.argv[1:]
+import json,os
+with open(os.environ['FAKE_LOG']+'.control','a') as log: log.write(json.dumps(args)+'\\n')
+if args[0]=='snapshot':
+ p=pathlib.Path(args[args.index('--session')+1]); (p/'transport').mkdir()
+ (p/'config').mkdir(); (p/'logs').mkdir()
+ s=socket.socket(socket.AF_UNIX); s.bind(str(p/'transport/proxy.sock')); s.close()
+ (p/'transport/ready').write_text('fixture-policy guard='+ 'c'*64 +' mux=1 tls=' + TLS_ENFORCEMENT + '\\n')
+ print('fixture-policy')
+''')
+    return wrapper
+
+
 class LauncherTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='sandbox-wrapper-', dir=os.environ.get('SANDBOX_TEST_TMPDIR'))
@@ -275,8 +312,9 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(self.create()[-5:], ['localhost/fixture-shell:latest', '-p', 'hello world', '', '--help'])
         self.assertNotIn('--tty', self.create())
         self.assertNotIn('--dangerously-skip-permissions', self.create())
-        self.assertIn('--unsetenv', self.create())
-        self.assertEqual(self.create()[self.create().index('--unsetenv') + 1], 'CONTAINER_HOST')
+        unsets = [a for i, a in enumerate(self.create()[1:]) if self.create()[i] == '--unsetenv']
+        self.assertIn('CONTAINER_HOST', unsets)
+        self.assertIn('CONTAINER_CONNECTION', unsets)
         self.assertIn('stdin:input payload', result.stdout)
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
 
@@ -483,36 +521,7 @@ class LauncherTests(unittest.TestCase):
     def restricted_fixture(self):
         # Argument/lifecycle instrumentation only. Real guard and protected-path
         # acceptance lives in test_network_runtime; no production check is changed.
-        install = self.base / 'synthetic-install'
-        (install / 'network/bin').mkdir(parents=True)
-        self.wrapper = install / 'fixture-shell.sh'
-        shutil.copyfile(WRAPPER, self.wrapper)
-        self.wrapper.chmod(0o700)
-        guard = install / 'network/bin/sandbox-egress-guard'
-        guard.write_text('#!/bin/sh\nexit 0\n')
-        guard.chmod(0o700)
-        (guard.parent / 'sandbox-egress-guard.sha256').write_text('c' * 64 + '  sandbox-egress-guard\n')
-        shutil.copyfile(ROOT / 'network/proxy_hardening.py', install / 'network/proxy_hardening.py')
-        shutil.copyfile(ROOT / 'network/platform_check.py', install / 'network/platform_check.py')
-        for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py',
-                     'network/revisions.py', 'agent/profile.json', 'setup/common.py', 'setup/toolchains.py',
-                     'Containerfile', 'launcher/core.sh', 'agent/launcher.sh'):
-            (install / name).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / name, install / name)
-        (install / 'network/qualify.py').write_text('# Synthetic argument fixture only.\n')
-        (install / 'network/control.py').write_text('''import pathlib,socket,sys
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from revisions import TLS_ENFORCEMENT
-args=sys.argv[1:]
-import json,os
-with open(os.environ['FAKE_LOG']+'.control','a') as log: log.write(json.dumps(args)+'\\n')
-if args[0]=='snapshot':
- p=pathlib.Path(args[args.index('--session')+1]); (p/'transport').mkdir()
- (p/'config').mkdir(); (p/'logs').mkdir()
- s=socket.socket(socket.AF_UNIX); s.bind(str(p/'transport/proxy.sock')); s.close()
- (p/'transport/ready').write_text('fixture-policy guard='+ 'c'*64 +' mux=1 tls=' + TLS_ENFORCEMENT + '\\n')
- print('fixture-policy')
-''')
+        self.wrapper = synthetic_install(self.base, ROOT, 'fixture-shell.sh')
         return dict(FAKE_NETWORK='1', FAKE_INFO='true linux true',
                     CONTAINER_HOST='unix:///run/service.sock',
                     FIXTURE_SHELL_NETWORK='offline')
@@ -1378,7 +1387,8 @@ if args[0]=='snapshot':
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertFalse(any(c[0] == '--remote' for c in self.calls()))
                 self.assertNotIn('CONTAINER_HOST=unix:///run/podman/podman.sock', self.create())
-                self.assertEqual(self.create()[self.create().index('--unsetenv') + 1], 'CONTAINER_HOST')
+                create = self.create()
+                self.assertIn('CONTAINER_HOST', [a for i, a in enumerate(create[1:]) if create[i] == '--unsetenv'])
 
     def test_socket_precedence_and_remapping(self):
         alias = self.base / 'socket-alias'
@@ -1469,7 +1479,9 @@ if args[0]=='snapshot':
                             create = self.create()
                             self.assertNotIn('--dangerously-skip-permissions', create)
                             self.assertEqual('CONTAINER_HOST=unix:///run/podman/podman.sock' in create, service == '1')
-                            self.assertEqual('--unsetenv' in create, service != '1')
+                            unsets = [a for i, a in enumerate(create[1:]) if create[i] == '--unsetenv']
+                            self.assertEqual('CONTAINER_HOST' in unsets, service != '1')
+                            self.assertIn('CONTAINER_CONNECTION', unsets)
                             self.assertNotIn('--read-only-tmpfs=false', create)
                             mounts = [create[i+1] for i, arg in enumerate(create) if arg == '--tmpfs']
                             # U7: one layout; the shared-state home is an ephemeral tmpfs;
@@ -1726,6 +1738,72 @@ class AgentProfileSettingsTests(unittest.TestCase):
         self.assertIn('/var/tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777', mounts)
         self.assertIn('/run:rw,nosuid,nodev,noexec,size=32m', mounts)
         self.assertIn('/fixture-home:rw,nosuid,nodev,exec,size=512m,mode=1777', mounts)
+
+
+    def environment_of(self, create):
+        return [create[i + 1] for i, arg in enumerate(create) if arg == '--env']
+
+    def test_unrestricted_environment_order_forwarding_and_hooks(self):
+        # M6, U10, U11, U13: order, forwarding, reserved names and approval bypass.
+        host = {'TERM': 'xterm', 'LANG': 'C.UTF-8', 'HTTPS_PROXY': 'http://proxy.test:3128', 'EDITOR': 'vim',
+                'FIXTURE_API_KEY': 'host-key', 'FIXTURE_FORWARDED': 'agent-value', 'GH_TOKEN': 'token',
+                'FIXTURE_AGENT_YOLO': '1', 'FIXTURE_AGENT_ENV_VARS': 'GH_TOKEN HOME FIXTURE_FIXED EMPTY_VALUE'}
+        result = self.run_agent('--first', FIXTURE_AGENT_NETWORK='unrestricted', EMPTY_VALUE='', **host)
+        create = self.session_create(result)
+        env = self.environment_of(create)
+        for name in ('TERM', 'LANG', 'HTTPS_PROXY', 'FIXTURE_FORWARDED', 'GH_TOKEN'):
+            self.assertIn(name, env)
+        self.assertNotIn('FIXTURE_API_KEY', env)
+        self.assertNotIn('EMPTY_VALUE', env)
+        self.assertIn('EDITOR=nano', env)
+        self.assertIn('FIXTURE_FIXED=1', env)
+        for skipped in ('HOME', 'FIXTURE_FIXED'):
+            self.assertIn(f'FIXTURE_AGENT_ENV_VARS: skipping {skipped}', result.stderr)
+        order = [env.index(name) for name in ('TERM', 'FIXTURE_FORWARDED', 'GH_TOKEN', 'FIXTURE_BYPASS=1',
+                                              'HOME=/fixture-home', 'FIXTURE_ALWAYS=1')]
+        self.assertEqual(order, sorted(order))
+        self.assertNotIn('FIXTURE_TELEMETRY=0', env)
+        self.assertNotIn('FIXTURE_PROVIDER_ONLY=1', env)
+        unsets = [create[i + 1] for i, arg in enumerate(create) if arg == '--unsetenv']
+        self.assertEqual(unsets, ['DBUS_SESSION_BUS_ADDRESS', 'CONTAINER_CONNECTION', 'CONTAINER_HOST'])
+        self.assertIn('--init', create)
+        self.assertNotIn('--entrypoint', create)
+        self.assertEqual(create[-4:], ['--fixture-mode', 'unrestricted', '--fixture-bypass', '--first'])
+
+    def test_shell_mode_skips_the_agent_arguments_and_bypass(self):
+        create = self.session_create(self.run_agent('--container-shell', '-c', 'true',
+                                                    FIXTURE_AGENT_NETWORK='unrestricted', FIXTURE_AGENT_YOLO='1'))
+        self.assertEqual(create[create.index('--entrypoint') + 1], '/bin/bash')
+        self.assertEqual(create[-2:], ['-c', 'true'])
+        self.assertNotIn('FIXTURE_BYPASS=1', self.environment_of(create))
+        calls = [call[0] for call in self.hook_calls()]
+        self.assertNotIn('agent_approval_bypass', calls)
+        self.assertNotIn('agent_command_args', calls)
+
+    def test_agent_environment_cannot_set_core_names(self):
+        for entries in ('HOME=/elsewhere', 'CONTAINER_NAME=x', 'bad-name=1'):
+            with self.subTest(entries=entries):
+                self.log.unlink(missing_ok=True)
+                result = self.run_agent(FIXTURE_AGENT_NETWORK='unrestricted', FIXTURE_HOOK_ENV=entries)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('hook agent_environment returned', result.stderr)
+
+    def test_restricted_environment_and_application(self):
+        wrapper = synthetic_install(self.base, AGENT_ROOT, AGENT_PROFILE.wrapper)
+        host = {'HTTPS_PROXY': 'http://proxy.test:3128', 'LANG': 'C.UTF-8',
+                'FIXTURE_AGENT_ENV_VARS': 'HTTPS_PROXY FIXTURE_TELEMETRY'}
+        result = self.run_agent('--first', wrapper=wrapper, FIXTURE_AGENT_NETWORK='offline', FAKE_NETWORK='1',
+                                FAKE_INFO='true linux true', CONTAINER_HOST='unix:///run/service.sock', **host)
+        create = self.session_create(result)
+        env = self.environment_of(create)
+        self.assertIn('LANG', env)
+        self.assertNotIn('HTTPS_PROXY', env)
+        self.assertIn('FIXTURE_TELEMETRY=0', env)
+        self.assertNotIn('--init', create)
+        for skipped in ('HTTPS_PROXY', 'FIXTURE_TELEMETRY'):
+            self.assertIn(f'FIXTURE_AGENT_ENV_VARS: skipping {skipped}', result.stderr)
+        self.assertIn('/usr/local/bin/fixture', create)
+        self.assertEqual(create[-3:], ['--fixture-mode', 'offline', '--first'])
 
 
 if __name__ == '__main__':

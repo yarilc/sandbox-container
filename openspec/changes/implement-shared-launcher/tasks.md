@@ -50,7 +50,7 @@ The behavior of each task is defined by the named rows of `docs/launcher-contrac
 ## 6. Phase 5: mounts, environment, image
 
 - [x] 6.1 Implement the temporary-storage layout and the tmpfs home (U7, L7), the bind builder and the `agent_mounts` validation (M7), and the delegation tmpfs mounts (U12). Rewrite the U7 cases; verify they pass.
-- [ ] 6.2 Implement session environment ordering (M6), locale and unrestricted proxy forwarding (U11), credentials (U10), reserved names (U13), fixed settings by scope (M2), `agent_environment`, `agent_approval_bypass` and `agent_command_args`. Port the credential and forwarding cases (U10, U11, U13 rewrites); verify they pass.
+- [x] 6.2 Implement session environment ordering (M6), locale and unrestricted proxy forwarding (U11), credentials (U10), reserved names (U13), fixed settings by scope (M2), `agent_environment`, `agent_approval_bypass` and `agent_command_args`. Port the credential and forwarding cases (U10, U11, U13 rewrites); verify they pass.
 - [ ] 6.3 Implement the image rules: base pull, `--pull=never --format docker` with `</dev/null`, no timeout, `build-inputs-hash` over the defined inputs with `agent_build_args` and `agent_build_inputs` (H6, M12, U8, U12), and the stale-image refusal. Port Pi's freshness cases; verify they pass.
 
 ## 7. Phases 6-7: creation, start, shutdown
