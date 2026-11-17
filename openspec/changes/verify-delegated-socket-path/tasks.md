@@ -6,7 +6,7 @@
 
 ## 2. Fix
 
-- [ ] 2.1 Add the two checks to `core_engine_delegation` in `launcher/core.sh` and mirror them in `verify_socket` in `setup/setup.py` (design decisions 1 and 2). Verify that `python3 -m unittest tests.test_launcher tests.test_wrapper tests.test_alignment tests.test_setup` passes in the disposable test container.
+- [x] 2.1 Add the two checks to `core_engine_delegation` in `launcher/core.sh` and mirror them in `verify_socket` in `setup/setup.py` (design decisions 1 and 2). Verify that `python3 -m unittest tests.test_launcher tests.test_wrapper tests.test_alignment tests.test_setup` passes in the disposable test container.
 - [ ] 2.2 Update `docs/launcher-contract.md` and `docs/launcher-test-map.md` (design decision 4). Verify that the contract names the remapped-socket limit and that the test map maps Antigravity's `test_complete_socket_response_required` to the new shared case.
 
 ## 3. Validation and integration
