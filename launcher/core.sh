@@ -836,6 +836,7 @@ core_session_environment() {
             container_args+=(--env "$entry")
         fi
     done
+    ((qualification_probe == 0)) || env_var_names=()
     for name in "${env_var_names[@]}"; do
         if reserved_name "$name"; then
             printf '%s: %s_ENV_VARS: skipping %s, which this session sets itself\n' "$AGENT_NAME" "$P" "$name" >&2
@@ -844,7 +845,8 @@ core_session_environment() {
         [[ -z "${!name:-}" ]] || container_args+=(--env "$name")
     done
     agent_bypass_args=()
-    if ((approval_bypass && ! shell_mode)); then
+    # The probe runs fixed controls: no bypass, agent arguments or extra variables (M1).
+    if ((approval_bypass && ! shell_mode && ! qualification_probe)); then
         if declare -F agent_approval_bypass >/dev/null; then
             call_hook agent_approval_bypass "$network_mode"
             for entry in "${agent_bypass_env[@]}"; do
@@ -954,6 +956,10 @@ core_mounts_image() {
         for core_path in "${writable_state[@]}"; do
             network_inputs+=(--writable "$core_path")
         done
+        if [[ "$network_mode" == provider ]]; then
+            network_inputs+=(--policy "$cfg_NETWORK_POLICY" --profile "$cfg_NETWORK_PROFILE"
+                --proxy-image "$cfg_EGRESS_IMAGE" --runtime "$cfg_NETWORK_RUNTIME_DIR")
+        fi
         prepare_inputs=(--mode "$network_mode" --server-version "${network_version%$'\n'}"
             --backend "${network_backend%$'\n'}" --endpoint "${CONTAINER_HOST:-}" --engine "$runtime_info")
         if ((qualification_probe)); then
@@ -970,6 +976,19 @@ core_mounts_image() {
     fi
 
     core_build_image
+    if [[ "$network_mode" == provider ]]; then
+        # The proxy image is an immutable artifact: present, or pulled by digest
+        # only under explicit maintenance.
+        if engine image exists "$cfg_EGRESS_IMAGE"; then
+            :
+        else
+            proxy_status=$?
+            [[ "$proxy_status" == 1 ]] || die "cannot inspect proxy image: $cfg_EGRESS_IMAGE"
+            [[ "${cfg_MAINTENANCE:-}" == 1 && "$cfg_EGRESS_IMAGE" == *@sha256:* ]] \
+                || die "proxy image is absent; prepare the pinned artifact under explicit operator maintenance authorization (${P}_MAINTENANCE=1 and a registry digest)"
+            podman pull "$cfg_EGRESS_IMAGE" </dev/null || die "cannot pull proxy image: $cfg_EGRESS_IMAGE"
+        fi
+    fi
 
     if [[ "$network_mode" != unrestricted ]]; then
         capture_response runtime_image_id engine image inspect --format '{{.Id}}' "$image" \
@@ -1072,11 +1091,27 @@ create_output=''
 creation_pending=0
 shutdown_deadline=0
 ownership_label=$AGENT_LABEL_NAMESPACE.session
+session_start_pid=''
+owned_collision=0
+cid_value=
 qualification_check_pid=''
 
 cleanup_warning() {
-    printf '%s: cleanup %s (container=%s session=%s); inspect the Podman engine for remaining session containers\n' "$AGENT_NAME" \
-        "$*" "${container_id:-unknown}" "${session_token:-unknown}" >&2
+    local proxy_id=unknown
+    [[ -z "$session_dir" || ! -s "$session_dir/proxy.id" ]] || proxy_id=$(<"$session_dir/proxy.id")
+    printf '%s: cleanup %s (container=%s proxy=%s session=%s); inspect the Podman engine for remaining session containers\n' \
+        "$AGENT_NAME" "$*" "${container_id:-unknown}" "$proxy_id" "${session_token:-unknown}" >&2
+}
+
+# A private creation record: one 64-hex ID, an optional final LF, no NUL (X).
+read_cid() {
+    local value=''
+    if IFS= read -r -d '' value <"$1"; then
+        return 1  # A NUL byte is itself invalid record data.
+    fi
+    value=${value%$'\n'}
+    [[ "$value" =~ ^[a-f0-9]{64}$ ]] || return 1
+    cid_value=$value
 }
 
 # All shutdown engine calls share a deadline and reserve time for local clients.
@@ -1133,8 +1168,15 @@ reap_client() {
 recover_container() {
     local candidate='' owner ids
     [[ -z "$container_id" && "$creation_pending" == 1 ]] || return 0
+    # The CID record first (validated, X), then the create output, which must
+    # agree with it (O); only without either, the ownership label.
     if [[ -s "$cid_file" ]]; then
-        candidate=$(<"$cid_file")
+        read_cid "$cid_file" || { cleanup_warning 'invalid container ID in the private creation record'; return 1; }
+        candidate=$cid_value
+        if [[ -s "$create_output" && "$(<"$create_output")" != "$candidate" ]]; then
+            cleanup_warning 'inconsistent creation IDs'
+            return 1
+        fi
     elif [[ -s "$create_output" ]]; then
         candidate=$(<"$create_output")
     fi
@@ -1209,6 +1251,14 @@ shutdown() {
             done
         fi
         [[ -z "$container_id" ]] || control rm --force --time 0 --ignore "$container_id" >/dev/null
+        if [[ -n "$session_start_pid" ]]; then
+            # The session helper owns a separate process group. Reap the whole
+            # group before its leader, including an engine client that ignores TERM.
+            kill -TERM -- "-$session_start_pid" 2>/dev/null || true
+            sleep 0.1
+            kill -KILL -- "-$session_start_pid" 2>/dev/null || true
+            reap_client "$session_start_pid"
+        fi
         reap_client "$create_pid"
         reap_client "$client_pid"
         # Drain the final client log before reaping its owned stderr adapter.
@@ -1222,9 +1272,14 @@ shutdown() {
             recover_container
             if [[ -n "$container_id" ]]; then
                 control rm --force --time 0 --ignore "$container_id" >/dev/null
-            elif [[ -n "$signal" ]]; then
-                cleanup_warning 'interrupted creation could not be reconciled'
+            elif [[ -n "$signal" ]] || ((owned_collision)); then
+                cleanup_warning 'creation outcome unresolved: no verified owned container ID'
             fi
+        fi
+        if [[ "$network_mode" == provider ]]; then
+            # Owned proxy recovery/removal and diagnostics share the remaining budget.
+            "${session_helper[@]}" stop --session "$session_dir" --deadline "$((shutdown_deadline - SECONDS))" \
+                --container "${container_id:-unknown}" || true
         fi
         rm -rf -- "$session_dir"
     fi
@@ -1237,7 +1292,12 @@ core_create_start() {
     trap 'shutdown 143 TERM' TERM
     trap 'shutdown 130 INT' INT
     trap 'shutdown 129 HUP' HUP
-    session_dir=$(umask 077; mktemp -d)
+    if [[ "$network_mode" == provider ]]; then
+        session_dir=$(umask 077; mktemp -d -- "$cfg_NETWORK_RUNTIME_DIR/session.XXXXXXXXXXXX") \
+            || die "cannot create a private session directory in ${P}_NETWORK_RUNTIME_DIR"
+    else
+        session_dir=$(umask 077; mktemp -d)
+    fi
     session_token=${session_dir##*/}
     printf '%s: network mode=%s\n' "$AGENT_NAME" "$network_mode" >&2
     if [[ "$network_mode" != unrestricted ]] && ((qualification_probe == 0)); then
@@ -1250,6 +1310,14 @@ core_create_start() {
             qualification_check_pid=''
             exit "$qualification_status"
         fi
+    fi
+    if [[ "$network_mode" == provider ]]; then
+        # The helper starts the session's proxy in its own process group.
+        "${session_helper[@]}" start "${network_inputs[@]}" "${qualification_inputs[@]}" --session "$session_dir" \
+            --guard-digest "$guard_digest" >"$session_dir/policy.identity" &
+        session_start_pid=$!
+        wait "$session_start_pid"
+        session_start_pid=''
     fi
     if [[ "$network_mode" != unrestricted ]]; then
         application=()
@@ -1288,23 +1356,37 @@ core_create_start() {
         create_output=$session_dir/$attempt.stdout
         create_error=$session_dir/$attempt.stderr
         creation_pending=1
+        # Each attempt names itself in the session (CONTAINER_NAME, U12); stdin stays
+        # with the session, so create reads none (L9).
         podman create --name "$name" --cidfile "$cid_file" --label "$ownership_label=$session_token" \
-            "${container_args[@]}" "$image" "${args[@]}" >"$create_output" 2>"$create_error" &
+            "${container_args[@]}" --env "CONTAINER_NAME=$name" "$image" "${args[@]}" \
+            </dev/null >"$create_output" 2>"$create_error" &
         create_pid=$!
         if wait "$create_pid"; then
             create_pid=''
             container_id=$(<"$create_output")
             [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] || die 'invalid container ID returned by Podman create'
+            if [[ -s "$cid_file" ]]; then
+                read_cid "$cid_file" && [[ "$cid_value" == "$container_id" ]] \
+                    || die 'inconsistent creation IDs from Podman create'
+            fi
             creation_pending=0
             break
         else
             create_status=$?
             create_pid=''
             if [[ ! -s "$cid_file" && ! -s "$create_output" ]] && creation_lookup container exists "$name" \
-                && creation_lookup inspect --type container --format "{{index .Config.Labels \"$ownership_label\"}}" "$name" \
-                && [[ $(<"$session_dir/lookup") != "$session_token" ]]; then
-                creation_pending=0
-                next_index=$((next_index + 1))
+                && creation_lookup inspect --type container --format "{{index .Config.Labels \"$ownership_label\"}}" "$name"; then
+                if [[ $(<"$session_dir/lookup") != "$session_token" ]]; then
+                    creation_pending=0
+                    next_index=$((next_index + 1))
+                    continue
+                fi
+                # This session's own container behind a failed create is never a
+                # collision: shutdown removes it, or reports it unresolved.
+                owned_collision=1
+                cat -- "$create_error" >&2
+                exit "$create_status"
             else
                 cat -- "$create_error" >&2
                 exit "$create_status"

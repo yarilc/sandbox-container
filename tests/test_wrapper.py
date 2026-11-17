@@ -179,7 +179,10 @@ class WrapperTests(unittest.TestCase):
             # The cidfile and the ownership label name the per-session directory.
             creates.append([a for i, a in enumerate(create) if i == 0 or create[i - 1] not in ('--cidfile', '--label')])
         self.assertEqual(creates[0], creates[1])
-        self.assertEqual(creates[0][-6:], ['--entrypoint', '/bin/bash', 'localhost/sandbox-container:latest',
+        self.assertEqual(creates[0][creates[0].index('--entrypoint'):creates[0].index('--entrypoint') + 2],
+                         ['--entrypoint', '/bin/bash'])
+        self.assertIn('CONTAINER_NAME=my-project-0', creates[0])
+        self.assertEqual(creates[0][-4:], ['localhost/sandbox-container:latest',
                                            '-c', 'echo "$0"', ''])
 
     def volumes(self):

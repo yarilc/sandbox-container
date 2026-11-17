@@ -55,7 +55,7 @@ The behavior of each task is defined by the named rows of `docs/launcher-contrac
 
 ## 7. Phases 6-7: creation, start, shutdown
 
-- [ ] 7.1 Implement:
+- [x] 7.1 Implement:
   - `AGENT_EXEC` for restricted agent sessions and the image entrypoint for unrestricted ones (H2);
   - `session.py agent-args` output after the core arguments (M9);
   - per-attempt `CONTAINER_NAME`, `--init` in unrestricted sessions, `</dev/null` for create;

@@ -73,6 +73,8 @@ elif args[0] == 'create':
     collision = pathlib.Path(str(log) + '.collision')
     if os.environ.get('FAKE_COLLISION') and (not collision.exists() or os.environ.get('FAKE_ALWAYS_COLLIDE')):
         collision.touch()
+        # FAKE_NAME_OWNER=self: the name holds this session's own container.
+        pathlib.Path(str(log) + '.collision-token').write_text(args[args.index('--label') + 1].split('=', 1)[1])
         sys.exit(125)
     if os.environ.get('FAKE_CREATE_FAILURE'):
         print('create failed', file=sys.stderr)
@@ -85,7 +87,9 @@ elif args[0] == 'create':
         str(int(Decimal(flag('--cpus')) * 10**9)), flag('--pids-limit'))))
     pause = os.environ.get('FAKE_CREATE_PAUSE')
     if pause != 'before':
-        pathlib.Path(args[args.index('--cidfile') + 1]).write_text('a' * 64 + '\n')
+        # FAKE_CID_CONTENT replaces the private creation record (escapes allowed).
+        cid = os.environ.get('FAKE_CID_CONTENT', 'a' * 64 + '\\n').encode().decode('unicode_escape')
+        pathlib.Path(args[args.index('--cidfile') + 1]).write_text(cid)
     if pause:
         pathlib.Path(str(log) + '.create-pid').write_text(str(os.getpid()))
         pathlib.Path(str(log) + '.creating').touch()
@@ -105,7 +109,11 @@ elif args[0] == 'inspect':
     if os.environ.get('FAKE_NETWORK') and args[-1] == 'b' * 64 and args[-2] == '{{json .HostConfig}}':
         print(os.environ.get('FAKE_PROXY_CONFIG', '{"PidsLimit":128,"Memory":268435456}'))
         sys.exit(0)
-    print(state.read_text() if state.exists() and args[-1] == 'a' * 64 else 'foreign-session')
+    owner = pathlib.Path(str(log) + '.collision-token')
+    if os.environ.get('FAKE_NAME_OWNER') == 'self' and owner.exists() and args[-1] != 'a' * 64:
+        print(owner.read_text())
+    else:
+        print(state.read_text() if state.exists() and args[-1] == 'a' * 64 else 'foreign-session')
 elif args[0] == 'exec' and os.environ.get('FAKE_NETWORK'):
     print(os.environ.get('FAKE_PROXY_EFFECTIVE', '{"pids":128,"memory":268435456,"capabilities":[0,0,0,0,0],"no_new_privs":1,"seccomp":2}'))
 elif args[:2] == ['container', 'exists']:

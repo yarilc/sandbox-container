@@ -372,7 +372,10 @@ class LauncherTests(unittest.TestCase):
             # The cidfile and the ownership label name the per-session directory.
             creates.append([a for i, a in enumerate(create) if i == 0 or create[i - 1] not in ('--cidfile', '--label')])
         self.assertEqual(creates[0], creates[1])
-        self.assertEqual(creates[0][-6:], ['--entrypoint', '/bin/bash', 'localhost/fixture-shell:latest',
+        self.assertEqual(creates[0][creates[0].index('--entrypoint'):creates[0].index('--entrypoint') + 2],
+                         ['--entrypoint', '/bin/bash'])
+        self.assertIn('CONTAINER_NAME=my-project-0', creates[0])
+        self.assertEqual(creates[0][-4:], ['localhost/fixture-shell:latest',
                                            '-c', 'echo "$0"', ''])
 
     def test_workspace_worktree_and_symlink(self):
@@ -978,7 +981,7 @@ class LauncherTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 143, stderr)
                 self.assertLess(time.monotonic() - started, 22)
                 self.assertIn('failed or timed out', stderr)
-                self.assertIn('interrupted creation could not be reconciled', stderr)
+                self.assertIn('creation outcome unresolved', stderr)
                 self.assertFalse(any(c[0] in ('rm', 'start') for c in self.calls()))
                 self.assertEqual(list(diagnostics.iterdir()), [])
                 self.assert_no_fake_client()
@@ -1124,6 +1127,33 @@ class LauncherTests(unittest.TestCase):
                     self.assertIn(f'{(root / relative).resolve()}:/fixture-shell-home/{relative}:ro', volumes)
                 self.assertFalse(any(v.endswith(':/fixture-shell-home:rw') for v in volumes))
                 self.assertFalse(any(v.endswith(':rw') and '/fixture-shell-home' in v for v in volumes))
+
+    def test_each_attempt_names_itself_and_reads_no_stdin(self):
+        result = self.run_wrapper(FAKE_NAMES='my-project-0', FAKE_COLLISION='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        creates = [c for c in self.calls() if c[0] == 'create']
+        self.assertEqual(len(creates), 2)
+        for create in creates:
+            self.assertIn('CONTAINER_NAME=' + create[create.index('--name') + 1], create)
+
+    def test_owned_name_behind_a_failed_create_is_not_a_collision(self):
+        result = self.run_wrapper(FAKE_COLLISION='1', FAKE_NAME_OWNER='self')
+        self.assertEqual(result.returncode, 125)
+        self.assertEqual(len([c for c in self.calls() if c[0] == 'create']), 1)
+        self.assertIn('creation outcome unresolved', result.stderr)
+
+    def test_creation_records_are_validated(self):
+        result = self.run_wrapper(FAKE_CID_CONTENT='b' * 64 + '\\n')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('inconsistent creation IDs', result.stderr)
+        self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+        for content in ('a' * 64 + '\\x00', 'a' * 64 + '\\n' + 'a' * 64, 'not-an-id'):
+            with self.subTest(content=content):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_CID_CONTENT=content, FAKE_CREATED_STATUS='19')
+                self.assertEqual(result.returncode, 19)
+                self.assertIn('invalid container ID in the private creation record', result.stderr)
+                self.assertFalse(any(c[0] == 'rm' for c in self.calls()))
 
     def test_healthy_build_and_session_outlive_shutdown_budget(self):
         started = time.monotonic()
@@ -1861,6 +1891,30 @@ class AgentProfileSettingsTests(unittest.TestCase):
                                         FIXTURE_AGENT_MAINTENANCE='1', FIXTURE_HOOK_BUILD_INPUTS=value)
                 self.assertEqual(result.returncode, 1)
                 self.assertIn('build input is not a file inside the installation', result.stderr)
+
+
+    def test_provider_session_starts_and_stops_the_proxy_with_the_selected_credential(self):
+        # U10: the selected policy profile's credential only; the proxy helper's start and stop.
+        wrapper = synthetic_install(self.base, AGENT_ROOT, AGENT_PROFILE.wrapper)
+        policy = wrapper.parent / 'agent/policies/default.json'
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(AGENT_ROOT / 'agent/policies/default.json', policy)
+        runtime = self.base / 'runtime'
+        runtime.mkdir(mode=0o700)
+        result = self.run_agent('--first', wrapper=wrapper, FIXTURE_AGENT_NETWORK='provider',
+                                FIXTURE_AGENT_NETWORK_PROFILE='fixture-api', FIXTURE_AGENT_NETWORK_POLICY=str(policy),
+                                FIXTURE_AGENT_NETWORK_RUNTIME_DIR=str(runtime), FIXTURE_AGENT_EGRESS_IMAGE='sha256:' + 'e' * 64,
+                                FIXTURE_API_KEY='key', FIXTURE_AGENT_ENV_VARS='FIXTURE_API_KEY OTHER_KEY',
+                                FAKE_NETWORK='1', FAKE_INFO='true linux true', CONTAINER_HOST='unix:///run/service.sock')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.engine_calls()]
+        agent = next(c for c in calls if c[0] == 'create' and not any('.egress=' in a for a in c))
+        env = self.environment_of(agent)
+        self.assertIn('FIXTURE_API_KEY', env)
+        self.assertIn('FIXTURE_PROVIDER_ONLY=1', env)
+        self.assertIn('FIXTURE_TELEMETRY=0', env)
+        self.assertTrue(any(c[0] == 'create' and any('.egress=' in a for a in c) for c in calls))
+        self.assertEqual(list(runtime.iterdir()), [])
 
 
 if __name__ == '__main__':
