@@ -134,7 +134,9 @@ The socket permits host mounts beyond the workspace. Worktree mode exposes the
 entire parent read/write.
 State directories must belong to the caller and deny group/other access.
 Unset @CONFIG_ENV@ when selecting an isolated home; no state is imported.
-Temporary /tmp, /run, and /var/tmp mounts are noexec, limited to 256/16/256 MiB.
+Temporary /tmp, /run and /var/tmp mounts, and the ephemeral home of sessions
+without a writable isolated home, are limited to 512/32/512/512 MiB and noexec;
+a profile may allow execution in /tmp and the home for native runtime parts.
 Host GNU timeout is required. Shutdown is bounded to 20 seconds, with at most
 5 seconds for graceful exit before forced owned-container removal. Cleanup
 failures are reported without changing the session or first signal status.
@@ -681,8 +683,55 @@ core_build_image() {
     fi
 }
 
+# Agent mounts (agent_mounts): read-only binds of existing host paths and small
+# private tmpfs mounts. Destinations may lie below the home but never equal or
+# contain the temporary mounts, the workspace, the toolchains, the home, the CA
+# file or another mount (M7); a tmpfs size is a plain amount with a unit.
+core_agent_mounts() {
+    local spec kind rest source destination size reserved
+    agent_mount_args=()
+    agent_mount_targets=()
+    call_hook agent_mounts "$network_mode" "$AGENT_HOME"
+    for spec in "${agent_mount_specs[@]}"; do
+        kind=${spec%%:*}
+        rest=${spec#*:}
+        case "$kind" in
+            ro) source=${rest%%:*}; destination=${rest#*:} ;;
+            tmpfs) destination=${rest%%:*}; size=${rest#*:} ;;
+            *) die "hook agent_mounts returned an unsupported mount: $spec" ;;
+        esac
+        [[ "$destination" == /?* && "$destination" != */ && "$destination" != *//* \
+            && "$destination" != *[:$'\n'$'\r']* && "/$destination/" != */../* ]] \
+            || die "hook agent_mounts returned an invalid destination: $spec"
+        for reserved in /tmp /var/tmp /run "$workspace_mount" /toolchains "$AGENT_HOME" "$AGENT_HOME/ca" \
+            "${agent_mount_targets[@]}"; do
+            [[ "$reserved/" != "$destination/"* ]] \
+                || die "hook agent_mounts returned a mount over $reserved: $spec"
+        done
+        if [[ "$kind" == ro ]]; then
+            [[ "$source" == /* && -e "$source" ]] || die "hook agent_mounts returned a missing source: $spec"
+            source=$(readlink -f -- "$source")
+            [[ "$source" != *[:$'\n'$'\r']* ]] || die "hook agent_mounts returned an invalid source: $spec"
+            agent_mount_args+=(--volume "$source:$destination:ro")
+        else
+            [[ "$size" =~ ^[1-9][0-9]{0,5}[kmgKMG]$ ]] || die "hook agent_mounts returned an invalid tmpfs size: $spec"
+            agent_mount_args+=(--tmpfs "$destination:rw,noexec,nosuid,nodev,mode=0700,U,size=$size")
+        fi
+        agent_mount_targets+=("$destination")
+    done
+}
+
 # Phase 5: toolchains, restricted preparation, image, container arguments, names.
 core_mounts_image() {
+    temporary_exec=noexec
+    ((AGENT_EXEC_TMP == 0)) || temporary_exec=exec
+    # A session without a writable isolated home gets an ephemeral tmpfs home
+    # below its shared or read-only state directories (U7).
+    home_mount=()
+    if [[ -z "$state_dir" ]] || ((readonly_state)); then
+        home_mount=(--tmpfs "$AGENT_HOME:rw,nosuid,nodev,$temporary_exec,size=512m,mode=1777")
+    fi
+    core_agent_mounts
     # The operator's toolchain library is mounted read-only; the shared module
     # checks it stays private and outside every writable mount and the installation,
     # and lists the default toolchains verified for this runtime recipe.
@@ -719,6 +768,9 @@ core_mounts_image() {
         network_inputs=(--installation "$script_dir" --writable "$workspace_mount"
             --mount-target "$workspace_mount" --mount-target "$AGENT_HOME")
         [[ -z "$toolchain_library" ]] || network_inputs+=(--mount-target /toolchains)
+        for core_path in "${agent_mount_targets[@]}"; do
+            network_inputs+=(--mount-target "$core_path")
+        done
         for core_path in "${writable_state[@]}"; do
             network_inputs+=(--writable "$core_path")
         done
@@ -759,15 +811,23 @@ core_mounts_image() {
         toolchain_env=(--env "PATH=$image_path$toolchain_path" "${toolchain_env[@]}")
     fi
 
+    # Every core bind passes the same path rule as agent mounts (M7).
+    for core_path in "$workspace_mount" "${writable_state[@]}" ${toolchain_library:+"$toolchain_library"} \
+        ${ca_bundle:+"$ca_bundle"} ${host_socket:+"$host_socket"}; do
+        [[ "$core_path" == /* && "$core_path" != *[:$'\n'$'\r']* ]] \
+            || die "bind paths must be absolute and contain no colon, CR or LF: $core_path"
+    done
     container_args=(
         --rm --interactive --read-only
         --userns=keep-id --user "$caller_uid:$caller_gid"
         --cap-drop=all --security-opt=no-new-privileges
         "${budget_args[@]}"
         --workdir "$workspace"
-        --tmpfs '/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'
-        --tmpfs '/run:rw,nosuid,nodev,noexec,size=16m'
-        --tmpfs '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'
+        # One temporary-storage layout (U7): /tmp and the ephemeral home allow
+        # execution only when the profile declares it; /var/tmp and /run never.
+        --tmpfs "/tmp:rw,nosuid,nodev,$temporary_exec,size=512m,mode=1777"
+        --tmpfs '/run:rw,nosuid,nodev,noexec,size=32m'
+        --tmpfs '/var/tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777'
         # Mask engine default mounts at /run/secrets (RHEL subscription secrets from
         # mounts.conf): Podman skips its own mount there, leaving an empty read-only
         # tmpfs that the guard accepts and that exposes no host material.
@@ -781,7 +841,9 @@ core_mounts_image() {
         --env "HOME=$AGENT_HOME"
         --env EDITOR=nano --env VISUAL=nano
         --volume "$workspace_mount:$workspace_mount:rw"
+        "${home_mount[@]}"
         "${state_mounts[@]}"
+        "${agent_mount_args[@]}"
     )
     if [[ -n "$toolchain_library" ]]; then
         container_args+=(--volume "$toolchain_library:/toolchains:ro,nosuid,nodev" "${toolchain_env[@]}")
@@ -798,9 +860,12 @@ core_mounts_image() {
         [[ -z "${TERM:-}" ]] || container_args+=(--env TERM)
     fi
     if ((podman_access)); then
+        # The nested Podman client keeps its storage in private tmpfs mounts (U12).
         container_args+=(
             --volume "$host_socket:/run/podman/podman.sock:rw"
             --env CONTAINER_HOST=unix:///run/podman/podman.sock
+            --tmpfs /var/lib/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=256m
+            --tmpfs /run/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=64m
         )
     else
         container_args+=(--unsetenv CONTAINER_HOST)

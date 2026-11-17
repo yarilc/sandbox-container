@@ -1472,10 +1472,17 @@ if args[0]=='snapshot':
                             self.assertEqual('--unsetenv' in create, service != '1')
                             self.assertNotIn('--read-only-tmpfs=false', create)
                             mounts = [create[i+1] for i, arg in enumerate(create) if arg == '--tmpfs']
-                            self.assertEqual(mounts, [
-                                '/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777',
-                                '/run:rw,nosuid,nodev,noexec,size=16m',
-                                '/var/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777'])
+                            # U7: one layout; the shared-state home is an ephemeral tmpfs;
+                            # delegation adds the nested Podman storage (U12).
+                            expected = ['/tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777',
+                                        '/run:rw,nosuid,nodev,noexec,size=32m',
+                                        '/var/tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777']
+                            if not isolated:
+                                expected.append('/fixture-shell-home:rw,nosuid,nodev,noexec,size=512m,mode=1777')
+                            if service == '1':
+                                expected += ['/var/lib/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=256m',
+                                             '/run/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=64m']
+                            self.assertEqual(mounts, expected)
                             self.assertIn(f'{self.project.parent}:{self.project.parent}:rw', create)
 
     def test_disabled_delegation_preserves_host_launch_endpoint(self):
@@ -1500,8 +1507,8 @@ if args[0]=='snapshot':
                 for variable in ('SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS'):
                     self.assertEqual(f'{variable}=/fixture-shell-home/ca/bundle.pem' in create, trust != '0')
                 self.assertEqual(f'{ca}:/fixture-shell-home/ca/bundle.pem:ro' in create, trust != '0')
-                self.assertIn('/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777', create)
-                self.assertIn('/run:rw,nosuid,nodev,noexec,size=16m', create)
+                self.assertIn('/tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777', create)
+                self.assertIn('/run:rw,nosuid,nodev,noexec,size=32m', create)
                 self.assertFalse(any(x.startswith(('--privileged', '--cap-add')) for x in create))
                 self.assertEqual([x for x in create if x.startswith('--security-opt')],
                                  ['--security-opt=no-new-privileges'])
@@ -1685,6 +1692,40 @@ class AgentProfileSettingsTests(unittest.TestCase):
         self.assertEqual([call[0] for call in calls], ['agent_validate'])
         self.assertEqual(calls[0][1], 'unrestricted')
         self.assertEqual(calls[0][2:], ['token=unset', 'container=unset'])
+
+
+    def session_create(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.engine_calls()]
+        return next(c for c in calls if c[0] == 'create')
+
+    def test_agent_mounts_are_validated_and_applied(self):
+        source = self.base / 'agents'
+        source.mkdir()
+        create = self.session_create(self.run_agent(
+            FIXTURE_AGENT_NETWORK='unrestricted',
+            FIXTURE_HOOK_MOUNTS=f'ro:{source}:/fixture-home/.agents tmpfs:/fixture-home/.npm:64M'))
+        self.assertIn(f'{source}:/fixture-home/.agents:ro', create)
+        self.assertIn('/fixture-home/.npm:rw,noexec,nosuid,nodev,mode=0700,U,size=64M', create)
+        refused = (f'rw:{source}:/fixture-home/.agents', f'ro:{source}:/tmp', f'ro:{source}:/fixture-home',
+                   f'ro:{source}:/', f'ro:{self.base}/missing:/fixture-home/.missing', 'tmpfs:/fixture-home/.npm:64M,exec',
+                   f'ro:{source}:relative', f'ro:{source}:/fixture-home/../etc',
+                   f'ro:{source}:/fixture-home/.a ro:{source}:/fixture-home/.a')
+        for spec in refused:
+            with self.subTest(spec=spec):
+                self.log.unlink(missing_ok=True)
+                result = self.run_agent(FIXTURE_AGENT_NETWORK='unrestricted', FIXTURE_HOOK_MOUNTS=spec)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('hook agent_mounts returned', result.stderr)
+                self.assertNotIn('create', [json.loads(line)[0] for line in self.engine_calls()])
+
+    def test_profile_may_allow_executable_temporary_storage(self):
+        create = self.session_create(self.run_agent(FIXTURE_AGENT_NETWORK='unrestricted'))
+        mounts = [create[i + 1] for i, arg in enumerate(create) if arg == '--tmpfs']
+        self.assertIn('/tmp:rw,nosuid,nodev,exec,size=512m,mode=1777', mounts)
+        self.assertIn('/var/tmp:rw,nosuid,nodev,noexec,size=512m,mode=1777', mounts)
+        self.assertIn('/run:rw,nosuid,nodev,noexec,size=32m', mounts)
+        self.assertIn('/fixture-home:rw,nosuid,nodev,exec,size=512m,mode=1777', mounts)
 
 
 if __name__ == '__main__':
