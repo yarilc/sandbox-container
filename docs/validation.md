@@ -2682,3 +2682,27 @@ rebuilt through the new build-only path: `localhost/sandbox-container:latest`
 | Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator-reported, 2026-11-17); `main` pushed, `sandbox-ref-22` tagged on the merge |
 
 The installed and qualified code changes: installations rerun `--container-setup`.
+
+## Shared test identifiers (`sandbox-ref-23`): 2026-11-17
+
+Change `fix-shared-test-identifiers`, found in Claude's adoption of `sandbox-ref-22`.
+
+- **Shared `tests/test_launcher.py`:** seven lines carried Claude identifiers
+  (`CLAUDE_YOLO`, `ANTHROPIC_BASE_URL`, an alias named `claude`) from the
+  reference's old `tests/test_wrapper.py`. They now use `OTHER_AGENT_YOLO`,
+  `OTHER_AGENT_BASE_URL` and `agent-alias`, with the same meaning.
+- **Shared `tests/test_alignment.py`:** a new case scans the shared files for the
+  identifiers of every wrapper checkout next to this one (only the `identifiers`
+  field of each `agent/profile.json` is read); without siblings it is skipped.
+
+| Check | Result |
+| --- | --- |
+| `claude-container` adopting `sandbox-ref-22`, `python3 -m unittest tests.test_alignment` | Failed as expected: `test_shared_components_contain_no_agent_identifiers` (7 lines of `tests/test_launcher.py`) |
+| New sibling check with host Python against the `sandbox-ref-22` `tests/test_launcher.py` (temporary, restored) | Failed as expected: the same 7 lines |
+| New sibling check with host Python after the fix | Passed |
+| New sibling check in a copy without sibling checkouts | Skipped: no sibling wrapper checkout |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs; no siblings visible) | Passed: 441 tests, 67 skipped |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 112 tests |
+| `git diff --check` | Passed |
+
+No installed code, image or profile changes: installations need no new setup.
