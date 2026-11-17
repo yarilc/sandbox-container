@@ -701,7 +701,7 @@ core_build_image() {
                 || die "cannot inspect image: $image"
             single_record image_hash "invalid image label response: $image"
             [[ "$image_hash" == "$build_hash" ]] \
-                || die "image $image is stale for the current build inputs; rebuild it with exact ${P}_MAINTENANCE=1 and --container-build"
+                || die "image $image is stale for the current build inputs (image ${image_hash:-unlabeled}, inputs $build_hash); rebuild it with exact ${P}_MAINTENANCE=1 and --container-build"
             return
         else
             image_status=$?

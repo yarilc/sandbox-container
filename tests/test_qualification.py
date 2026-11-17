@@ -516,7 +516,8 @@ class QualificationRuntime(unittest.TestCase):
         (self.install/'network').mkdir(mode=0o700)
         shutil.copyfile(REAL_ROOT/REAL_PROFILE.wrapper, self.install/REAL_PROFILE.wrapper)
         # The wrapper may read its recipe and declared agent files on every launch.
-        for relative in ('Containerfile', '.containerignore', *REAL_PROFILE.install_files):
+        for relative in ('Containerfile', '.containerignore', 'launcher/core.sh', 'agent/launcher.sh',
+                         *REAL_PROFILE.install_files):
             (self.install/relative).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             shutil.copyfile(REAL_ROOT/relative, self.install/relative)
         (self.install/'agent/policies').mkdir(mode=0o700, parents=True)

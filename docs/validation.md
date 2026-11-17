@@ -2633,3 +2633,52 @@ document.
 | Test map after regeneration | 488 of 488 cases mapped, 41 marked "shared (rewrite)"; four other shared test files listed |
 | `openspec validate define-launcher-contract --strict` | Passed (`skip_specs`) |
 | `git diff --check` | Passed |
+
+## Shared launcher core (change `implement-shared-launcher`): 2026-11-17
+
+`launcher/core.sh` implements `docs/launcher-contract.md` (decisions U1-U18,
+both reviews). `sandbox-container.sh` is the thin entry script and
+`agent/launcher.sh` the reference's profile data (shell profile, no hooks).
+Shared tests: `tests/test_launcher.py` (106 cases: the reference's launcher
+cases run through the fixture shell root, plus cases for the fixture agent part
+with every hook, provider mode included) on the shared fake engine
+`tests/fake_podman.py`; the reference's `tests/test_wrapper.py` keeps 6
+shell-profile cases. Shared Python: profile fields `native.exec` and
+`native.exec_tmp`, no `install.runtime_build`; installation, qualification
+identity, preflight and managed-launch trust lists include the core files; a
+missing mode follows the profile default; setup builds through the wrapper.
+`tools/propagate.py` adopts a shared directory that the new tag introduces.
+
+Findings during validation, fixed in this change:
+
+- The per-wrapper runtime fixtures (`test_network_runtime.py`, shared
+  `test_qualification.py`) copied installations without the core files.
+- `test_setup_runtime.py`'s engine shim answered every `image inspect` of the
+  prepared image with its ID, so the new freshness check read the ID as the
+  `build-inputs-hash` label; the shim now answers only `{{.Id}}`.
+- `test_runtime.py` asserted the old 256/16/256 MiB layout (U7).
+- `tests/run-runtime.sh --wrapper` now also runs `test_launcher.py`.
+
+Environment: WSL2 6.6.87.2, Podman server 4.9.3 (client 4.3.1), reference image
+rebuilt through the new build-only path: `localhost/sandbox-container:latest`
+`326bdf332f03`, `build-inputs-hash`
+`5fff7415583965f884f5d901b464c60c3766c73d4f313b57c06597eb5056d593`.
+
+| Check | Result |
+| --- | --- |
+| `--container-build` alone (real engine, maintenance) | Passed: built, labeled, no session container |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 440 tests, 66 skipped |
+| `bash tests/run-runtime.sh --setup` | Passed: 67 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed: 2 tests (after the shim fix) |
+| `bash tests/run-runtime.sh --qualification` | Passed: 29 tests, 1 skipped |
+| `bash tests/run-runtime.sh --guard` | Passed: 20 tests, 1 skipped |
+| `bash tests/run-runtime.sh --network` | Passed: 16 tests, 1 skipped |
+| `bash tests/run-runtime.sh --network-policy` | Passed: 15 tests |
+| `bash tests/run-runtime.sh --network-feasibility` | Passed: 1 test |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 112 tests (`test_launcher.py`, `test_wrapper.py`) |
+| `bash tests/run-runtime.sh` (`test_runtime.py`) | Passed: 19 tests |
+| `tools/propagate.py` dry run against a clone of `claude-container` (`sandbox-ref-21` to a temporary local tag) | Passed: adds `launcher/core.sh`, `tests/test_launcher.py`, `tests/fake_podman.py` and the fixture launcher parts; nothing "not adopted" |
+| `git diff --check`, `bash -n` on the entry script and core | Passed |
+| Operator `--container-setup` on the three hosts | Pending (operator) |
+
+The installed and qualified code changes: installations rerun `--container-setup`.
