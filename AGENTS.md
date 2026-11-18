@@ -84,8 +84,16 @@ SANDBOX_CONTAINER_NETWORK=unrestricted SANDBOX_CONTAINER_MAINTENANCE=1 ./sandbox
 SANDBOX_CONTAINER_NETWORK=unrestricted ./sandbox-container.sh
 SANDBOX_CONTAINER_NETWORK=unrestricted ./sandbox-container.sh -c 'git status'
 bash -n sandbox-container.sh             # Validate Bash syntax
+bash tools/shellcheck.sh .               # ShellCheck at warning level (also for a wrapper checkout)
 git diff --check                         # Detect whitespace errors
 ```
+
+Every tracked `*.sh` file, the shared `launcher/core.sh` and launcher fixtures
+included, passes `tools/shellcheck.sh` (pinned ShellCheck, warning level). A
+suppression is narrow and carries its reason: the core reads variables that
+`capture_response` assigns with `printf -v` under a `SC2154` directive naming
+it, and an agent part (`agent/launcher.sh`, the fixtures) starts with
+`# shellcheck shell=bash disable=SC2034,SC2154`.
 
 Configured launches require host Podman and its launch engine must verify as
 Linux and rootless. Unrestricted local use requires no API socket with delegation off; explicit same-host

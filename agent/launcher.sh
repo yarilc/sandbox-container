@@ -1,6 +1,9 @@
 # Agent part of the reference: profile data for the shared launcher core
 # (launcher/core.sh). It mirrors agent/profile.json; tests/test_alignment.py
 # compares the two. The reference shell has no hooks.
+# The core sources this file: it reads the AGENT_* data and hook outputs and
+# defines the core state the hooks read.
+# shellcheck shell=bash disable=SC2034,SC2154
 AGENT_NAME=sandbox-container
 AGENT_DISPLAY_NAME=Sandbox
 AGENT_WRAPPER=sandbox-container.sh

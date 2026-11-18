@@ -2771,3 +2771,47 @@ build-only path.
 The visible-socket branch is covered by the shared fake-engine cases; the real
 runs exercise the remapped branch. The installed launcher core and setup
 change: installations rerun `--container-setup`.
+
+## ShellCheck for the shared launcher files (`lint-shared-launcher-shellcheck`): 2026-11-18
+
+ShellCheck at warning level, checking each file alone, reported findings in the
+shared launcher files: in `launcher/core.sh` (no shell directive, variables
+assigned by `capture_response` with `printf -v` and the entry script's
+`wrapper_dir` seen as unassigned, an unquoted `exec` value, unquoted
+`--mount` and `--tmpfs` option lists in arrays) and in the launcher fixtures and
+`agent/launcher.sh` (no shell directive, data and hook outputs seen as unused).
+Pi's CI scans the whole tree, so the copied files fail it there.
+
+- **Core:** a `shell=bash` directive, a comment above `capture_response`,
+  `SC2154` directives naming `capture_response` on the nine commands that read
+  its targets and one naming the entry script for `wrapper_dir`, and quoting
+  (`'noexec'`, `'exec'`, the two `--mount` and two delegation `--tmpfs` option
+  lists). The diff changes only comments and quoting; the words passed to Podman
+  are identical.
+- **Agent parts:** the fixtures and `agent/launcher.sh` start with
+  `# shellcheck shell=bash disable=SC2034,SC2154`, as Pi's and OpenCode's do.
+- **Tool:** `tools/shellcheck.sh <checkout>` (reference-only) runs ShellCheck
+  0.11.0 (`docker.io/koalaman/shellcheck@sha256:b9389b73c8f26f710a7171cb7d8848a34a9c1e07a7865e727c9ec4ce99f9a83f`)
+  without network on every tracked `*.sh` file at warning level.
+
+No tag is taken for this change (user, 2026-11-18): the core is part of the
+qualified identity, so the next reference change that changes the core and
+takes a tag carries it, and the wrappers propagate and rerun setup once.
+
+| Check | Result |
+| --- | --- |
+| `bash tools/shellcheck.sh .` before the edits | Failed as expected: 96 findings in `launcher/core.sh` (14), the two fixtures (32, 25) and `agent/launcher.sh` (25) |
+| `bash tools/shellcheck.sh .` after the edits | Passed: no finding |
+| `python3 -m unittest tests.test_launcher tests.test_alignment tests.test_agent_profile` (disposable container, tests unchanged) | Passed: 145 tests, 3 skipped |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 113 tests |
+| `git diff --check` | Passed |
+
+Wrapper checkouts, checked with `tools/shellcheck.sh` without changes:
+
+| Wrapper | Shared files (fixed by the next tag) | Own `agent/launcher.sh` (fixed in its next adoption) |
+| --- | --- | --- |
+| Claude | core 14, fixtures 32 and 25 | 26 (SC2148, SC2034) |
+| Codex | core 14, fixtures 32 and 25 | 27 (SC2148, SC2034, one SC2154) |
+| Antigravity | core 14, fixtures 32 and 25 | 26 (SC2148, SC2034) |
+| Pi | core 14, fixtures 32 and 25 | none (directive present) |
+| OpenCode | core 14, fixtures 32 and 25 | none (directive present) |

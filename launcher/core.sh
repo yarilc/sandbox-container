@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared launcher core, sourced by every wrapper's thin entry script as
 #   source launcher/core.sh agent/launcher.sh "$@"
 # The entry script sets the shell options, WRAPPER_INVOKED (the invoked path),
@@ -42,6 +43,8 @@ single_record() {
 }
 
 # Keep final LF bytes while retaining the query's own exit status and stderr.
+# ShellCheck cannot see this assignment: a variable it sets is read with a
+# SC2154 directive naming capture_response.
 capture_response() {
     local destination=$1 captured query_status
     shift
@@ -239,6 +242,7 @@ core_arguments() {
     if [[ "${1:-}" == --container-toolchain ]]; then
         [[ "${2:-}" != launch-env ]] || die 'usage: --container-toolchain add <recipe.json> | list | remove <name> | verify [<name>]'
         command -v python3 >/dev/null || die 'host Python 3 is required for the toolchain library'
+        # shellcheck disable=SC2154 # wrapper_dir is set by the entry script.
         exec python3 -I "$wrapper_dir/setup/toolchains.py" "${@:2}"
     fi
     for arg in "$@"; do
@@ -465,6 +469,7 @@ core_engine() {
         || die 'cannot query Podman; check the local rootless service'
     single_record runtime_info 'invalid Podman engine response: expected one record with at most one final LF'
     local rootless runtime_os extra
+    # shellcheck disable=SC2154 # set by capture_response
     read -r rootless runtime_os remote extra <<< "$runtime_info"
     [[ "$rootless" == true && "$runtime_os" == linux && "$remote" =~ ^(true|false)$ && -z "$extra" ]] \
         || die 'a verified Linux rootless Podman engine is required (unexpected engine response)'
@@ -483,6 +488,7 @@ core_engine_session() {
     capture_response cgroup_controllers engine info --format '{{.Host.CgroupControllers}}' \
         || die 'cannot query the rootless cgroup controllers'
     single_record cgroup_controllers 'unverifiable cgroup controller list from the Podman engine'
+    # shellcheck disable=SC2154 # set by capture_response
     [[ "$cgroup_controllers" =~ ^\[([a-z_]+( [a-z_]+)*)?\]$ ]] \
         || die 'unverifiable cgroup controller list from the Podman engine'
     controller_delegated() {
@@ -716,6 +722,7 @@ core_build_image() {
             capture_response image_hash engine image inspect --format '{{index .Labels "build-inputs-hash"}}' "$image" \
                 || die "cannot inspect image: $image"
             single_record image_hash "invalid image label response: $image"
+            # shellcheck disable=SC2154 # set by capture_response
             [[ "$image_hash" == "$build_hash" ]] \
                 || die "image $image is stale for the current build inputs (image ${image_hash:-unlabeled}, inputs $build_hash); rebuild it with exact ${P}_MAINTENANCE=1 and --container-build"
             return
@@ -921,8 +928,8 @@ core_application() {
 
 # Phase 5: toolchains, restricted preparation, image, container arguments, names.
 core_mounts_image() {
-    temporary_exec=noexec
-    ((AGENT_EXEC_TMP == 0)) || temporary_exec=exec
+    temporary_exec='noexec'
+    ((AGENT_EXEC_TMP == 0)) || temporary_exec='exec'
     # A session without a writable isolated home gets an ephemeral tmpfs home
     # below its shared or read-only state directories (U7).
     home_mount=()
@@ -976,12 +983,14 @@ core_mounts_image() {
             network_inputs+=(--policy "$cfg_NETWORK_POLICY" --profile "$cfg_NETWORK_PROFILE"
                 --proxy-image "$cfg_EGRESS_IMAGE" --runtime "$cfg_NETWORK_RUNTIME_DIR")
         fi
+        # shellcheck disable=SC2154 # set by capture_response
         prepare_inputs=(--mode "$network_mode" --server-version "${network_version%$'\n'}"
             --backend "${network_backend%$'\n'}" --endpoint "${CONTAINER_HOST:-}" --engine "$runtime_info")
         if ((qualification_probe)); then
             prepare_inputs+=(--probe --qualification-input "${cfg_QUALIFICATION_INPUT:-}"
                 --workspace "$workspace")
         fi
+        # shellcheck disable=SC2154 # set by capture_response
         prepared=$(printf '%s' "$network_platform" | "${session_helper[@]}" prepare "${network_inputs[@]}" "${prepare_inputs[@]}")
         read -r guard_digest qualification_token qualification_tls <<< "$prepared"
         if ((qualification_probe)); then
@@ -1010,6 +1019,7 @@ core_mounts_image() {
         capture_response runtime_image_id engine image inspect --format '{{.Id}}' "$image" \
             || die 'cannot resolve restricted runtime image identity'
         single_record runtime_image_id 'invalid restricted runtime image identity'
+        # shellcheck disable=SC2154 # set by capture_response
         [[ "$runtime_image_id" =~ ^(sha256:)?[a-f0-9]{64}$ ]] || die 'invalid restricted runtime image identity'
         image=$runtime_image_id
     fi
@@ -1019,6 +1029,7 @@ core_mounts_image() {
         capture_response image_environment engine image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" \
             || die 'cannot inspect the runtime image environment'
         image_path=''
+        # shellcheck disable=SC2154 # set by capture_response
         while IFS= read -r image_variable; do
             [[ "$image_variable" != PATH=* ]] || { image_path=${image_variable#PATH=}; break; }
         done <<<"$image_environment"
@@ -1046,13 +1057,13 @@ core_mounts_image() {
         # Mask engine default mounts at /run/secrets (RHEL subscription secrets from
         # mounts.conf): Podman skips its own mount there, leaving an empty read-only
         # tmpfs that the guard accepts and that exposes no host material.
-        --mount type=tmpfs,destination=/run/secrets,ro=true
+        --mount 'type=tmpfs,destination=/run/secrets,ro=true'
         # Podman forces /dev read-only with --read-only-tmpfs=false, and crun >= 1.27
         # must replace /dev/console to attach a terminal, so automatic provisioning
         # stays on. /dev and /dev/pts are left to the engine: an explicit /dev/pts mount
         # gets ptmxmode=000 (Podman rejects the option), so no pseudo-terminal could
         # be opened. Only /dev/shm is overridden, with an empty read-only tmpfs.
-        --mount type=tmpfs,destination=/dev/shm,ro=true
+        --mount 'type=tmpfs,destination=/dev/shm,ro=true'
         --volume "$workspace_mount:$workspace_mount:rw"
         "${home_mount[@]}"
         "${state_mounts[@]}"
@@ -1067,8 +1078,8 @@ core_mounts_image() {
         # The nested Podman client keeps its storage in private tmpfs mounts (U12).
         container_args+=(
             --volume "$host_socket:/run/podman/podman.sock:rw"
-            --tmpfs /var/lib/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=256m
-            --tmpfs /run/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=64m
+            --tmpfs '/var/lib/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=256m'
+            --tmpfs '/run/containers:rw,noexec,nosuid,nodev,mode=0700,U,size=64m'
         )
     fi
     ((trust_host_ca == 0)) || container_args+=(--volume "$ca_bundle:$AGENT_HOME/ca/bundle.pem:ro")
@@ -1417,6 +1428,7 @@ core_create_start() {
     capture_response configured_budgets engine inspect --type container \
         --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$container_id" \
         || die 'cannot inspect agent resource budgets; agent not started'
+    # shellcheck disable=SC2154 # set by capture_response
     read -r configured_memory configured_cpu configured_pids extra <<< "${configured_budgets%$'\n'}"
     budgets_applied=0
     if [[ -z "${extra:-}" && "$configured_memory" == "$expected_memory" && "$configured_cpu" == "$expected_cpu" ]]; then

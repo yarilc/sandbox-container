@@ -362,7 +362,11 @@ and every documented command are unchanged.
 ### Profile data in `agent/launcher.sh`
 
 Plain Bash assignments, no logic. A shared alignment test loads the file in a
-clean Bash and compares each value with `agent/profile.json`.
+clean Bash and compares each value with `agent/profile.json`. The file starts
+with `# shellcheck shell=bash disable=SC2034,SC2154`: the core sources it, reads
+its data and hook outputs, and defines the core state the hooks read, which
+ShellCheck cannot see when it checks the file alone
+(`lint-shared-launcher-shellcheck`).
 
 | Variable | Profile source |
 | --- | --- |
