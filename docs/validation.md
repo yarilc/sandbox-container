@@ -2766,7 +2766,7 @@ build-only path.
 | `bash tests/run-runtime.sh --setup` | Passed: 67 tests |
 | `bash tests/run-runtime.sh` (`test_runtime.py`, real delegated child containers from the runner, whose remapped socket path is not visible to the wrapper) | Passed: 19 tests |
 | `git diff --check` | Passed |
-| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed (operator, 2026-11-18) |
 
 The visible-socket branch is covered by the shared fake-engine cases; the real
 runs exercise the remapped branch. The installed launcher core and setup

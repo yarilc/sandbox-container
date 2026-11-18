@@ -110,7 +110,7 @@ Wrapper help and README SHALL document exact `SANDBOX_CONTAINER_PODMAN=1`, the d
 - **AND** the mandatory launch-engine check is distinguished from optional delegation verification
 
 ### Requirement: Exposed Podman service must report rootless operation
-With API access enabled, the wrapper SHALL explicitly query the selected Unix endpoint and require successful rootless `true` and an absolute service-reported host socket path. Query failure or an invalid result SHALL fail before image operations or launch with an actionable error identifying the endpoint. The host-side path SHALL be the bind source exposed at `/run/podman/podman.sock`.
+With API access enabled, the wrapper SHALL explicitly query the selected Unix endpoint and require successful rootless `true` and an absolute service-reported host socket path. The host socket path, after removing a `unix://` prefix, SHALL NOT consist only of slash characters. When that path exists in the wrapper's own filesystem namespace, it SHALL be a Unix socket. Query failure or an invalid result SHALL fail before image operations or launch with an actionable error identifying the endpoint. The host-side path SHALL be the bind source exposed at `/run/podman/podman.sock`. Guided setup SHALL apply the same checks when it verifies the endpoint.
 
 #### Scenario: Rootless service is verified
 - **GIVEN** the selected Unix socket exists and its service reports rootless `true` and an absolute host socket path
@@ -148,12 +148,25 @@ With API access enabled, the wrapper SHALL explicitly query the selected Unix en
 
 #### Scenario: Socket is remapped in the wrapper container
 - **GIVEN** the wrapper reaches a same-host service through a remapped Unix path
-- **WHEN** the selected endpoint reports a different absolute host-side socket path
+- **WHEN** the selected endpoint reports a different absolute host-side socket path that does not exist in the wrapper's namespace
 - **THEN** the outer launch binds that host-side path rather than the client-visible path
+- **AND** the documentation states that the service's answer is trusted in this case
 
 #### Scenario: Host socket path is invalid
 - **WHEN** an enabled delegation endpoint reports rootless `true` but a missing or relative host socket path
 - **THEN** startup fails before image operations with a socket-specific diagnostic
+
+#### Scenario: Host socket path is the root directory
+- **WHEN** an enabled delegation endpoint reports `/`, `//` or `unix:///` as its host socket path
+- **THEN** startup fails before image operations with a socket-specific diagnostic, and the host root is never mounted
+
+#### Scenario: Host socket path is not a socket
+- **WHEN** an enabled delegation endpoint reports a host socket path that exists in the wrapper's namespace as a directory, a regular file or another non-socket
+- **THEN** startup fails before image operations naming the reported path, and nothing is mounted from it
+
+#### Scenario: Setup verifies the same rule
+- **WHEN** guided setup verifies an endpoint whose service reports a slash-only path or an existing non-socket path
+- **THEN** setup reports that the endpoint did not report a usable host socket and does not save it
 
 ### Requirement: Delegation endpoint selection
 When delegation is enabled, the wrapper SHALL select a nonempty `SANDBOX_CONTAINER_PODMAN_SOCKET` first, then an explicit Unix `CONTAINER_HOST`, then `${XDG_RUNTIME_DIR:-/run/user/<caller-uid>}/podman/podman.sock`. It SHALL require an absolute accessible socket path and resolve its physical path. Selection SHALL NOT retarget the engine used to launch the outer container.
