@@ -40,7 +40,7 @@ Antigravity's old launcher refused a reported path made only of slashes; the cor
 
 4. **Documentation and tag.** `docs/launcher-contract.md` adds the rule to the phase 3-4 delegation row and the core rules, naming the remapped limit; `docs/launcher-test-map.md` maps Antigravity's `test_complete_socket_response_required` to the new shared case; `docs/validation.md` records the run. The merge is tagged `sandbox-ref-25` after the operator's setup on the three hosts, as for `sandbox-ref-24`.
 
-5. **Validation scope.** The core and setup change, so: the extended cases against the current core (expected to fail), then after the fix `tests.test_launcher`, `tests.test_wrapper`, `tests.test_alignment` and `tests.test_setup`; the unit discovery; `bash tests/run-runtime.sh --wrapper`, `--setup` and the default runtime run (its real delegated child-container and remapped-socket cases exercise both branches against a real service); `git diff --check`.
+5. **Validation scope.** The core and setup change, so: the extended cases against the current core (expected to fail), then after the fix `tests.test_launcher`, `tests.test_wrapper`, `tests.test_alignment` and `tests.test_setup`; the unit discovery; `bash tests/run-runtime.sh --wrapper`, `--setup` and the default runtime run (its real delegated child containers run from the runner container, whose remapped socket path the wrapper cannot see, so they exercise that branch against a real service; the visible-socket branch is covered by the shared fake-engine cases); `git diff --check`.
 
 ## Risks / Trade-offs
 

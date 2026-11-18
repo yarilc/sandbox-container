@@ -168,7 +168,7 @@ differs.
 | Launch engine check (rootless, Linux, `ServiceIsRemote` true or false, remote only with explicit `unix://`) | whole-string compare | as S | field parse, extra field refused | regex | regex | field parse | same: field parse with extra fields refused (X, P) | - |
 | Cgroup controllers, budget flags, notices for unenforced budgets | yes | yes | yes | yes | yes | yes | same | - |
 | Restricted modes: host Python, same-host service, backend, version, platform queries; probe needs restricted | yes | yes | yes | yes | yes | yes | same | - |
-| Podman delegation socket: override, `unix://` `CONTAINER_HOST`, XDG default; resolved; rootless and host path from the service | yes | yes | yes, clearer messages | yes, regex | yes | yes | same: resolve before the access check (X, O, P) | - |
+| Podman delegation socket: override, `unix://` `CONTAINER_HOST`, XDG default; resolved; rootless and host path from the service | yes | yes | yes, clearer messages | yes, regex | yes | yes | same: resolve before the access check (X, O, P); the reported host path is never slash-only and, when visible to the wrapper, must be a socket (`verify-delegated-socket-path`) | - |
 | `STATE_DIR` lexical check (absolute, no colon, CR or LF) before the engine | no | no | no | yes | yes | yes | union | - |
 | `STATE_DIR` must not overlap the workspace (physical paths) | `readlink -m` | as S | as S | parent-aware resolution | as A | as A | same: parent-aware resolution (A, O, P) | - |
 | Private directory rule (owner, `077` clear, created with `umask 077`, never repaired) | `private_directory` | as S | `private_state` with per-variable hints | `validate_private` | `check_private_dir` | `validate_state` | same: one function, X's messages | - |
@@ -494,6 +494,13 @@ size.
   warnings name the proxy ID when one exists (C); an unresolvable `HOME` falls
   back to its lexical path (S, not P's stop); `PI_DEBUG` output is dropped
   except what `agent_validate` prints.
+- **Reported delegation socket (`verify-delegated-socket-path`, `sandbox-ref-25`).**
+  The service's `Host.RemoteSocket.Path`, after removing `unix://`, must be
+  absolute and not consist only of slashes. When that path exists in the
+  wrapper's own namespace (`-e` or a dangling link), it must be a Unix socket
+  (`-S`, following links). A path the wrapper cannot see is accepted: it is the
+  remapped socket of a wrapper that runs in a container, and the service's
+  answer is trusted there. Guided setup applies the same rule.
 - **Engine query timeouts (M8).** Every read-only engine query (`info`,
   `version`, `ps`, `image exists`, `image inspect`, `container exists`,
   `inspect`, the delegation socket query) runs under `timeout --kill-after=1s

@@ -290,7 +290,7 @@ against the new core, and every lost behavior becomes a shared case through the 
 | A | `test_socket_engine_must_be_rootless` | 3-4 | shared (duplicate) | duplicate of S | as the duplicated case |
 | A | `test_rootful_and_remote_rejected_local_unix_accepted` | 3-4 | shared (duplicate) | duplicate of S | as the duplicated case |
 | A | `test_exact_delegation_cli_and_shell` | 3-4 | shared |  | `test_delegation_only_follows_the_exact_opt_in` (to verify at adoption) |
-| A | `test_complete_socket_response_required` | 3-4 | shared |  | `test_socket_only_required_when_enabled` (to verify at adoption) |
+| A | `test_complete_socket_response_required` | 3-4 | shared | slash-only host path: lost behavior, fixed in `verify-delegated-socket-path` | `test_socket_only_required_when_enabled`, `test_reported_host_socket_must_be_a_socket_when_visible` |
 | A | `test_inaccessible_socket_rejected` | 3-4 | shared |  | `test_socket_precedence_and_remapping` (to verify at adoption) |
 | A | `test_podman5_socket_url_is_reduced_to_its_path` | 3-4 | shared (duplicate) | duplicate of X | as the duplicated case |
 | A | `test_socket_selection_canonicalization_and_host_remapping` | 3-4 | shared |  | `test_socket_precedence_and_remapping` (to verify at adoption) |
