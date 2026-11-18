@@ -2734,3 +2734,40 @@ Change `fix-inaccessible-state-diagnostic`, found in Codex's adoption of
 | Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Passed |
 
 The installed launcher core changes: installations rerun `--container-setup`.
+
+## Delegated socket path (`sandbox-ref-25`): 2026-11-18
+
+Change `verify-delegated-socket-path`, from the Antigravity adoption's old case
+`test_complete_socket_response_required` (`true /`), which the user first
+classified as a visible change and then chose to fix (2026-11-17).
+
+- **Core and setup:** the host socket path reported by the delegated service,
+  after removing `unix://`, must not consist only of slashes; when the path
+  exists in the wrapper's own namespace (or is a dangling link) it must be a
+  Unix socket. A path the wrapper cannot see is accepted as the remapped socket
+  of a containerized wrapper, where the service's answer stays trusted.
+- **Shared tests:** `test_reported_host_socket_must_be_a_socket_when_visible`
+  in `tests/test_launcher.py` (`/`, `//`, `unix:///`, a directory, a regular
+  file and a dangling link refused, with and without `--container-build`; the
+  socket, a link to it and an invisible path accepted), and the extended
+  `test_socket_validation_rejects_rootful_and_cr_responses` in
+  `tests/test_setup.py`.
+
+Environment: WSL2 6.6.87.2, Podman server 4.9.3; image
+`localhost/sandbox-container:latest` `dfa6df506165`, rebuilt through the
+build-only path.
+
+| Check | Result |
+| --- | --- |
+| New shared cases against the previous core and setup | Failed as expected: 12 launcher refusal subtests and the setup case; the accepted subtests passed |
+| `python3 -m unittest tests.test_launcher tests.test_wrapper tests.test_alignment tests.test_setup` | Passed: 197 tests, 1 skipped |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed: 442 tests, 67 skipped |
+| `bash tests/run-runtime.sh --wrapper` | Passed: 113 tests |
+| `bash tests/run-runtime.sh --setup` | Passed: 67 tests |
+| `bash tests/run-runtime.sh` (`test_runtime.py`, real delegated child containers from the runner, whose remapped socket path is not visible to the wrapper) | Passed: 19 tests |
+| `git diff --check` | Passed |
+| Operator `--container-setup` on this host, the Rocky Linux 9 lab host and the newer WSL host | Pending (operator) |
+
+The visible-socket branch is covered by the shared fake-engine cases; the real
+runs exercise the remapped branch. The installed launcher core and setup
+change: installations rerun `--container-setup`.

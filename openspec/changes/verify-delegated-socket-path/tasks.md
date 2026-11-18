@@ -11,8 +11,8 @@
 
 ## 3. Validation and integration
 
-- [ ] 3.1 Run the unit discovery in the disposable test container, `bash tests/run-runtime.sh --wrapper`, `--setup` and the default runtime run, and `git diff --check` (design decision 5). Verify that all pass.
-- [ ] 3.2 Add the section "Delegated socket path (`sandbox-ref-25`)" to `docs/validation.md` with every result, the operator setup marked pending. Commit, merge into `main`, and verify that `openspec validate verify-delegated-socket-path` passes.
+- [x] 3.1 Run the unit discovery in the disposable test container, `bash tests/run-runtime.sh --wrapper`, `--setup` and the default runtime run, and `git diff --check` (design decision 5). Verify that all pass.
+- [x] 3.2 Add the section "Delegated socket path (`sandbox-ref-25`)" to `docs/validation.md` with every result, the operator setup marked pending. Commit, merge into `main`, and verify that `openspec validate verify-delegated-socket-path` passes.
 
 ## Workflow follow-up
 
