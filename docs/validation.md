@@ -2472,7 +2472,7 @@ the shell.
   in `~/.config/sandbox-container` (or the isolated home); the wrapper sets
   `HISTFILE` after the toolchain environment.
 - **Image:** same pinned `node:22-bookworm-slim` base and HTTPS apt block as the
-  agent wrappers, `@fission-ai/openspec@1.16.0`, no agent CLI, `bash` entrypoint.
+  agent wrappers, `@fission-ai/openspec@2.0.0`, no agent CLI, `bash` entrypoint.
 - **Shared code:** profiles may declare no authentication method and no
   approval bypass; such a policy has no profiles; session helper, setup and
   qualification refuse provider mode for them; setup offers only offline and
@@ -2815,3 +2815,48 @@ Wrapper checkouts, checked with `tools/shellcheck.sh` without changes:
 | Antigravity | core 14, fixtures 32 and 25 | 26 (SC2148, SC2034) |
 | Pi | core 14, fixtures 32 and 25 | none (directive present) |
 | OpenCode | core 14, fixtures 32 and 25 | none (directive present) |
+
+## OpenSpec 2.0.0 image pin (2026-11-18)
+
+Change `pin-openspec-2-0-0` uses the newest stable release that was at least
+72 hours old on 2026-11-18. The base image remains
+`node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da`.
+The maintenance build continued to fetch Debian packages over HTTPS.
+
+| Runtime image | Image ID | `openspec --version` |
+| --- | --- | --- |
+| Before | `dfa6df5061659650b0aaaee6360125ccd5a44b3d00be2fa0be46b8fb3ef12cb2` | `1.16.0` |
+| After | `5c1c2084fe24c9bfae5d48e9960ec7453d73c9734fd2a52925ef7d18cbf14925` | `2.0.0` |
+
+Validation used WSL2 6.6.87.2 x86_64, the Podman 4.3.1 client, and the rootless
+Podman 4.9.3 server on a same-host Unix socket. The guard suites used the prepared
+toolchain image `a33a4e7a708555af127d04f788dc341decf4402077064deb64bb345720365654`.
+
+The 1.16.0 image created `.config/openspec/config.json` in a private test home.
+The 2.0.0 image reused that home through a locally qualified offline installation
+with guard `abi3-seccomp-mux-v1`. In a temporary project, `openspec init --tools
+none`, `openspec new change`, `openspec validate --all --strict --json`, and
+`openspec list --json` passed. The temporary change declared `skip_specs: true`
+for validation. The guard log reported no network attempt, and the file names
+and checksums in `.config/openspec` matched before and after.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest discover -s tests -p test_image_pins.py` | Passed all 6 tests on both images' recipes |
+| `tests/image-smoke.sh` through wrapper shell mode | Passed with OpenSpec 2.0.0 and HTTPS Debian sources |
+| `python3 -m unittest discover -s tests` (disposable container, private executable tmpfs) | Passed, 442 cases with 69 skips |
+| `bash tests/run-runtime.sh --wrapper` | Passed all 113 tests |
+| `bash tests/run-runtime.sh --setup` | Passed all 67 tests |
+| `bash tests/run-runtime.sh --setup-runtime` | Passed both tests |
+| `bash tests/run-runtime.sh` | Passed all 19 tests on the serial rerun |
+| `bash tests/run-runtime.sh --network-feasibility` | Passed |
+| `bash tests/run-runtime.sh --network-policy` | Passed all 15 tests |
+| `bash tests/run-runtime.sh --network` | Passed, 16 cases with the opt-in toolchain downloads skipped |
+| `bash tests/run-runtime.sh --qualification` | Passed, 29 cases with the provider-only TLS stage skipped |
+| `bash tests/run-runtime.sh --guard` | Passed, 20 cases with the separately enabled 305-second idle check skipped |
+| `bash tools/shellcheck.sh .` and `git diff --check` | Passed |
+| `openspec validate pin-openspec-2-0-0 --strict` (planning CLI 1.16.0) | Passed |
+
+The first runtime run overlapped the guard suite. Podman removal timed out
+during the shared-state `TERM` subcase of the shutdown test. Test cleanup
+subsequently removed the container.

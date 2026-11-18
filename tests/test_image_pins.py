@@ -130,7 +130,7 @@ class ImagePinTests(unittest.TestCase):
                                                   '@fission-ai/openspec@latest'),
             'unversioned package': self.recipe.replace('"@fission-ai/openspec@${OPENSPEC_VERSION}"',
                                                        '@fission-ai/openspec'),
-            'version range': self.recipe.replace('ARG OPENSPEC_VERSION=1.16.0', 'ARG OPENSPEC_VERSION=^1.16.0'),
+            'version range': self.recipe.replace('ARG OPENSPEC_VERSION=2.0.0', 'ARG OPENSPEC_VERSION=^2.0.0'),
             'agent cli': self.recipe.replace('"@fission-ai/openspec@${OPENSPEC_VERSION}"',
                                              '"@fission-ai/openspec@${OPENSPEC_VERSION}" @anthropic-ai/claude-code@2.1.316'),
         }
