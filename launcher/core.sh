@@ -163,11 +163,15 @@ New Unix services are unavailable; fixed-peer pairs may have private inert names
 See network/README.md for packaging and docs/validation.md for measured evidence.
 Every session container, in all modes including delegation, drops all
 capabilities, enables no-new-privileges and receives the memory, CPU and process
-budgets whose cgroup v2 controller the rootless engine delegates; a budget whose
-controller is missing is not enforced and a notice names it. The created
-configuration is checked before the session starts; a delegated limit that
-is ignored stops startup. Without memory or process budgets a session can exhaust
-host memory or processes for your user.
+budgets whose cgroup v2 controller the rootless engine delegates (only with the
+systemd cgroup manager; cgroupfs delegates none); a budget whose controller is
+not delegated is not enforced and a notice names why. Without pids, the
+process budget falls back to a per-session process rlimit when the engine kernel
+is Linux 5.14 or later; container startup uses a few of those tasks. Memory and
+CPU have no fallback. The created configuration is checked before the session
+starts; a delegated limit or fallback that is ignored stops startup. Without
+memory or process budgets a session can exhaust host memory or processes for
+your user.
 Budgets and tmpfs sizes do not limit workspace or state storage growth.
 The workspace mount (the parent in worktree mode) must not be /, your home,
 /home, /root, /etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt, /srv,
@@ -481,6 +485,29 @@ core_engine() {
     core_engine_delegation
 }
 
+# Mechanism enforcing a process budget: the pids cgroup controller, the process
+# rlimit (Linux 5.14 and later count it per user namespace, and keep-id gives each
+# container its own), or none. Sets process_budget and, for none, process_reason.
+# network/agent_budgets.py (process_mechanism, fallback_reason) is the same rule.
+process_budget_rule() {
+    local controllers=$1 kernel=$2
+    local pattern='^([0-9]{1,4})\.([0-9]{1,4})([-.+_~][0-9A-Za-z._+~-]*)?$'
+    process_reason=''
+    if [[ " ${controllers:1:${#controllers}-2} " == *" pids "* ]]; then
+        process_budget=cgroup
+    elif [[ "$kernel" =~ $pattern ]]; then
+        if ((10#${BASH_REMATCH[1]} > 5 || (10#${BASH_REMATCH[1]} == 5 && 10#${BASH_REMATCH[2]} >= 14))); then
+            process_budget=rlimit
+        else
+            process_budget=none
+            process_reason="kernel $kernel counts the process rlimit per user, not per container (Linux 5.14 or later is required)"
+        fi
+    else
+        process_budget=none
+        process_reason='unrecognized kernel version'
+    fi
+}
+
 core_engine_session() {
     # A budget is enforced only when the verified engine reports its cgroup v2
     # controller as delegated. Unenforced budgets are not requested, are announced,
@@ -491,8 +518,25 @@ core_engine_session() {
     # shellcheck disable=SC2154 # set by capture_response
     [[ "$cgroup_controllers" =~ ^\[([a-z_]+( [a-z_]+)*)?\]$ ]] \
         || die 'unverifiable cgroup controller list from the Podman engine'
+    # A rootless engine applies cgroup limits only through the systemd manager:
+    # cgroupfs may report every controller and ignore the limits (Podman machine
+    # on WSL), so it delegates none (network/agent_budgets.py delegated()).
+    capture_response cgroup_manager engine info --format '{{.Host.CgroupManager}}' \
+        || die 'cannot query the rootless cgroup manager'
+    single_record cgroup_manager 'unverifiable cgroup manager from the Podman engine'
+    # shellcheck disable=SC2154 # set by capture_response
+    [[ "$cgroup_manager" =~ ^[a-z]{1,32}$ ]] || die 'unverifiable cgroup manager from the Podman engine'
+    delegated_controllers=$cgroup_controllers
+    [[ "$cgroup_manager" == systemd ]] || delegated_controllers='[]'
     controller_delegated() {
-        [[ " ${cgroup_controllers:1:${#cgroup_controllers}-2} " == *" $1 "* ]]
+        [[ " ${delegated_controllers:1:${#delegated_controllers}-2} " == *" $1 "* ]]
+    }
+    cgroup_reason() {
+        if [[ "$cgroup_manager" == systemd ]]; then
+            printf 'cgroup controller %s is not delegated to the rootless engine' "$1"
+        else
+            printf 'the rootless engine uses the %s cgroup manager, which applies no cgroup limits' "$cgroup_manager"
+        fi
     }
     budget_args=()
     expected_memory=0
@@ -502,22 +546,35 @@ core_engine_session() {
         budget_args+=("--memory=$memory_bytes")
         expected_memory=$memory_bytes
     else
-        printf '%s: agent memory budget not enforced: cgroup controller memory is not delegated to the rootless engine\n' "$AGENT_NAME" >&2
+        printf '%s: agent memory budget not enforced: %s\n' "$AGENT_NAME" "$(cgroup_reason memory)" >&2
     fi
     if controller_delegated cpu; then
         budget_args+=("--cpus=$cpu_text")
         expected_cpu=$cpu_nano
     else
-        printf '%s: agent CPU budget not enforced: cgroup controller cpu is not delegated to the rootless engine\n' "$AGENT_NAME" >&2
+        printf '%s: agent CPU budget not enforced: %s\n' "$AGENT_NAME" "$(cgroup_reason cpu)" >&2
     fi
-    if controller_delegated pids; then
-        budget_args+=("--pids-limit=$pids_limit")
-        pids_enforced=1
-    else
-        # Override any containers.conf default that would request the missing controller.
-        budget_args+=(--pids-limit=-1)
-        printf '%s: agent process budget not enforced: cgroup controller pids is not delegated to the rootless engine\n' "$AGENT_NAME" >&2
-    fi
+    # The counting semantics of the process rlimit belong to the engine host's kernel.
+    capture_response engine_kernel engine info --format '{{.Host.Kernel}}' \
+        || die 'cannot query the engine kernel version'
+    single_record engine_kernel 'invalid engine kernel version response'
+    # shellcheck disable=SC2154 # set by capture_response
+    process_budget_rule "$delegated_controllers" "$engine_kernel"
+    case "$process_budget" in
+        cgroup)
+            budget_args+=("--pids-limit=$pids_limit")
+            pids_enforced=1
+            ;;
+        rlimit)
+            # Override any containers.conf default that would request the missing controller.
+            budget_args+=(--pids-limit=-1 --ulimit "nproc=$pids_limit:$pids_limit")
+            printf '%s: agent process budget enforced through the process rlimit (%s tasks of the session user, threads included): %s\n' "$AGENT_NAME" "$pids_limit" "$(cgroup_reason pids)" >&2
+            ;;
+        *)
+            budget_args+=(--pids-limit=-1)
+            printf '%s: agent process budget not enforced: %s; %s\n' "$AGENT_NAME" "$(cgroup_reason pids)" "$process_reason" >&2
+            ;;
+    esac
     if [[ "$network_mode" != unrestricted ]]; then
         command -v python3 >/dev/null || die 'host Python 3 is required for restricted network policy validation'
         [[ "$remote" == true ]] || die 'restricted networking currently requires the tested same-host Unix service; local-engine enforcement is unverified'
@@ -1425,21 +1482,33 @@ core_create_start() {
     # Engine flags alone are not evidence: require the created configuration to
     # carry every enforced budget and no unenforced one. Setup smoke and
     # qualification measure the effective cgroups.
+    # The rlimits are listed by name in brackets, so the field is never empty.
     capture_response configured_budgets engine inspect --type container \
-        --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}}' "$container_id" \
+        --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}} [{{range .HostConfig.Ulimits}}{{.Name}}={{.Soft}}:{{.Hard}},{{end}}]' "$container_id" \
         || die 'cannot inspect agent resource budgets; agent not started'
     # shellcheck disable=SC2154 # set by capture_response
-    read -r configured_memory configured_cpu configured_pids extra <<< "${configured_budgets%$'\n'}"
+    read -r configured_memory configured_cpu configured_pids configured_rlimits extra <<< "${configured_budgets%$'\n'}"
     budgets_applied=0
-    if [[ -z "${extra:-}" && "$configured_memory" == "$expected_memory" && "$configured_cpu" == "$expected_cpu" ]]; then
+    if [[ -z "${extra:-}" && "$configured_memory" == "$expected_memory" && "$configured_cpu" == "$expected_cpu" \
+            && "${configured_rlimits:-}" =~ ^\[([A-Z_]+=[0-9]+:[0-9]+,)*\]$ ]]; then
         if ((pids_enforced)); then
             [[ "$configured_pids" == "$pids_limit" ]] && budgets_applied=1
-        else
-            [[ "$configured_pids" =~ ^(0|-1)$ ]] && budgets_applied=1
+        elif [[ "$configured_pids" =~ ^(0|-1)$ ]]; then
+            # The fallback needs exactly one process rlimit entry at the budget; otherwise
+            # an engine default inherited from the user's own limits is not a budget.
+            if [[ "$process_budget" != rlimit ]]; then
+                budgets_applied=1
+            elif [[ "$configured_rlimits" == *"RLIMIT_NPROC=$pids_limit:$pids_limit,"* ]]; then
+                local other_rlimits=${configured_rlimits/"RLIMIT_NPROC=$pids_limit:$pids_limit,"/}
+                [[ "$other_rlimits" != *RLIMIT_NPROC=* ]] && budgets_applied=1
+            fi
         fi
     fi
+    if ((budgets_applied == 0)) && [[ "$process_budget" == rlimit ]]; then
+        die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu process rlimit fallback nproc=$pids_limit:$pids_limit); engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; check the process rlimit fallback and rootless cgroup v2 controller delegation; agent not started"
+    fi
     ((budgets_applied)) \
-        || die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu pids=$( ((pids_enforced)) && printf '%s' "$pids_limit" || printf 'unenforced')); engine reports controllers $cgroup_controllers; check rootless cgroup v2 controller delegation; agent not started"
+        || die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu pids=$( ((pids_enforced)) && printf '%s' "$pids_limit" || printf 'unenforced')); engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; check rootless cgroup v2 controller delegation; agent not started"
 
     # Explicit stdin redirection prevents Bash from replacing stdin with /dev/null
     # for the background client; traps can forward signals while wait is active.

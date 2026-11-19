@@ -82,13 +82,21 @@ container and then calls `stop` with the seconds left of its 20-second budget.
 recover ownership. Failures keep the exact statuses and messages of the
 underlying checks.
 
-Each session proxy has `--pids-limit=128 --memory=256m`. After readiness, the
-session helper performs bounded inspect and exec checks of its actual cgroup v2
-`pids.max=128` and `memory.max=268435456`, zero capability sets, NoNewPrivs and
-standard seccomp before any agent runs. `network/proxy_hardening.py` is protected
-installed code; its fixed probe runs inside the proxy without extra mounts or
-an administration endpoint. Missing controllers, unknown cgroup layouts or
-ignored limits fail closed. Inspect rootless memory/pids controller delegation
+Each session proxy has `--pids-limit=128 --memory=256m` for each controller
+the rootless engine delegates; reported controllers count as delegated only
+with the `systemd` cgroup manager, because a rootless `cgroupfs` engine reports
+controllers but applies no limits. Without `pids`, the process budget falls back to
+`--ulimit nproc=128:128` when the engine kernel is Linux 5.14 or later, which
+counts the process rlimit per container. This is the same rule as the agent's,
+in `network/agent_budgets.py`. Otherwise the budget is unenforced and announced
+with the reason. After readiness, the session helper performs bounded inspect
+and exec checks of its actual cgroup v2 `pids.max=128` and
+`memory.max=268435456`, or of the single `RLIMIT_NPROC` entry and the effective
+`Max processes` of 128 under the fallback. It also checks zero capability sets,
+NoNewPrivs and standard seccomp before any agent runs.
+`network/proxy_hardening.py` is protected installed code; its fixed probe runs
+inside the proxy without extra mounts or an administration endpoint. Unknown
+cgroup layouts, an unverifiable controller list or ignored limits fail closed. Inspect rootless memory/pids controller delegation
 and the selected image when this diagnostic appears; do not add privileges or
 disable host policy. Proxy exhaustion never creates an unbounded replacement.
 

@@ -157,7 +157,16 @@ agent container drops capabilities and receives memory/CPU/process budgets in
 all modes; never add a capability, and never drop a budget the engine can enforce
 to make a tool work. A budget whose cgroup v2 controller the rootless engine does
 not delegate (`Host.CgroupControllers`) is omitted, announced and bound into the
-qualification identity; never require host changes to delegate it. Wrapper tests use synthetic
+qualification identity; never require host changes to delegate it. Reported
+controllers count as delegated only with the `systemd` cgroup manager
+(`Host.CgroupManager`): a rootless `cgroupfs` engine reports controllers but
+applies no limits, so it delegates none (`delegated()` in
+`network/agent_budgets.py`, mirrored in `launcher/core.sh`). The process
+budget alone falls back to a soft and hard process rlimit (`--ulimit nproc`) when
+the engine kernel (`Host.Kernel`) is Linux 5.14 or later, which counts it per
+container; the mechanism (`cgroup`, `rlimit` or `none`) is one rule in
+`network/agent_budgets.py` and `launcher/core.sh`, verified and qualified like a
+cgroup budget. Wrapper tests use synthetic
 HOME/configuration and fake Podman on executable native temporary storage;
 `SANDBOX_TEST_TMPDIR` overrides the temporary directory. No real credentials or
 remote Git repositories belong in tests.

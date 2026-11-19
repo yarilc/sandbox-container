@@ -62,16 +62,19 @@ restrictions remain unchanged. Hardening rejection stops preparation without
 adding privileges or retrying with unrestricted networking. Explicit
 unrestricted launches receive the same agent capability drop, no-new-privileges
 and resource budgets, but no egress proxy, guard or network restriction.
-Agent memory, CPU and process budgets, the set of budgets actually enforced and
-the optional lifetime are part of the qualification identity: changing them
+Agent memory, CPU and process budgets, the set of budgets actually enforced, the
+mechanism enforcing the process budget (cgroup, process rlimit or none) and the
+optional lifetime are part of the qualification identity: changing them
 requires requalification.
 
 Every session proxy has budgets of 128 processes and 256 MiB memory, enforced
 for each controller (`pids`, `memory`) the rootless engine delegates; a budget
-whose controller is not delegated is not requested and is announced. Provider
-startup verifies configured and effective cgroup v2 limits plus actual proxy
-hardening before agent execution: an enforced limit must be exact and an
-unenforced one absent. An unknown cgroup layout, an unverifiable controller list
+whose controller is not delegated is not requested and is announced. Without
+`pids`, the process budget falls back to a process rlimit of 128 on engine
+kernels from Linux 5.14, like the agent's. Provider startup verifies configured
+and effective cgroup v2 limits, or the process rlimit under the fallback, plus
+actual proxy hardening before agent execution: an enforced limit must be exact
+and an unenforced one absent. An unknown cgroup layout, an unverifiable controller list
 or an ignored delegated limit blocks preparation. Proxy failure or exhaustion
 leaves outbound access closed and retains bounded owned cleanup and primary
 application/signal status. Per-session budgets do not replace multiplex/TLS
@@ -257,7 +260,7 @@ tag and `tools/propagate.py`; see [propagation](propagation.md).
 
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
-| Sandbox (reference) | Reference (`sandbox-ref-25`, shared launcher core) | Guard, qualification and guided setup integrated; no provider mode (no authentication method); provider mechanics covered by the fixture profile and the fixture agent part | WSL ABI 3: all runner modes passed (2026-11-17) | Not applicable |
+| Sandbox (reference) | Reference (`sandbox-ref-26`, shared launcher core) | Guard, qualification and guided setup integrated; no provider mode (no authentication method); provider mechanics covered by the fixture profile and the fixture agent part | WSL ABI 3: all runner modes passed (2026-11-17) | Not applicable |
 | Claude | Adopted `sandbox-ref-25`: shared launcher core | Shared launcher core, mandatory bootstrap, multiplexed proxy and guided setup integrated | WSL ABI 3: all runner modes passed (2026-11-17, shared launcher core); wrapper, setup and runtime runs passed on `sandbox-ref-25` (2026-11-18) | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
 | Codex | Adopted `sandbox-ref-25`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes passed (2026-11-17, shared launcher core); wrapper, setup and runtime runs passed on `sandbox-ref-25` (2026-11-18) | Operator session with tool use passed (2026-11-11, `openai-account`); refresh and API-key checks pending; synthetic Responses API streaming and tool call passed |
 | Antigravity | Adopted `sandbox-ref-25`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; keyring removed | WSL ABI 3: all runtime modes passed (2026-11-17, shared launcher core); wrapper, setup and runtime runs passed on `sandbox-ref-25` (2026-11-18) | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`); refresh and Gemini API-key checks pending; synthetic Gemini streaming and tool call passed |

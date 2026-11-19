@@ -627,26 +627,126 @@ class LauncherTests(unittest.TestCase):
                                   pids=int(configured[2]), timeout=timeout)
                     self.assertEqual(actual, expected)
                     self.assertEqual(actual[keys[name]], expected[keys[name]])
+        # The process-budget mechanism: the same kernel rule in Bash and Python.
+        for kernel in ('6.6.87.2-microsoft-standard-WSL2', '5.14', '5.14.0-427.13.1.el9_4.x86_64',
+                       '5.15.0-91-generic', '6.8.9+deb13', '10.0', '5.140', '5.13.19', '5.10.0-28-amd64',
+                       '4.18.0-553.el8_10.x86_64', '5.9', '', '5', '5.', 'x5.14', ' 5.14', '5.14 x',
+                       '5.14-\x1b[0m', '5.14/x', '5.x', '12345.1', '5.14.0-é'):
+            for controllers in ('[cpu memory]', '[cpu memory pids]'):
+                with self.subTest(kernel=kernel, controllers=controllers):
+                    self.log.unlink(missing_ok=True)
+                    mechanism = agent_budgets.process_mechanism(controllers, kernel)
+                    result = self.run_wrapper(FAKE_CONTROLLERS=controllers, FAKE_KERNEL=kernel)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    create = self.create()
+                    self.assertEqual('--pids-limit=512' in create, mechanism == 'cgroup')
+                    self.assertEqual('nproc=512:512' in create, mechanism == 'rlimit')
+                    if mechanism == 'none':
+                        self.assertIn(agent_budgets.fallback_reason(kernel), result.stderr)
+        # Delegation: the same cgroup manager rule in Bash and Python.
+        for manager in ('systemd', 'cgroupfs', 'none', 'other'):
+            for controllers in ('[cpu memory pids]', '[memory]', '[]'):
+                with self.subTest(manager=manager, controllers=controllers):
+                    self.log.unlink(missing_ok=True)
+                    delegated = agent_budgets.delegated(controllers, manager)
+                    result = self.run_wrapper(FAKE_CONTROLLERS=controllers, FAKE_CGROUP_MANAGER=manager)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    create = self.create()
+                    self.assertEqual(any(a.startswith('--memory=') for a in create), 'memory' in delegated)
+                    self.assertEqual(any(a.startswith('--cpus=') for a in create), 'cpu' in delegated)
+                    self.assertEqual('--pids-limit=512' in create, 'pids' in delegated)
+                    self.assertEqual('nproc=512:512' in create,
+                                     agent_budgets.process_mechanism(delegated, '6.6.87.2') == 'rlimit')
+                    for controller in {'memory', 'cpu', 'pids'} - set(delegated):
+                        self.assertIn(agent_budgets.cgroup_reason(controller, manager), result.stderr)
+        for manager in ('', 'Systemd', 'system d', 'x' * 33):
+            with self.subTest(malformed_manager=manager):
+                with self.assertRaises(agent_budgets.ControllerError):
+                    agent_budgets.delegated('[cpu memory pids]', manager)
+                self.assertEqual(self.run_wrapper(FAKE_CGROUP_MANAGER=manager).returncode, 1)
 
     def test_budgets_follow_delegated_controllers(self):
         notices = {'memory': 'agent memory budget not enforced: cgroup controller memory',
                    'cpu': 'agent CPU budget not enforced: cgroup controller cpu',
                    'pids': 'agent process budget not enforced: cgroup controller pids'}
+        rlimit_notice = ('agent process budget enforced through the process rlimit (512 tasks of the session user, '
+                         'threads included): cgroup controller pids is not delegated')
+        old_kernel = 'kernel 5.13.19 counts the process rlimit per user, not per container'
         flags = {'memory': '--memory=4294967296', 'cpu': '--cpus=2', 'pids': '--pids-limit=512'}
-        for controllers in ('[cpu memory pids]', '[cpuset cpu io memory pids]', '[memory pids]',
-                            '[cpu pids]', '[cpu memory]', '[]'):
-            with self.subTest(controllers=controllers):
+        # Without pids, a kernel from 5.14 counts the process rlimit per container: the
+        # fallback applies. An older or unrecognized kernel leaves the budget unenforced.
+        for kernel, fallback, reason in (('6.6.87.2-microsoft-standard-WSL2', True, ''),
+                                         ('5.13.19', False, old_kernel),
+                                         ('unknown', False, 'unrecognized kernel version')):
+            for controllers in ('[cpu memory pids]', '[cpuset cpu io memory pids]', '[memory pids]',
+                                '[cpu pids]', '[cpu memory]', '[]'):
+                with self.subTest(controllers=controllers, kernel=kernel):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_wrapper(FAKE_CONTROLLERS=controllers, FAKE_KERNEL=kernel)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    create = self.create()
+                    present = controllers[1:-1].split()
+                    missing_pids = 'pids' not in present
+                    for name in ('memory', 'cpu'):
+                        self.assertEqual(flags[name] in create, name in present)
+                        self.assertEqual(notices[name] in result.stderr, name not in present)
+                    self.assertEqual(flags['pids'] in create, not missing_pids)
+                    self.assertEqual('--pids-limit=-1' in create, missing_pids)
+                    self.assertEqual('--ulimit' in create, missing_pids and fallback)
+                    if missing_pids and fallback:
+                        self.assertEqual(create[create.index('--ulimit') + 1], 'nproc=512:512')
+                    self.assertEqual(rlimit_notice in result.stderr, missing_pids and fallback)
+                    self.assertEqual(notices['pids'] in result.stderr, missing_pids and not fallback)
+                    self.assertEqual(reason != '' and reason in result.stderr, missing_pids and not fallback)
+                    self.assertFalse(any(a.startswith('--cpus=') for a in create) and 'cpu' not in present)
+                    self.assertTrue(any(c[0] == 'start' for c in self.calls()))
+        # cgroupfs reports controllers but applies no limits: nothing is delegated, and the
+        # process budget uses the rlimit fallback. The manager is a strict single record.
+        self.log.unlink(missing_ok=True)
+        result = self.run_wrapper(FAKE_CONTROLLERS='[cpuset cpu io memory hugetlb pids rdma]',
+                                  FAKE_CGROUP_MANAGER='cgroupfs')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        create = self.create()
+        self.assertFalse(any(a.startswith(('--memory=', '--cpus=')) for a in create))
+        self.assertNotIn('--pids-limit=512', create)
+        self.assertIn('--pids-limit=-1', create)
+        self.assertEqual(create[create.index('--ulimit') + 1], 'nproc=512:512')
+        manager = 'the rootless engine uses the cgroupfs cgroup manager, which applies no cgroup limits'
+        for budget in ('memory', 'CPU'):
+            self.assertIn(f'agent {budget} budget not enforced: {manager}', result.stderr)
+        self.assertIn('agent process budget enforced through the process rlimit (512 tasks of the session user, '
+                      'threads included): ' + manager, result.stderr)
+        self.log.unlink(missing_ok=True)
+        result = self.run_wrapper(FAKE_CONTROLLERS='[cpu memory pids]', FAKE_CGROUP_MANAGER='cgroupfs',
+                                  FAKE_KERNEL='5.10.0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('--ulimit', self.create())
+        self.assertIn(f'agent process budget not enforced: {manager}; kernel 5.10.0 counts', result.stderr)
+        for env in (dict(FAKE_CGROUP_MANAGER=''), dict(FAKE_CGROUP_MANAGER='Systemd'),
+                    dict(FAKE_CGROUP_MANAGER='system d'), dict(FAKE_CGROUP_MANAGER_RAW='systemd\\nsystemd\\n'),
+                    dict(FAKE_CGROUP_MANAGER_RAW='systemd\\r\\n'), dict(FAKE_CGROUP_MANAGER_STATUS='3')):
+            with self.subTest(manager_response=env):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(FAKE_CONTROLLERS=controllers)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                create = self.create()
-                present = controllers[1:-1].split()
-                for name in ('memory', 'cpu', 'pids'):
-                    self.assertEqual(flags[name] in create, name in present)
-                    self.assertEqual(notices[name] in result.stderr, name not in present)
-                self.assertEqual('--pids-limit=-1' in create, 'pids' not in present)
-                self.assertFalse(any(a.startswith('--cpus=') for a in create) and 'cpu' not in present)
-                self.assertTrue(any(c[0] == 'start' for c in self.calls()))
+                result = self.run_wrapper(**env)
+                self.assertEqual(result.returncode, 1)
+                self.assertRegex(result.stderr, 'unverifiable cgroup manager|cannot query the rootless cgroup manager')
+                self.assertFalse(any(c[0] in ('create', 'build', 'image') for c in self.calls()))
+        # The fallback uses the selected process budget.
+        self.log.unlink(missing_ok=True)
+        result = self.run_wrapper(FAKE_CONTROLLERS='[cpu memory]', FIXTURE_SHELL_PIDS_LIMIT='1024')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        create = self.create()
+        self.assertEqual(create[create.index('--ulimit') + 1], 'nproc=1024:1024')
+        self.assertIn('(1024 tasks of the session user', result.stderr)
+        # The kernel is an engine query with the same record and failure rules as the others.
+        for env in (dict(FAKE_KERNEL_RAW='6.6.87.2\\n5.10\\n'), dict(FAKE_KERNEL_RAW='6.6.87.2\\r\\n'),
+                    dict(FAKE_KERNEL_STATUS='3')):
+            with self.subTest(kernel_response=env):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_CONTROLLERS='[cpu memory]', **env)
+                self.assertEqual(result.returncode, 1)
+                self.assertRegex(result.stderr, 'invalid engine kernel version response|cannot query the engine kernel')
+                self.assertFalse(any(c[0] in ('create', 'build', 'image') for c in self.calls()))
         # A delegated controller whose limit the engine drops still stops the launch;
         # an unenforced limit that unexpectedly appears is rejected too.
         for controllers, reported in (('[memory pids]', '0 0 512'), ('[memory pids]', '4294967296 2000000000 512'),
@@ -726,6 +826,35 @@ class LauncherTests(unittest.TestCase):
                 self.assertIn('controller delegation', result.stderr)
                 self.assertFalse(any(c[0] == 'start' for c in self.calls()))
                 self.assertTrue(any(c[0] == 'rm' and c[-1] == OWNED_ID for c in self.calls()))
+        # The process rlimit fallback: exactly one RLIMIT_NPROC entry at the budget and no cgroup limit.
+        configured = '4294967296 2000000000 '
+        for reported in (configured + '-1 []', configured + '-1 [RLIMIT_NPROC=512:1024,]',
+                         configured + '-1 [RLIMIT_NPROC=256:256,]', configured + '-1 [RLIMIT_NPROC=1024:512,]',
+                         configured + '-1 [RLIMIT_NPROC=512:512,RLIMIT_NPROC=512:512,]',
+                         configured + '-1 [RLIMIT_NPROC=512:512,RLIMIT_NPROC=4096:4096,]',
+                         configured + '512 [RLIMIT_NPROC=512:512,]', configured + '-1 RLIMIT_NPROC=512:512',
+                         configured + '-1 [RLIMIT_NPROC=512:512]', configured + '-1', configured + '-1 [] extra'):
+            with self.subTest(fallback=reported):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_CONTROLLERS='[cpu memory]', FAKE_AGENT_BUDGETS=reported)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('agent resource budgets were not applied', result.stderr)
+                self.assertIn('process rlimit fallback', result.stderr)
+                self.assertFalse(any(c[0] == 'start' for c in self.calls()))
+                self.assertTrue(any(c[0] == 'rm' and c[-1] == OWNED_ID for c in self.calls()))
+        # Accepted: the exact fallback beside other rlimits, and an engine-default process
+        # rlimit when the budget uses the cgroup controller or has no enforcement.
+        for controllers, kernel, reported in (
+                ('[cpu memory]', '6.6.87.2', configured + '-1 [RLIMIT_NOFILE=1024:1024,RLIMIT_NPROC=512:512,]'),
+                ('[cpu memory]', '6.6.87.2', configured + '0 [RLIMIT_NPROC=512:512,]'),
+                ('[cpu memory pids]', '6.6.87.2', configured + '512 [RLIMIT_NPROC=63948:63948,]'),
+                ('[cpu memory]', '5.10.0', configured + '-1 [RLIMIT_NPROC=63948:63948,]')):
+            with self.subTest(accepted=reported, controllers=controllers):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper(FAKE_CONTROLLERS=controllers, FAKE_KERNEL=kernel,
+                                          FAKE_AGENT_BUDGETS=reported)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(any(c[0] == 'start' for c in self.calls()))
         self.log.unlink(missing_ok=True)
         result = self.run_wrapper(FAKE_FAIL='inspect')
         self.assertEqual(result.returncode, 1)

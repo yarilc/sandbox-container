@@ -36,6 +36,7 @@ PREFIX = PROFILE.message_prefix
 NAME = PROFILE.display_name
 GUARD = 'sandbox-egress-guard'
 import agent_budgets  # noqa: E402  (protected network code beside common.py's path entry)
+from proxy_hardening import PIDS_LIMIT as PROXY_PIDS_LIMIT  # noqa: E402
 BUDGET_QUESTIONS = (
     ('memory_limit', 'Agent memory limit (integer with k, m or g unit)'),
     ('cpu_limit', 'Agent CPU limit (CPUs, up to 3 decimals)'),
@@ -654,12 +655,37 @@ def scratch_workspace():
         yield workspace
 
 
+def engine_delegation(env):
+    # (delegated controllers, cgroup manager, kernel) of the verified engine. Only the
+    # systemd cgroup manager applies rootless cgroup limits; cgroupfs delegates none.
+    controllers = record(['podman', 'info', '--format', '{{.Host.CgroupControllers}}'], env)
+    manager = record(['podman', 'info', '--format', '{{.Host.CgroupManager}}'], env)
+    kernel = record(['podman', 'info', '--format', '{{.Host.Kernel}}'], env)
+    try:
+        return agent_budgets.delegated(controllers, manager), manager, kernel
+    except agent_budgets.ControllerError:
+        raise SetupError('The Podman engine reported an unverifiable cgroup controller list or cgroup manager.') from None
+
+
 def engine_enforced(env):
     # Budgets are enforced only for controllers the verified engine delegates.
-    try:
-        return agent_budgets.enforced(record(['podman', 'info', '--format', '{{.Host.CgroupControllers}}'], env))
-    except agent_budgets.ControllerError:
-        raise SetupError('The Podman engine reported an unverifiable cgroup controller list.') from None
+    return agent_budgets.enforced(engine_delegation(env)[0])
+
+
+def engine_process(env):
+    # The process budget falls back to the process rlimit when pids is not delegated
+    # and the engine kernel counts it per container: (mechanism, manager).
+    delegated, manager, kernel = engine_delegation(env)
+    return agent_budgets.process_mechanism(delegated, kernel), manager
+
+
+def process_notice(kind, mechanism, kernel, limit, manager='systemd'):
+    reason = agent_budgets.cgroup_reason('pids', manager)
+    if mechanism == 'rlimit':
+        user = 'session' if kind == 'agent' else 'proxy'
+        return (f'{kind} process budget enforced through the process rlimit ({limit} tasks of the {user} user, '
+                'threads included): ' + reason)
+    return f'{kind} process budget not enforced: {reason}; ' + agent_budgets.fallback_reason(kernel)
 
 
 def expected_budgets(value):
@@ -690,7 +716,7 @@ def smoke_in(value, release, workspace):
     script = (release / 'setup/smoke.py').read_text()
     smoke_args = [value['network'], '1' if value['trust_ca'] else '0', PROFILE.home,
                   PROFILE.config_dir_env, PROFILE.command, *expected_budgets(value),
-                  ','.join(engine_enforced(env))]
+                  ','.join(engine_enforced(env)), *engine_process(env)]
     program = ('set -Eeuo pipefail\npython3 - ' + ' '.join(map(shlex.quote, smoke_args))
                + " <<'SANDBOX_SETUP_SMOKE'\n" + script + '\nSANDBOX_SETUP_SMOKE\n')
     args = ['bash', str(release / PROFILE.wrapper), '--container-shell']
@@ -788,17 +814,20 @@ def main():
             if name in images:
                 print(f'  {name} image: ' + ('reuse inspected ' + images[name] if images[name] else 'prepare/build missing image'))
         # Budgets follow the controllers the engine delegates; no extra question.
-        enforced = engine_enforced(env)
+        delegated, manager, kernel = engine_delegation(env)
+        enforced = agent_budgets.enforced(delegated)
+        process = agent_budgets.process_mechanism(delegated, kernel)
         print('  enforced agent budgets: ' + (', '.join(enforced) or 'none'))
-        for controller, label in (('memory', 'memory'), ('cpu', 'CPU'), ('pids', 'process')):
+        for controller, label in (('memory', 'memory'), ('cpu', 'CPU')):
             if controller not in enforced:
-                print(f'  agent {label} budget not enforced: cgroup controller {controller} '
-                      'is not delegated to the rootless engine')
+                print(f'  agent {label} budget not enforced: ' + agent_budgets.cgroup_reason(controller, manager))
+        if process != 'cgroup':
+            print('  ' + process_notice('agent', process, kernel, value['pids_limit'], manager))
         if value['network'] == 'provider':
-            for controller, label in (('memory', 'memory'), ('pids', 'process')):
-                if controller not in enforced:
-                    print(f'  proxy {label} budget not enforced: cgroup controller {controller} '
-                          'is not delegated to the rootless engine')
+            if 'memory' not in enforced:
+                print('  proxy memory budget not enforced: ' + agent_budgets.cgroup_reason('memory', manager))
+            if process != 'cgroup':
+                print('  ' + process_notice('proxy', process, kernel, PROXY_PIDS_LIMIT, manager))
         path_guidance(value['command'])
         refresh = yes('Refresh prepared images and recompile the guard instead of reusing valid artifacts?')
         print('Missing/selected images will be prepared; restricted mode includes a static guard and manifest.')

@@ -104,6 +104,8 @@ if 'info' in args:
     if 'RemoteSocket.Path' in template: print('true '+os.environ.get('SETUP_TEST_SOCKET','/run/user/1000/podman/podman.sock'))
     elif 'NetworkBackend' in template: print('netavark')
     elif 'CgroupControllers' in template: print(os.environ.get('SETUP_TEST_CONTROLLERS', '[cpu memory pids]'))
+    elif 'CgroupManager' in template: print(os.environ.get('SETUP_TEST_CGROUP_MANAGER', 'systemd'))
+    elif 'Host.Kernel' in template: print(os.environ.get('SETUP_TEST_KERNEL', '6.6.87.2-microsoft-standard-WSL2'))
     elif 'json .Host' in template:
         print(json.dumps({'kernel':'6.6.87.2-microsoft-standard-WSL2','arch':'amd64',
            'security':{'seccompEnabled':True,'selinuxEnabled':False,'apparmorEnabled':False}}))
@@ -1112,12 +1114,75 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         for enforced in (('memory', 'pids'), ('cpu', 'pids'), ('cpu', 'memory'), ()):
             with self.subTest(enforced=enforced), self.assertRaises(AssertionError):
                 smoke.budgets(4294967296, 2000000000, 512, enforced, base)
+        # The process rlimit fallback: no pids cgroup limit and the effective rlimit at the budget.
+        limits = base / 'limits'
+        def rlimit(soft, hard):
+            limits.write_text('Limit Soft Limit Hard Limit Units\nMax open files 1024 1024 files\n'
+                              f'Max processes {soft} {hard} processes\n')
+        write(memory='4294967296', cpu='200000 100000')
+        rlimit(512, 512)
+        err = io.StringIO()
+        with patch('sys.stderr', err):
+            smoke.budgets(4294967296, 2000000000, 512, ('cpu', 'memory'), base, 'rlimit', limits)
+        self.assertIn('agent process budget enforced through the process rlimit (512 tasks', err.getvalue())
+        write(memory='4294967296', pids='max', cpu='200000 100000')
+        smoke.budgets(4294967296, 2000000000, 512, ('cpu', 'memory'), base, 'rlimit', limits)
+        rlimit('unlimited', 'unlimited')
+        smoke.budgets(4294967296, 2000000000, 512, ('cpu', 'memory'), base, 'none', limits)
+        for soft, hard, pids, process, enforced in ((256, 256, None, 'rlimit', ('cpu', 'memory')),
+                                                    (512, 1024, None, 'rlimit', ('cpu', 'memory')),
+                                                    ('unlimited', 'unlimited', None, 'rlimit', ('cpu', 'memory')),
+                                                    (512, 512, '512', 'rlimit', ('cpu', 'memory')),
+                                                    (512, 512, None, 'rlimit', ('cpu', 'memory', 'pids')),
+                                                    (512, 512, None, 'cgroup', ('cpu', 'memory')),
+                                                    (512, 512, None, 'other', ('cpu', 'memory'))):
+            with self.subTest(soft=soft, hard=hard, pids=pids, process=process), self.assertRaises(AssertionError):
+                write(memory='4294967296', cpu='200000 100000', **({'pids': pids} if pids else {}))
+                rlimit(soft, hard)
+                smoke.budgets(4294967296, 2000000000, 512, enforced, base, process, limits)
+        limits.write_text('Max open files 1024 1024 files\n')
+        write(memory='4294967296', cpu='200000 100000')
+        with self.assertRaises(AssertionError):
+            smoke.budgets(4294967296, 2000000000, 512, ('cpu', 'memory'), base, 'rlimit', limits)
+        # A cgroupfs engine: no cgroup budget, the manager named in the notices.
+        write()
+        rlimit(512, 512)
+        err = io.StringIO()
+        with patch('sys.stderr', err):
+            smoke.budgets(4294967296, 2000000000, 512, (), base, 'rlimit', limits, 'cgroupfs')
+        manager = 'the rootless engine uses the cgroupfs cgroup manager, which applies no cgroup limits'
+        for line in ('agent memory budget not enforced: ' + manager, 'agent CPU budget not enforced: ' + manager,
+                     'agent process budget enforced through the process rlimit (512 tasks of the session user, '
+                     'threads included): ' + manager):
+            self.assertIn(line, err.getvalue())
+
+    def test_plan_process_notices_name_the_mechanism_for_agent_and_proxy(self):
+        kernel, old = '6.6.87.2-microsoft-standard-WSL2', '5.10.0-28-amd64'
+        self.assertEqual(setup.process_notice('agent', 'rlimit', kernel, '512'),
+                         'agent process budget enforced through the process rlimit (512 tasks of the session user, '
+                         'threads included): cgroup controller pids is not delegated to the rootless engine')
+        self.assertEqual(setup.process_notice('proxy', 'rlimit', kernel, 128),
+                         'proxy process budget enforced through the process rlimit (128 tasks of the proxy user, '
+                         'threads included): cgroup controller pids is not delegated to the rootless engine')
+        for kind in ('agent', 'proxy'):
+            self.assertEqual(setup.process_notice(kind, 'none', old, 1),
+                             f'{kind} process budget not enforced: cgroup controller pids is not delegated to the '
+                             'rootless engine; kernel 5.10.0-28-amd64 counts the process rlimit per user, not per '
+                             'container (Linux 5.14 or later is required)')
+            self.assertTrue(setup.process_notice(kind, 'none', '\x1b[0m', 1).endswith('; unrecognized kernel version'))
+            self.assertEqual(setup.process_notice(kind, 'none', old, 1, 'cgroupfs'),
+                             f'{kind} process budget not enforced: the rootless engine uses the cgroupfs cgroup '
+                             'manager, which applies no cgroup limits; kernel 5.10.0-28-amd64 counts the process '
+                             'rlimit per user, not per container (Linux 5.14 or later is required)')
 
     def test_smoke_requires_confirmed_success_and_has_no_maintenance_or_key(self):
         # Smoke queries the engine's delegated controllers; the fake engine reports all three.
         enforced = patch.object(setup, 'engine_enforced', return_value=['cpu', 'memory', 'pids'])
         enforced.start()
         self.addCleanup(enforced.stop)
+        process = patch.object(setup, 'engine_process', return_value=('cgroup', 'systemd'))
+        process.start()
+        self.addCleanup(process.stop)
         _, release = self.release()
         for trust in (False, True):
             value = self.value | {'trust_ca': trust}
@@ -1128,7 +1193,7 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
                 self.assertNotIn(name('MAINTENANCE'), run.call_args.args[1])
                 self.assertNotIn(CREDENTIAL, run.call_args.args[1])
                 self.assertIn('unrestricted ' + ('1' if trust else '0'), run.call_args.kwargs['input'])
-                self.assertIn(' 4294967296 2000000000 512 cpu,memory,pids <<', run.call_args.kwargs['input'])
+                self.assertIn(' 4294967296 2000000000 512 cpu,memory,pids cgroup systemd <<', run.call_args.kwargs['input'])
                 workspace = Path(run.call_args.kwargs['cwd'])
                 self.assertNotEqual(workspace, Path.cwd())
                 self.assertFalse(workspace.exists())
@@ -1136,7 +1201,7 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         with patch.dict(os.environ, self.env | {name('MEMORY_LIMIT'): '1g'}, clear=True), \
                 patch.object(setup, 'run', return_value='SANDBOX_SETUP_SMOKE_OK\n') as run:
             setup.smoke(value, release)
-            self.assertIn(' 8589934592 1500000000 1024 cpu,memory,pids <<', run.call_args.kwargs['input'])
+            self.assertIn(' 8589934592 1500000000 1024 cpu,memory,pids cgroup systemd <<', run.call_args.kwargs['input'])
             self.assertEqual(run.call_args.args[1][name('MEMORY_LIMIT')], '8g')
         with patch.object(setup, 'run', return_value='version-only\n'):
             with self.assertRaisesRegex(common.SetupError, 'did not confirm readiness'):
@@ -1150,6 +1215,9 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         enforced = patch.object(setup, 'engine_enforced', return_value=['cpu', 'memory', 'pids'])
         enforced.start()
         self.addCleanup(enforced.stop)
+        process = patch.object(setup, 'engine_process', return_value=('cgroup', 'systemd'))
+        process.start()
+        self.addCleanup(process.stop)
         refusal = setup.PREFIX + 'State must be private: /home/user/.shared (chmod 700)'
         program = ('printf "notice one\\n\\n%s\\n" ' + shlex.quote(refusal) + ' >&2; exit 1')
         with patch('sys.stderr', new=io.StringIO()) as err:
@@ -1187,6 +1255,9 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         enforced = patch.object(setup, 'engine_enforced', return_value=['cpu', 'memory', 'pids'])
         enforced.start()
         self.addCleanup(enforced.stop)
+        process = patch.object(setup, 'engine_process', return_value=('cgroup', 'systemd'))
+        process.start()
+        self.addCleanup(process.stop)
         _, release = self.release()
         value = self.value | {'network':'offline','auth':'none'}
         passing='SANDBOX_QUALIFICATION_STATUS=locally-qualified\nSANDBOX_QUALIFICATION_OK\n'

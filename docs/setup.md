@@ -88,11 +88,22 @@ Every shell container, in every mode, drops all capabilities and enables
 no-new-privileges. Setup smoke verifies zero capability sets, no-new-privileges
 and the effective `memory.max`, `pids.max` and `cpu.max` in every mode.
 Setup adapts to the cgroup v2 controllers the rootless engine delegates
-(`podman info --format '{{.Host.CgroupControllers}}'`). A budget whose
-controller is missing is not enforced: the setup plan, the smoke and every
-launch name it, and setup continues without asking. Enforced budgets are still
-verified exactly, unenforced ones must be absent, and the enforced set is bound
-into restricted qualification. Without memory or process budgets an agent can
+(`podman info --format '{{.Host.CgroupControllers}}'`). Reported controllers
+count as delegated only with the `systemd` cgroup manager
+(`{{.Host.CgroupManager}}`): a rootless `cgroupfs` engine, such as a Podman
+machine on WSL, reports every controller and applies none, so the plan prints
+`enforced agent budgets: none` and names the `cgroupfs` manager. A budget whose
+controller is not delegated is not enforced: the setup plan, the smoke and every
+launch name it, and setup continues without asking. Without `pids`, the process
+budget falls back to a per-session process rlimit at the saved value when the
+engine kernel (`podman info --format '{{.Host.Kernel}}'`) is Linux 5.14 or
+later. The plan then prints
+`agent process budget enforced through the process rlimit (512 tasks of the session user, threads included)`,
+and the smoke compares the effective `Max processes` with the saved budget. On
+older or unrecognized kernels the plan line names the reason the fallback was
+not applied. Enforced budgets are still verified exactly, unenforced ones must
+be absent, and the enforced set and the process-budget mechanism are bound into
+restricted qualification. Without memory or process budgets an agent can
 exhaust host memory or processes for your user; without a CPU budget it can
 saturate every CPU.
 The installed wrapper verifies the effective limits before its smoke shell
