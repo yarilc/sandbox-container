@@ -2861,9 +2861,9 @@ The first runtime run overlapped the guard suite. Podman removal timed out
 during the shared-state `TERM` subcase of the shutdown test. Test cleanup
 subsequently removed the container.
 
-## Process rlimit fallback for the process budget: 2026-11-18
+## Process rlimit fallback and cgroup manager delegation (`sandbox-ref-26`): 2026-11-19
 
-Change: `openspec/changes/add-pids-rlimit-fallback/`. Without the `pids`
+Change: `openspec/changes/archive/2026-11-19-add-pids-rlimit-fallback/`. Without the `pids`
 controller, the agent and proxy process budgets fall back to
 `--ulimit nproc=N:N` when the engine kernel is Linux 5.14 or later.
 
