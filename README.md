@@ -564,8 +564,9 @@ launch then stops until you requalify with `--container-qualify`. Budgets
 cannot be disabled: empty, `0`, `-1` and `max` are rejected before any engine
 operation. Each launch checks the created container's configured limits before
 the shell starts; setup smoke and restricted qualification measure the
-effective cgroup v2 `memory.max`, `pids.max` and `cpu.max`. Budgets and tmpfs
-sizes do not limit workspace or state storage growth.
+effective cgroup v2 `memory.max`, `pids.max` and `cpu.max`, and the effective
+process rlimit when the fallback below applies. Budgets and tmpfs sizes do not
+limit workspace or state storage growth.
 
 The sandbox adapts to the controllers the engine reports
 (`podman info --format '{{.Host.CgroupControllers}}'`) instead of requiring host
@@ -575,9 +576,34 @@ is not requested; every launch and the setup plan print a notice such as
 rootless engine`, and continue without asking. The check is still strict: a
 delegated budget must be applied exactly, an unenforced one must be absent, and
 the enforced set is part of the restricted qualification identity, so a later
-delegation change requires requalification. Risk: without memory or process budgets, a compromised or runaway
-session can exhaust host memory or processes for your user; without a CPU budget
-it can saturate every CPU. Delegating the controllers (for example a systemd
+delegation change requires requalification.
+
+A rootless engine applies cgroup limits only through the `systemd` cgroup
+manager (`podman info --format '{{.Host.CgroupManager}}'`). With `cgroupfs`,
+for example on a Podman machine on WSL, the engine reports every controller but
+ignores the limits. The sandbox therefore treats no controller as delegated: it
+prints `agent memory budget not enforced: the rootless engine uses the cgroupfs
+cgroup manager, which applies no cgroup limits` and the matching CPU line, and
+the process budget uses the fallback below.
+
+The process budget has a fallback. Without the `pids` controller, the shell
+container gets a soft and hard process rlimit (`--ulimit nproc=N:N`) at the
+selected budget, and the notice reads `agent process budget enforced through the
+process rlimit (512 tasks of the session user, threads included)`. The limit is
+per session: Linux 5.14 and later count it per user namespace, and every
+container has its own. The session cannot raise it, because it has no
+capabilities. Container startup uses a few of these tasks (about 13 were
+measured), so slightly fewer than `N` processes are available. The fallback
+applies only when the engine reports kernel 5.14 or later
+(`podman info --format '{{.Host.Kernel}}'`). Older or unrecognized kernels may
+count every process of your user, so the process budget then stays unenforced,
+and the notice names the reason. The memory and CPU budgets have no fallback.
+Which mechanism enforces the process budget is part of the restricted
+qualification identity.
+
+Risk: without a memory or process budget, a compromised or runaway session can
+exhaust host memory or processes for your user; without a CPU budget it can
+saturate every CPU. Delegating the controllers (for example a systemd
 `Delegate=cpu cpuset io memory pids` drop-in for `user@.service`) restores full
 enforcement, but the sandbox never requires it.
 

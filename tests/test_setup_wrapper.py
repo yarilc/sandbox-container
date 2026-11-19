@@ -172,23 +172,42 @@ class SetupWrapperTests(unittest.TestCase):
         self.assertFalse(any(c['args'][0] in ('build', 'pull', 'tag') for c in self.calls()))
 
     def test_setup_plan_names_unenforced_budgets_without_a_question(self):
-        for controllers, notices in (('[memory pids]', ['agent CPU budget not enforced: cgroup controller cpu']),
-                                     ('[cpu pids]', ['agent memory budget not enforced: cgroup controller memory']),
-                                     ('[cpu memory pids]', [])):
-            with self.subTest(controllers=controllers):
+        rlimit = ('agent process budget enforced through the process rlimit (512 tasks of the session user, '
+                  'threads included): cgroup controller pids is not delegated')
+        for controllers, kernel, notices in (
+                ('[memory pids]', None, ['agent CPU budget not enforced: cgroup controller cpu']),
+                ('[cpu pids]', None, ['agent memory budget not enforced: cgroup controller memory']),
+                ('[cpu memory]', None, [rlimit]),
+                ('[cpu memory]', '5.10.0-28-amd64', ['agent process budget not enforced: cgroup controller pids',
+                                                     'kernel 5.10.0-28-amd64 counts the process rlimit per user']),
+                ('[cpu memory pids]', None, []),
+                ('[cpuset cpu io memory hugetlb pids rdma]', 'cgroupfs',
+                 ['enforced agent budgets: none',
+                  'agent memory budget not enforced: the rootless engine uses the cgroupfs cgroup manager',
+                  'agent CPU budget not enforced: the rootless engine uses the cgroupfs cgroup manager',
+                  'agent process budget enforced through the process rlimit (512 tasks of the session user, '
+                  'threads included): the rootless engine uses the cgroupfs cgroup manager'])):
+            with self.subTest(controllers=controllers, kernel=kernel):
                 env = self.env | {name('NETWORK'): 'provider', 'SETUP_TEST_MISSING': '1',
                                   'SETUP_TEST_ENGINE': 'true linux false', 'SETUP_TEST_CONTROLLERS': controllers}
+                if kernel == 'cgroupfs':
+                    env['SETUP_TEST_CGROUP_MANAGER'] = kernel
+                elif kernel:
+                    env['SETUP_TEST_KERNEL'] = kernel
                 answers = self.answers() + [('Refresh prepared images', 'no'), ('Apply this installation', 'no')]
                 code, output = pty_run(['bash', str(WRAPPER), '--container-setup'], env,
                                        self.workspace, answers)
                 self.assertEqual(code, 1, output)
-                self.assertIn('enforced agent budgets: ' + ', '.join(controllers[1:-1].split()), output)
+                if kernel != 'cgroupfs':
+                    self.assertIn('enforced agent budgets: ' + ', '.join(controllers[1:-1].split()), output)
                 for notice in notices:
                     self.assertIn(notice, output)
                 if not notices:
                     self.assertNotIn('budget not enforced', output)
+                    self.assertNotIn('process rlimit', output)
                 # This questionnaire selects unrestricted mode, which has no proxy.
                 self.assertNotIn('proxy memory budget', output)
+                self.assertNotIn('proxy process budget', output)
                 self.assertIn('cancelled before', output)
 
     def test_questionnaire_cancellation_has_no_mutation(self):

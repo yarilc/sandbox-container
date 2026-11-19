@@ -62,16 +62,19 @@ restrictions remain unchanged. Hardening rejection stops preparation without
 adding privileges or retrying with unrestricted networking. Explicit
 unrestricted launches receive the same agent capability drop, no-new-privileges
 and resource budgets, but no egress proxy, guard or network restriction.
-Agent memory, CPU and process budgets, the set of budgets actually enforced and
-the optional lifetime are part of the qualification identity: changing them
+Agent memory, CPU and process budgets, the set of budgets actually enforced, the
+mechanism enforcing the process budget (cgroup, process rlimit or none) and the
+optional lifetime are part of the qualification identity: changing them
 requires requalification.
 
 Every session proxy has budgets of 128 processes and 256 MiB memory, enforced
 for each controller (`pids`, `memory`) the rootless engine delegates; a budget
-whose controller is not delegated is not requested and is announced. Provider
-startup verifies configured and effective cgroup v2 limits plus actual proxy
-hardening before agent execution: an enforced limit must be exact and an
-unenforced one absent. An unknown cgroup layout, an unverifiable controller list
+whose controller is not delegated is not requested and is announced. Without
+`pids`, the process budget falls back to a process rlimit of 128 on engine
+kernels from Linux 5.14, like the agent's. Provider startup verifies configured
+and effective cgroup v2 limits, or the process rlimit under the fallback, plus
+actual proxy hardening before agent execution: an enforced limit must be exact
+and an unenforced one absent. An unknown cgroup layout, an unverifiable controller list
 or an ignored delegated limit blocks preparation. Proxy failure or exhaustion
 leaves outbound access closed and retains bounded owned cleanup and primary
 application/signal status. Per-session budgets do not replace multiplex/TLS

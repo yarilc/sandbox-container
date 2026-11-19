@@ -2860,3 +2860,133 @@ and checksums in `.config/openspec` matched before and after.
 The first runtime run overlapped the guard suite. Podman removal timed out
 during the shared-state `TERM` subcase of the shutdown test. Test cleanup
 subsequently removed the container.
+
+## Process rlimit fallback for the process budget: 2026-11-18
+
+Change: `openspec/changes/add-pids-rlimit-fallback/`. Without the `pids`
+controller, the agent and proxy process budgets fall back to
+`--ulimit nproc=N:N` when the engine kernel is Linux 5.14 or later.
+
+**Engine representation (task 1.1).** Measured on WSL2 x86_64
+(`6.18.58.1-microsoft-standard-WSL2`), with Podman client 4.3.1, server 4.9.3,
+the `systemd` cgroup manager and controllers `[cpu memory pids]`. Containers
+used `--userns=keep-id`, the caller's UID, `--cap-drop=all` and
+no-new-privileges.
+
+| Created with | `{{json .HostConfig.Ulimits}}` | `PidsLimit` | Effective `Max processes` (soft, hard) |
+| --- | --- | --- | --- |
+| no budget flags | `[]` | 2048 (`containers.conf` default) | 63948, 63948 (inherited; not listed by inspect) |
+| `--pids-limit=-1 --ulimit nproc=64:64` | `[{"Name":"RLIMIT_NPROC","Soft":64,"Hard":64}]` | 0 | 64, 64; `pids.max` is `max` |
+
+Inside the second container, `ulimit -Su 100` failed with `Invalid argument`
+and `ulimit -Hu 100` with `Operation not permitted`; lowering the soft limit
+worked. Podman 4.9.3 does not list its inherited default, so the launcher's
+template `[{{range .HostConfig.Ulimits}}{{.Name}}={{.Soft}}:{{.Hard}},{{end}}]`
+reports `[]` without the fallback.
+
+The operator measured the same on Podman machine 6.1.4 (WSL provider, kernel
+`6.6.87.2-microsoft-standard-WSL2`, `cgroupfs` manager, controllers reported
+as `[cpuset cpu io memory hugetlb pids rdma]`):
+
+| Created with | `{{json .HostConfig.Ulimits}}` | `PidsLimit` | Launcher template | Effective `Max processes` |
+| --- | --- | --- | --- | --- |
+| no budget flags | `[]` | 0 | `[]` | 31733, 31733 (inherited) |
+| `--pids-limit=-1 --ulimit nproc=64:64` | `[{"Name":"RLIMIT_NPROC","Soft":64,"Hard":64}]` | 0 | `[RLIMIT_NPROC=64:64,]` | 64, 64; no `pids.max` interface |
+
+Both versions use the same representation, and neither lists the inherited
+default.
+
+On that engine the reported controllers did not take effect. A wrapper session
+created with `--pids-limit=512` had no `pids.max` interface, kept the
+inherited 31733 rlimit, and could raise its soft limit and lower its hard limit
+to 1000. Two concurrent sessions each started 1000 background processes, the
+cap of the test loop. The launch check passed, because it compares only the
+configured `HostConfig` values. The same engine created a container with
+`--memory=64m --cpus=1 --pids-limit=64` that had no `memory.max`, `cpu.max` or
+`pids.max` interface (`/proc/self/cgroup` is `0::/`). The change therefore
+counts controllers as delegated only with the `systemd` cgroup manager (design
+D0).
+
+**Engine without delegation (task 6.3).** The operator ran the change on the
+same Podman machine 6.1.4: `cgroupfs`, controllers
+`[cpuset cpu io memory hugetlb pids rdma]`, kernel
+`6.6.87.2-microsoft-standard-WSL2`. The wrapper ran from a checkout copy on the
+distribution's ext4 file system, in unrestricted mode with isolated state and
+without the toolchain mount. Podman also warned that `/` is not a shared mount
+and that the pause process could not join a systemd cgroup (no session bus).
+
+| Check | Result |
+| --- | --- |
+| Launch notices | Passed: memory and CPU `not enforced: the rootless engine uses the cgroupfs cgroup manager, which applies no cgroup limits`; process `enforced through the process rlimit (512 tasks of the session user, threads included)` with the same reason |
+| Effective limit in the session | Passed: `Max processes 512 512`; no `pids.max` interface |
+| Raising the limit | Passed: soft above hard failed with `Invalid argument`; hard failed with `Operation not permitted`; both stayed 512 |
+| Two concurrent sessions filling the limit | Passed: 489 and 497 background processes, the second started while the first held its processes |
+| Leftover containers after the run | None |
+
+The usable count stays below 512 because of the session's own tasks and
+container startup tasks, as documented.
+
+**Delegating host and runner modes (tasks 6.2 and 6.4).** The operator ran the
+portable bundle (`run.sh`, branch tree with `.git`) on a separate WSL2 host:
+kernel `6.6.87.2-microsoft-standard-WSL2`, Podman server 4.9.3, `systemd`
+manager, controllers `[cpu io memory pids]`, Python 3.12.3 and Bash 5.2.21. The
+runtime image (`bafde53b5002…`) and the guard toolchain image
+(`a33a4e7a7085…`) were rebuilt with maintenance consent.
+
+| Check | Result |
+| --- | --- |
+| Direct unrestricted session | Passed: no budget notice; `pids.max=512`; `Max processes` is the inherited 31733, with no process rlimit set by the wrapper |
+| `bash tests/run-runtime.sh` | Passed: 19 tests in 313 s |
+| `--setup` | Passed: 68 tests |
+| `--setup-runtime` | Passed: 2 tests in 159 s |
+| `--qualification` | Passed: 31 tests in 135 s, 1 skipped |
+| `--network` | Passed: 16 tests in 362 s, 1 skipped |
+| `--guard` | Passed: 20 tests in 139 s, 1 skipped |
+| `--shared` (unit discovery) | 445 tests, 67 skipped; 14 environment failures, all proxy-session tests (see below) |
+
+The 14 `--shared` failures were all in tests that start the session proxy:
+- 13 `test_session.py` subtests: `test_proxy_budgets_follow_delegated_controllers` (6),
+  `test_start_fails_closed_on_identity_hardening_and_invalid_results` (6) and
+  `test_start_creates_verifies_and_records_the_owned_proxy`;
+- `test_launcher.py` `test_provider_session_starts_and_stops_the_proxy_with_the_selected_credential`.
+
+The bundle's temporary directory (`~/native-tmp/host-check/tmp`) makes the
+proxy's `AF_UNIX` socket path too long. The operator reran with short
+temporary directories. `test_session.py` used a directory below `/tmp` and
+passed all 20 tests. The launcher case needs protected ancestors, so it used a
+directory directly below the home directory, and passed.
+
+Earlier spike on Podman machine 6.1.4 (WSL provider, `cgroupfs`, no delegated
+controllers, `--ulimit nproc=64:64`): two concurrent containers each started 49
+background processes before fork failed, so counting is per container. About
+13 slots are taken by startup tasks of unknown origin.
+
+**Unit suites (task 6.1).** Branch working tree compared with a pristine
+`git archive HEAD` copy of `main` on the same runner (Python 3.11.2; `/tmp` and
+`$HOME` are `noexec`, so `SANDBOX_TEST_TMPDIR` points to native executable
+storage). Session tests need a short path for `AF_UNIX` sockets and use a
+symlink below `/tmp`. Setup and launcher tests need protected ancestors and use
+the long native path.
+
+| Suite | Branch | `main` |
+| --- | --- | --- |
+| `test_launcher.py` | 107 tests; 1 environment failure | 107 tests; the same failure |
+| `test_session.py` | 20 tests, passed | 20 tests, passed |
+| `test_wrapper.py` | 6 tests, passed | 6 tests, passed |
+| `test_setup.py` | 68 tests, passed (1 new) | 67 tests, passed |
+| `test_setup_wrapper.py` | 8 tests, passed | 8 tests, passed |
+| `test_qualification.py` | 31 tests (2 new), 7 skipped; passed in the final run | 29 tests, 7 skipped; the same intermittent error |
+| `test_agent_profile.py` | 21 tests, 3 skipped, passed | the same |
+| `test_alignment.py` | 17 tests, passed | 1 failure in the extracted copy only |
+
+- The launcher environment failure is
+  `test_provider_session_starts_and_stops_the_proxy_with_the_selected_credential`:
+  `AF_UNIX path too long` on the long native temporary path.
+- The intermittent error is `test_bounded_subprocess_group_cleanup`
+  (`FileNotFoundError` on `/proc/<pid>/stat`). It occurred in 1 of 6 branch runs
+  and 2 of 6 `main` runs.
+- The `main`-only alignment failure comes from scanning the extracted copy
+  outside Git, which includes the fixture profiles.
+- `bash tools/shellcheck.sh .` and `git diff --check` pass.
+- The table shows the final branch run, made after the cgroup manager rule was
+  added. Every branch suite matched the earlier comparison with `main`.
