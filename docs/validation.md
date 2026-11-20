@@ -2,7 +2,7 @@
 
 ## Windows Podman machine support (pending tag)
 
-Change: `openspec/changes/support-windows-podman-machine/`. Operator runs on
+Change: `openspec/changes/archive/2026-11-20-support-windows-podman-machine/`. Operator runs on
 2026-11-19: Windows 10.0.26300.9974, WSL 2.5.10.0 (kernel 6.6.87.2-1,
 WSLg 1.0.66), the Podman Desktop machine `podman-machine-default` (Podman
 6.1.4, `cgroupfs`, user `user`), with an Ubuntu distribution running. The spike
