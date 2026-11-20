@@ -20,8 +20,18 @@ class SetupError(ValueError):
     pass
 
 
+class EntryOverlap(SetupError):
+    """A writable mount reaches the Windows entry; the message is safe to show as is."""
+
+
+# Set by the Windows bootstrap to the entry's directory, translated into the distribution.
+WINDOWS_ENTRY = 'WRAPPER_WINDOWS_ENTRY'
+# WSL drive mounts (drvfs) ignore letter case.
+DRIVE_MOUNT = re.compile(r'/mnt/[A-Za-z](?:/|$)')
+
+
 MANIFEST = (
-    PROFILE.wrapper, 'launcher/core.sh', 'agent/launcher.sh', 'Containerfile', '.containerignore', agent_profile.PROFILE, agent_profile.POLICY,
+    PROFILE.wrapper, 'launcher/core.sh', 'launcher/windows/bootstrap.sh', 'agent/launcher.sh', 'Containerfile', '.containerignore', agent_profile.PROFILE, agent_profile.POLICY,
     'setup/common.py', 'setup/setup.py', 'setup/launch.py', 'setup/smoke.py', 'setup/diagnostics.py',
     'setup/toolchains.py',
     'network/Containerfile', 'network/.containerignore',
@@ -269,7 +279,9 @@ def runtime_environment(value, release, *, overrides=True):
                      PROFILE.env('READONLY_STATE'), *PROFILE.credential_envs):
             env.pop(name, None)
     for name, item in selected.items():
-        if name not in env:
+        # Podman treats a set CONTAINER_HOST as a remote context even when it
+        # is empty, so the local endpoint leaves the variable unset.
+        if name not in env and (item or name != 'CONTAINER_HOST'):
             env[name] = item
     return env
 
@@ -326,8 +338,29 @@ def launcher_paths(path):
     return current, links
 
 
+def same_or_inside(inner, outer):
+    inner, outer = str(inner), str(outer)
+    if DRIVE_MOUNT.match(inner) and DRIVE_MOUNT.match(outer):
+        inner, outer = inner.lower(), outer.lower()
+    return inner == outer or inner.startswith(outer.rstrip('/') + '/')
+
+
+def protect_windows_entry(entry, mounts):
+    """The session must never write the Windows entry that starts the next launch."""
+    if not entry.startswith('/'):
+        raise SetupError(WINDOWS_ENTRY + ' must be an absolute path.')
+    # drvfs paths cannot pass trusted(): the protection is that no mount reaches them.
+    entry = Path(entry).resolve()
+    for mount in mounts:
+        if same_or_inside(entry, mount) or same_or_inside(mount, entry):
+            raise EntryOverlap('The Windows entry directory ' + str(entry) + ' overlaps the writable mount '
+                               + str(mount) + '; launch from a project outside it, or move the entry.')
+
+
 def protect_mounts(value, env, args=(), *, launcher=None, workspace=None):
     mounts = writable_mounts(env, args, value['worktree'], workspace)
+    if env.get(WINDOWS_ENTRY):
+        protect_windows_entry(env[WINDOWS_ENTRY], mounts)
     paths = [value['installation'], value['command']]
     if launcher is not None:
         resolved, links = launcher_paths(launcher)

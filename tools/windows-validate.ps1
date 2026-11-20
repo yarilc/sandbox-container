@@ -1,0 +1,335 @@
+# Operator validation of the Windows entry on a Windows host, with Windows
+# PowerShell 5.1 or PowerShell 7. Reference-only: never copied.
+#
+# Run it after <name>.ps1 --container-setup, with the Podman machine set up and
+# another WSL distribution (for example Ubuntu) running:
+#
+#   .\tools\windows-validate.ps1 [-Checkout <wrapper checkout>] [-StopMachine]
+#
+# It runs the windows-launcher scenario matrix against the checkout's entry.
+# Each case runs in a child process of the same PowerShell edition, so its
+# arguments are parsed as in an interactive window and all of its output is
+# captured. It prints one RESULT line per scenario and a summary for
+# docs/validation.md, saved in the temporary directory, and removes the folders
+# and drive letter it created. -StopMachine also checks the refusals of a
+# stopped machine and of a distribution that wsl.exe alone started; it runs
+# wsl.exe --terminate, which ends running sessions, and then restarts the
+# machine with podman.exe when it is installed.
+# Ctrl+C and closing the window are checked by hand; the script prints how.
+param(
+    [string]$Checkout = (Split-Path -Parent $PSScriptRoot),
+    [switch]$StopMachine
+)
+Set-StrictMode -Version 3
+$ErrorActionPreference = 'Stop'
+
+$Checkout = (Resolve-Path -LiteralPath $Checkout).ProviderPath
+$wrapperProfile = [IO.File]::ReadAllText([IO.Path]::Combine($Checkout, 'agent', 'profile.json')) | ConvertFrom-Json
+$name = $wrapperProfile.name
+$P = $wrapperProfile.env_prefix
+$entry = [IO.Path]::Combine($Checkout, $name + '.ps1')
+$exe = (Get-Process -Id $PID).Path
+$distro = [Environment]::GetEnvironmentVariable($P + '_WSL_DISTRO')
+if ([string]::IsNullOrEmpty($distro)) { $distro = 'podman-machine-default' }
+$user = [Environment]::GetEnvironmentVariable($P + '_WSL_USER')
+if ([string]::IsNullOrEmpty($user)) { $user = 'user' }
+$installation = [Environment]::GetEnvironmentVariable($P + '_WSL_INSTALLATION')
+if ([string]::IsNullOrEmpty($installation)) {
+    $bootstrap = '.local/lib/' + $name + '/current/launcher/windows/bootstrap.sh'
+} else {
+    $bootstrap = $installation + '/current/launcher/windows/bootstrap.sh'
+}
+# Next to the checkout: AppData (and TEMP inside it) is a refused workspace, and
+# TEMP can also be an 8.3 short path, which the distribution cannot resolve.
+$work = Join-Path (Split-Path -Parent $Checkout) ($name + '-windows-validate')
+$project = Join-Path $work 'project with spaces'
+$sibling = Join-Path (Split-Path -Parent $Checkout) ($name + '-validate-sibling')
+$summaryFile = Join-Path ([IO.Path]::GetTempPath()) ($name + '-windows-validate-' + $PSVersionTable.PSEdition + '.txt')
+$results = New-Object System.Collections.Generic.List[string]
+$substDrive = $null
+
+function ConvertTo-Literal([string]$Text) { return "'" + $Text.Replace("'", "''") + "'" }
+
+function Add-Result([string]$Outcome, [string]$Scenario, [string]$Detail) {
+    $line = 'RESULT ' + $Outcome + ' ' + $Scenario + ': ' + $Detail
+    $results.Add($line)
+    [Console]::Out.WriteLine($line)
+}
+
+# Starts a process with all streams redirected; stdin is closed at once.
+function Invoke-Process([string]$FileName, [string]$ArgumentLine, [string]$Directory) {
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $FileName
+    $info.Arguments = $ArgumentLine
+    $info.WorkingDirectory = $Directory
+    $info.UseShellExecute = $false
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::Start($info)
+    $process.StandardInput.Close()
+    $out = $process.StandardOutput.ReadToEndAsync()
+    $err = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit(600000)) {
+        $process.Kill()
+        return [pscustomobject]@{ Code = 'timeout'; Out = ''; Err = 'timed out after 600 s' }
+    }
+    $process.WaitForExit()
+    return [pscustomobject]@{ Code = $process.ExitCode; Out = $out.Result; Err = $err.Result }
+}
+
+# Runs PowerShell code in a child of this edition. $E is the entry. The child
+# starts without the operator's <P>_* settings (except <P>_WSL_*) and WSLENV.
+function Invoke-Case([string]$Body, [string]$Location = $project) {
+    $lines = @(
+        '$ErrorActionPreference = ''Continue''',
+        ('$E = ' + (ConvertTo-Literal $entry)),
+        ('foreach ($k in @([Environment]::GetEnvironmentVariables().Keys)) { if (([string]$k).StartsWith(' +
+            (ConvertTo-Literal ($P + '_')) + ') -and -not ([string]$k).StartsWith(' + (ConvertTo-Literal ($P + '_WSL_')) +
+            ')) { Remove-Item -LiteralPath (''Env:'' + $k) } }'),
+        'if (Test-Path Env:WSLENV) { Remove-Item Env:WSLENV }',
+        ('Set-Location -LiteralPath ' + (ConvertTo-Literal $Location)),
+        $Body,
+        'exit $LASTEXITCODE'
+    )
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(($lines -join "`n")))
+    return (Invoke-Process $exe ('-NoProfile -NonInteractive -OutputFormat Text -EncodedCommand ' + $encoded) $work)
+}
+
+# The first line of text. A Windows PowerShell 5.1 child started with
+# -EncodedCommand also writes CLIXML (progress records) to stderr; it is dropped.
+function Get-FirstLine([string]$Text) {
+    $plain = $Text -replace '#< CLIXML', '' -replace '(?s)<Obj S="progress".*?</Obj>', '' -replace '</?Objs[^>]*>', ''
+    foreach ($line in ($plain -split "`r?`n")) { if ($line.Trim()) { return $line.Trim() } }
+    return '(no output)'
+}
+
+# Records a case: the expected status and a text expected in the output.
+function Test-Outcome([string]$Scenario, $Result, [int]$Code, [string]$Text) {
+    $all = $Result.Out + "`n" + $Result.Err
+    if ($Result.Code -eq $Code -and $all.Contains($Text)) {
+        Add-Result 'PASS' $Scenario ('status ' + $Result.Code + '; ' + (Get-FirstLine $(if ($Code -eq 0) { $Result.Out } else { $Result.Err })))
+    } else {
+        Add-Result 'FAIL' $Scenario ('status ' + $Result.Code + ' (expected ' + $Code + ', text ''' + $Text + '''); out: ' +
+            (Get-FirstLine $Result.Out) + '; err: ' + (Get-FirstLine $Result.Err))
+    }
+}
+
+# wsl.exe --terminate, then wait until WSL no longer lists the distribution as
+# running, and a little longer: in round 5, podman machine start right after a
+# terminate failed in the machine's bootstrap and left WSL unresponsive.
+function Invoke-DistributionStop {
+    $null = Invoke-Probe @('--terminate', $distro)
+    for ($i = 0; $i -lt 30; $i++) {
+        $running = Invoke-Probe @('-l', '--running', '-q')
+        if (-not (@($running.Output | ForEach-Object { $_.Trim() }) -contains $distro)) { break }
+        Start-Sleep -Seconds 1
+    }
+    Start-Sleep -Seconds 5
+}
+
+function ConvertTo-Hex([string]$Text) {
+    return ((@([Text.Encoding]::UTF8.GetBytes($Text)) | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function Invoke-Probe([string[]]$WslArguments) {
+    $ErrorActionPreference = 'Continue'
+    $saved = [Environment]::GetEnvironmentVariable('WSL_UTF8')
+    $env:WSL_UTF8 = '1'
+    try {
+        $output = @(& wsl.exe @WslArguments 2>&1 | ForEach-Object { ([string]$_) -replace "`0", '' })
+        return [pscustomobject]@{ Code = $LASTEXITCODE; Output = $output }
+    } finally {
+        if ($null -eq $saved) { Remove-Item Env:WSL_UTF8 } else { $env:WSL_UTF8 = $saved }
+    }
+}
+
+[void](New-Item -ItemType Directory -Force -Path $project)
+try {
+    $wslVersion = Invoke-Probe @('--version')
+    $results.Add('Checkout: ' + $Checkout + '; entry: ' + $name + '.ps1')
+    $results.Add('PowerShell ' + $PSVersionTable.PSVersion + ' ' + $PSVersionTable.PSEdition + '; ' +
+        (($wslVersion.Output | Where-Object { $_.Trim() } | Select-Object -First 2) -join '; '))
+    $running = Invoke-Probe @('-l', '--running', '-q')
+    $others = @($running.Output | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -ne $distro })
+    $results.Add('Distribution: ' + $distro + ', user ' + $user + '; other running distributions: ' + ($others -join ', '))
+    foreach ($line in $results) { [Console]::Out.WriteLine($line) }
+
+    # Setup state: the release bootstrap must exist.
+    $state = Invoke-Probe @('-d', $distro, '-u', $user, '--exec', '/bin/sh', '-c', ('cd && test -f ' + $bootstrap))
+    if ($state.Code -ne 0) {
+        Add-Result 'FAIL' 'Setup state' ('no installation (' + $bootstrap + '); run .\' + $name + '.ps1 --container-setup first')
+        return
+    }
+    Add-Result 'PASS' 'Setup state' ('release bootstrap present: ' + $bootstrap)
+    if ($others.Count -eq 0) { Add-Result 'SKIP' 'Another distribution is active' 'start another WSL distribution and rerun' }
+
+    $r = Invoke-Case '& $E -c ''printf ok'''
+    Test-Outcome 'Ordinary launch; Mode from setup' $r 0 'network mode=unrestricted'
+    if ($others.Count -gt 0) { Test-Outcome ('Another distribution is active (' + ($others -join ', ') + ')') $r 0 'ok' }
+
+    Test-Outcome 'Exit status' (Invoke-Case '& $E -c ''exit 7''') 7 ''
+
+    # Arguments, compared as hex so that console code pages do not matter.
+    $nonAscii = [string][char]0x00E8 + [char]::ConvertFromUtf32(0x1F600)
+    $r = Invoke-Case ('& $E -c ''for a; do printf "[%s]\n" "$(printf %s "$a" | od -An -tx1 | tr -d " \n")"; done'' _ x '''' ''a "b" c\'' ''--'' ' +
+        '([string][char]0x00E8 + [char]::ConvertFromUtf32(0x1F600))')
+    $expected = (@('x', '', 'a "b" c\', '--', $nonAscii) | ForEach-Object { '[' + (ConvertTo-Hex $_) + ']' }) -join ','
+    $got = (@($r.Out -split "`r?`n" | Where-Object { $_ -match '^\[' }) -join ',')
+    if ($r.Code -eq 0 -and $got -eq $expected) { Add-Result 'PASS' 'Quotes and empty values; Non-ASCII argument' $got }
+    else { Add-Result 'FAIL' 'Quotes and empty values; Non-ASCII argument' ('status ' + $r.Code + ' got ' + $got + ' expected ' + $expected + '; err: ' + (Get-FirstLine $r.Err)) }
+    Test-Outcome 'Unquoted comma' (Invoke-Case '& $E -c true a,b') 1 'is a list'
+    Test-Outcome 'Oversized arguments' (Invoke-Case '& $E (''a'' * 24573)') 1 '32766'
+    Test-Outcome 'Pipeline input' (Invoke-Case '''x'' | & $E -c cat') 1 'pipeline input is unsupported'
+
+    # Environment: forwarded by name, reserved, unrelated and empty variables, restoration.
+    $r = Invoke-Case (('$env:{0}_ENV_VARS = ''VALIDATE_LISTED VALIDATE_EMPTY PATH''; $env:VALIDATE_LISTED = ''listed value''; ' +
+        '$env:VALIDATE_UNLISTED = ''x''; [Environment]::SetEnvironmentVariable(''VALIDATE_EMPTY'', ''''); ' +
+        '$env:WSLENV = ''USERPROFILE/p''; & $E -c ''printf "%s|%s|%s\n" "${{VALIDATE_LISTED-unset}}" "${{VALIDATE_UNLISTED-unset}}" "${{VALIDATE_EMPTY-unset}}"''; ' +
+        '$c = $LASTEXITCODE; ''WSLENV='' + $env:WSLENV; ''ABSENT='' + (Test-Path Env:WRAPPER_WINDOWS_ARGS) + (Test-Path Env:WRAPPER_WINDOWS_ENTRY); exit $c') -f $P)
+    Test-Outcome 'Listed variable; Unrelated Windows variable; Empty value' $r 0 'listed value|unset|unset'
+    Test-Outcome 'Name reserved by the distribution' $r 0 'PATH is not forwarded'
+    Test-Outcome 'Session environment restored (WSLENV)' $r 0 'WSLENV=USERPROFILE/p'
+    Test-Outcome 'Session environment restored (absent variables stay absent)' $r 0 'ABSENT=FalseFalse'
+
+    # Working directory.
+    $drive = $project.Substring(0, 1).ToLowerInvariant()
+    $mount = '/mnt/' + $drive + $project.Substring(2).Replace('\', '/')
+    Test-Outcome 'Drive path with spaces' (Invoke-Case '& $E -c pwd') 0 $mount
+    $inside = '\\wsl.localhost\' + $distro + '\tmp'
+    if (Test-Path -LiteralPath $inside) {
+        Test-Outcome 'Path inside a WSL distribution' (Invoke-Case '& $E' $inside) 1 'inside a WSL distribution'
+    } else { Add-Result 'SKIP' 'Path inside a WSL distribution' ($inside + ' is not reachable') }
+    $share = '\\localhost\' + $project.Substring(0, 1) + '$' + $project.Substring(2)
+    if (Test-Path -LiteralPath $share) {
+        Test-Outcome 'Network share' (Invoke-Case '& $E' $share) 1 'network or device path'
+    } else { Add-Result 'SKIP' 'Network share' ($share + ' is not reachable (administrative share)') }
+    if (Get-Command -Name 'subst.exe' -CommandType Application -ErrorAction SilentlyContinue) {
+        $used = @([IO.DriveInfo]::GetDrives() | ForEach-Object { $_.Name.Substring(0, 1).ToUpperInvariant() })
+        foreach ($letter in @('Y', 'X', 'W', 'V', 'U', 'T')) { if ($used -notcontains $letter) { $substDrive = $letter + ':'; break } }
+    }
+    if ($null -ne $substDrive) {
+        & subst.exe $substDrive $work
+        Test-Outcome ('Drive not mounted (' + $substDrive + ' from subst)') (Invoke-Case '& $E' ($substDrive + '\project with spaces')) 1 'which this distribution does not mount'
+    } else { Add-Result 'SKIP' 'Drive not mounted' 'subst.exe or a free drive letter is unavailable' }
+    if (Test-Path -LiteralPath 'HKCU:\Software') {
+        Test-Outcome 'Registry location' (Invoke-Case '& $E' 'HKCU:\Software') 1 'not a file system path'
+    } else { Add-Result 'SKIP' 'Registry location' 'no HKCU: drive' }
+
+    # Windows folders refused by the core.
+    $profileDirectory = [Environment]::GetFolderPath('UserProfile')
+    $windowsDirectory = [Environment]::GetFolderPath('Windows')
+    if ($profileDirectory -and $windowsDirectory) {
+        Test-Outcome 'Windows folders: profile' (Invoke-Case '& $E' $profileDirectory) 1 'refusing sensitive workspace'
+        Test-Outcome 'Windows folders: profile in lower case' (Invoke-Case '& $E' $profileDirectory.ToLowerInvariant()) 1 'refusing sensitive workspace'
+        Test-Outcome 'Windows folders: Users' (Invoke-Case '& $E' (Split-Path -Parent $profileDirectory)) 1 'refusing sensitive workspace'
+        Test-Outcome 'Windows folders: Windows' (Invoke-Case '& $E' $windowsDirectory) 1 'refusing sensitive workspace'
+        $documents = [Environment]::GetFolderPath('MyDocuments')
+        if ($documents) {
+            Test-Outcome 'Windows folders: Documents' (Invoke-Case '& $E' $documents) 1 'refusing sensitive workspace'
+        }
+        $localData = [Environment]::GetFolderPath('LocalApplicationData')
+        if ($localData) {
+            Test-Outcome 'Windows folders: inside AppData' (Invoke-Case '& $E' $localData) 1 'refusing sensitive workspace'
+        }
+    } else { Add-Result 'SKIP' 'Windows folders' 'no Windows profile or system folder' }
+
+    # Modes.
+    Test-Outcome 'Offline requested' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E')) 1 'supports only unrestricted networking'
+    Test-Outcome 'Delegation requested' (Invoke-Case ('$env:' + $P + '_PODMAN = ''1''; & $E')) 1 'is unsupported on Podman machine'
+    Test-Outcome 'Qualification requested' (Invoke-Case '& $E --container-qualify') 1 '--container-qualify'
+    Test-Outcome 'Explicit unrestricted networking' (Invoke-Case ('$env:' + $P + '_NETWORK = ''unrestricted''; & $E -c ''printf ok''')) 0 'ok'
+
+    # Entry directory outside writable mounts.
+    Test-Outcome 'Launch from the checkout' (Invoke-Case '& $E -c true' $Checkout) 1 'overlaps the writable mount'
+    Test-Outcome 'Different letter case' (Invoke-Case '& $E -c true' $Checkout.ToUpperInvariant()) 1 'overlaps the writable mount'
+    if (Test-Path -LiteralPath $sibling) {
+        Add-Result 'SKIP' 'Sibling checks' ($sibling + ' already exists')
+    } else {
+        [void](New-Item -ItemType Directory -Path $sibling)
+        Test-Outcome 'Worktree scope with a sibling checkout' (Invoke-Case '& $E --container-git-worktree -c true' $sibling) 1 'overlaps the writable mount'
+        Test-Outcome 'Sibling without worktree scope' (Invoke-Case '& $E -c ''printf ok''' $sibling) 0 'ok'
+        Remove-Item -LiteralPath $sibling -Recurse -Force
+    }
+
+    # Redirected input through cmd.exe reaches the session unchanged.
+    if (Get-Command -Name 'cmd.exe' -CommandType Application -ErrorAction SilentlyContinue) {
+        $inputFile = Join-Path $work 'input.bin'
+        [IO.File]::WriteAllBytes($inputFile, [byte[]](0x61, 0x0a, 0xc3, 0xa8, 0x0d, 0x0a, 0x00, 0x7a))
+        $r = Invoke-Process 'cmd.exe' ('/d /s /c ""' + $exe + '" -NoProfile -NonInteractive -File "' + $entry +
+            '" -c "od -An -tx1" < "' + $inputFile + '""') $project
+        $hex = ($r.Out -replace '\s', '')
+        if ($r.Code -eq 0 -and $hex.EndsWith('610ac3a80d0a007a')) { Add-Result 'PASS' 'Redirected input' $hex }
+        else { Add-Result 'FAIL' 'Redirected input' ('status ' + $r.Code + ' got ' + $hex + '; err: ' + (Get-FirstLine $r.Err)) }
+    } else { Add-Result 'SKIP' 'Redirected input' 'no cmd.exe' }
+
+    # Distribution, user and installation diagnosis.
+    Test-Outcome 'Missing installation' (Invoke-Case ('$env:' + $P + '_WSL_INSTALLATION = ''/nonexistent/validate''; & $E')) 1 ('.\' + $name + '.ps1 --container-setup')
+    Test-Outcome 'Missing distribution' (Invoke-Case ('$env:' + $P + '_WSL_DISTRO = ''validate-missing''; & $E')) 1 'is not registered'
+    Test-Outcome 'Missing user' (Invoke-Case ('$env:' + $P + '_WSL_USER = ''validate-missing''; & $E')) 1 'does not exist'
+    Test-Outcome 'Invalid name' (Invoke-Case ('$env:' + $P + '_WSL_DISTRO = ''bad name''; & $E')) 1 'must contain only letters'
+
+    # Help and setup routing.
+    $r = Invoke-Case '& $E --container-help'
+    Test-Outcome 'Help with a machine (Windows part)' $r 0 ($P + '_WSL_DISTRO')
+    Test-Outcome 'Help with a machine (wrapper help)' $r 0 'Usage:'
+    Test-Outcome 'Help without a machine' (Invoke-Case ('$env:' + $P + '_WSL_DISTRO = ''validate-missing''; & $E --container-help')) 0 'Podman Desktop'
+    Test-Outcome 'Setup with other arguments' (Invoke-Case '& $E --container-setup --container-shell') 1 'must be used alone'
+
+    if ($StopMachine) {
+        Invoke-DistributionStop
+        Test-Outcome 'Stopped machine' (Invoke-Case '& $E -c ''printf ok''') 1 'podman machine start'
+        Test-Outcome 'Help with a stopped machine' (Invoke-Case '& $E --container-help') 0 'The Podman machine is stopped'
+        $running = Invoke-Probe @('-l', '--running', '-q')
+        if (@($running.Output | ForEach-Object { $_.Trim() }) -contains $distro) {
+            Add-Result 'FAIL' 'Stopped machine stays stopped' ($distro + ' is running after the refusals')
+        } else { Add-Result 'PASS' 'Stopped machine stays stopped' ($distro + ' is not running') }
+        # Started by wsl.exe alone: no /run/user/<uid>, so no podman command works.
+        $null = Invoke-Probe @('-d', $distro, '-u', $user, '--exec', '/bin/true')
+        Test-Outcome 'Distribution started by WSL alone (launch)' (Invoke-Case '& $E -c ''printf ok''') 1 'wsl --terminate'
+        Test-Outcome 'Distribution started by WSL alone (setup)' (Invoke-Case '& $E --container-setup') 1 'runs without the Podman machine'
+        Invoke-DistributionStop
+        $podman = Get-Command -Name 'podman.exe' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($podman) {
+            $started = Invoke-Process $podman.Source ('machine start ' + $distro) $HOME
+            if ($started.Code -ne 0) {
+                # One retry after a clean stop; WSL may still be settling.
+                Invoke-DistributionStop
+                Start-Sleep -Seconds 10
+                $started = Invoke-Process $podman.Source ('machine start ' + $distro) $HOME
+            }
+            if ($started.Code -ne 0) {
+                Add-Result 'FAIL' 'Machine restarted with Podman' ('podman machine start: status ' + $started.Code + '; ' +
+                    (Get-FirstLine $started.Err) + '. Run wsl --shutdown, then podman machine start, before other checks')
+            } else {
+                Test-Outcome 'Machine restarted with Podman' (Invoke-Case '& $E -c ''printf ok''') 0 'ok'
+            }
+        } else {
+            Add-Result 'SKIP' 'Machine restarted with Podman' 'podman.exe not found; start the machine with Podman Desktop'
+        }
+    } else { Add-Result 'SKIP' 'Stopped machine' 'rerun with -StopMachine (ends running sessions)' }
+} finally {
+    if ($null -ne $substDrive) { & subst.exe $substDrive /d }
+    # After -StopMachine a helper process of WSL or Podman may keep a folder of
+    # $work as its current directory; the summary must still be written.
+    if (Test-Path -LiteralPath $work) {
+        try {
+            Remove-Item -LiteralPath $work -Recurse -Force
+        } catch {
+            $results.Add('Note: ' + $work + ' was not removed (' + $_.Exception.Message + '); remove it after ' +
+                'wsl --shutdown or a restart')
+            [Console]::Out.WriteLine($results[$results.Count - 1])
+        }
+    }
+    $passed = @($results | Where-Object { $_.StartsWith('RESULT PASS') }).Count
+    $failed = @($results | Where-Object { $_.StartsWith('RESULT FAIL') }).Count
+    $skipped = @($results | Where-Object { $_.StartsWith('RESULT SKIP') }).Count
+    $results.Add(('Summary: {0} passed, {1} failed, {2} skipped' -f $passed, $failed, $skipped))
+    $results.Add('By hand: Ctrl+C in an interactive session (one interrupt), and closing the window during a session;')
+    $results.Add('  afterwards wsl.exe -d ' + $distro + ' -u ' + $user + ' --exec podman ps -a must list no container of the session.')
+    [IO.File]::WriteAllLines($summaryFile, $results.ToArray())
+    [Console]::Out.WriteLine($results[$results.Count - 3])
+    [Console]::Out.WriteLine($results[$results.Count - 2])
+    [Console]::Out.WriteLine($results[$results.Count - 1])
+    [Console]::Out.WriteLine('Saved: ' + $summaryFile)
+}

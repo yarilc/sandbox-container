@@ -1,5 +1,261 @@
 # Validation record
 
+## Windows Podman machine support (pending tag)
+
+Change: `openspec/changes/support-windows-podman-machine/`. Operator runs on
+2026-11-19: Windows 10.0.26300.9974, WSL 2.5.10.0 (kernel 6.6.87.2-1,
+WSLg 1.0.66), the Podman Desktop machine `podman-machine-default` (Podman
+6.1.4, `cgroupfs`, user `user`), with an Ubuntu distribution running. The spike
+and repro scripts were throwaway operator scripts built from the branch working
+tree; they are not committed.
+
+**PowerShell and `wsl.exe` spike (task 1.2).** Windows PowerShell
+5.1.26100.9818 (Desktop) and PowerShell 7.7.0 (Core).
+
+| Check | Windows PowerShell 5.1 | PowerShell 7.7 |
+| --- | --- | --- |
+| `wsl.exe -l -q` | UTF-16 with NUL characters | the same |
+| `wsl.exe -l -q` with `WSL_UTF8=1` | no NUL; distribution found | the same |
+| `--cd ~ --exec /bin/bash <home-relative path>` | starts in `/home/user` | fails with 127: PowerShell replaces `~`, also in a splatted array |
+| `--exec /bin/sh -c 'cd && exec /bin/bash <home-relative path>'` | starts in `/home/user` | the same |
+| `--cd` with a drive path containing spaces | starts in the matching `/mnt/c/...` directory | the same |
+| Script `$args` binding | `''`, `"`, `a "b" c\`, `\`, `è` and an emoji kept; bare `--` consumed; `-x:y` split into `-x:` and `y`; `a,b` an `Object[]`; `5` an `Int32` | the same |
+| `$MyInvocation.ExpectingInput` | `True` with pipeline input, `False` otherwise | the same |
+| Arguments as base64 of NUL-terminated UTF-8 in one variable through `WSLENV` (`/u`) | 9 arguments, bytes unchanged | the same |
+| Variable size through `WSLENV` | 30000 and 32766 characters delivered | the same |
+| .NET `SetEnvironmentVariable` with 32767 and 32768 characters | both refused | both accepted |
+| `wslpath -a -u` in the distribution | `C:\` gives `/mnt/c/`; `Z:\...`, `\\server\share\x` and `\\wsl$\Ubuntu\home` fail with 1; `\\wsl.localhost\podman-machine-default\home` gives `/home` | the same |
+| Redirected native stderr under `$ErrorActionPreference = 'Stop'` | terminating `NativeCommandError` | no error |
+| `exit 7` in the distribution | `$LASTEXITCODE` 7 | the same |
+| Missing user; missing distribution | -1 with `Wsl/WSL_E_USER_NOT_FOUND`; -1 with `Wsl/Service/WSL_E_DISTRO_NOT_FOUND` | the same |
+| Missing script | 127 | the same |
+| Terminal | no TTY with captured stdout; TTY with inherited handles, `TERM=xterm-256color` | the same |
+| Stdin redirected by `cmd /c "... < file"` | bytes unchanged, NUL and CR included | the same |
+| Stdin piped by PowerShell (`a`, LF, `è`) | `EF BB BF 61 0A 3F 0D 0A`: byte order mark, `?`, CRLF | `61 0A C3 A8 0D 0A`: CRLF appended |
+| Ctrl+C | one SIGINT; `wsl.exe` returns 130; the script continues and `finally` runs | the same |
+| Absent variable restored by passing `$null` to `SetEnvironmentVariable` | removed | left defined and empty |
+| Window closed | `finally` does not run; the Linux process receives one SIGHUP and keeps running for the 12 s it was given | the same |
+
+**`podman rm` timeout (task 1.3).** Ten unrestricted sessions
+(`-c 'sleep 300'`) ran in the machine distribution from a checkout copy on
+ext4. Each was interrupted with SIGINT to its process group once its container
+ran, under shell job control so that the wrapper's INT trap ran as with Ctrl+C.
+Every session ended with status 130 about 2 s after the signal. One interval
+was negative because the distribution's clock was adjusted. No container
+remained and no log mentioned a timeout, so the timeout does not reproduce and
+no follow-up task was added. Each session announced that the memory and CPU
+budgets are not enforced under `cgroupfs` and that the process budget uses the
+process rlimit (512). An earlier attempt without job control left SIGINT
+ignored in the wrapper (status 1); it is not counted.
+
+**Consequences (task 1.4).** The specs and design were updated: the bootstrap
+starts through `sh -c 'cd && exec ...'` instead of `--cd ~`; the encoded
+arguments are limited to 32766 characters; empty variables count as unset on
+both versions; an absent variable is restored with `Remove-Item`; the probes
+capture stderr outside `Stop`; closing the window ends the session with the
+bounded shutdown; and pipeline input is refused on both versions.
+
+**Setup on the machine (task 8.2, first attempts).** Two failures came before
+a completed setup:
+
+- The distribution had been started by `wsl.exe` while Podman Desktop showed
+  the machine as stopped. `/run/user/1000` was missing, and every `podman` call
+  as `user` failed with status 125 (`creating events dirs: mkdir
+  /run/user/1000: permission denied`). The database keeps the run root
+  `/run/user/1000/containers`. After `wsl --terminate` and `podman machine
+  start`, `podman info` answered `true linux false` in about 2 s.
+- The engine checks then passed and the runtime image was built, but the smoke
+  check failed with status 125. It ran Podman with an empty `CONTAINER_HOST`,
+  which Podman 6.1.4 treats as a remote context. Task 4.5 leaves the variable
+  unset for the local endpoint.
+
+With task 4.5, setup completed in rounds 4 and 5 (`Sandbox: ready`, the smoke
+check passed, unrestricted, local endpoint), and the entry then printed
+`start sessions with .\sandbox-container.ps1 from a project directory`.
+
+**Antivirus.** While the round 4 snapshot was extracted with `tar` on Windows,
+the antivirus on the operator's PC quarantined
+`tests/fixtures/shell-agent/launcher.sh` as `Atc4.Detection`, a name used by
+Bitdefender's Advanced Threat Control. The file holds only variable
+assignments and only the Linux tests use it; setup and the Windows entry do
+not read it.
+
+**Runtime suite in the machine (task 8.3).** `bash tests/run-runtime.sh` ran
+twice, unrestricted, from a checkout copy on the distribution's ext4 file
+system, against a foreground API service that the operator script started at
+the socket path Podman reports (`/mnt/wslg/runtime-dir/podman/podman.sock`).
+Both runs gave the same result: 19 tests in about 140 s, 18 passed.
+`test_effective_hardening_and_budgets_in_every_unrestricted_variant` failed:
+
+- Its eight subtests read `/sys/fs/cgroup/memory.max`, which does not exist
+  under the `cgroupfs` manager. The launch notices stated, as expected since
+  `sandbox-ref-26`, that the memory and CPU budgets are not enforced and that
+  the process budget uses the process rlimit.
+- Its process-budget check with `PIDS_LIMIT=32` could not start the container
+  (`crun: clone: Resource temporarily unavailable`, status 125). Under the
+  rlimit fallback, 32 tasks of the session user leave no room for container
+  startup.
+
+The test assumes delegated cgroup controllers and does not yet cover an engine
+without them.
+
+**Validation script (task 8.2, round 4).** After setup completed, the operator
+ran `tools/windows-validate.ps1` from `C:\Work\sandbox-container`, with Ubuntu
+running and without `-StopMachine`:
+
+| Edition | Result |
+| --- | --- |
+| PowerShell 7.7.0 | 38 passed, 0 failed, 1 skipped (stopped machine) |
+| Windows PowerShell 5.1.26100.9818 | 37 passed, 1 failed, 1 skipped (stopped machine) |
+
+On Windows PowerShell 5.1, "Redirected input" failed. Started as
+`cmd /c "powershell -File <entry> -c od < input.bin"`, the entry saw
+`$MyInvocation.ExpectingInput` set and refused the input as pipeline input.
+PowerShell 7.7 passes the same case. The spike had checked `ExpectingInput`
+only for pipeline input. In the 5.1 summary every refusal showed
+`#< CLIXML` instead of its message: children started with `-EncodedCommand`
+write CLIXML progress records to stderr. The checks search the whole output,
+so the results stand, and the script now leaves that block out of the summary.
+
+By hand, from `C:\Users\yari\test`, in both editions, with
+`sandbox-container.ps1 -c 'sleep 60'`:
+
+- Ctrl+C: status 130;
+- closing the window: afterwards `podman ps -a` in the distribution listed no
+  container.
+
+**Redirected input on Windows PowerShell 5.1 (round 5).** `stdin-check.ps1`
+redirected `61 0a c3 a8 0d 0a 00 7a` through `cmd.exe` to a script that ran
+`wsl.exe ... od -An -tx1`:
+
+| Started as | `ExpectingInput` | `IsInputRedirected` | Bytes in the distribution |
+| --- | --- | --- | --- |
+| `powershell.exe -File` | True | True | unchanged |
+| `powershell.exe -Command "& <script>"` | False | True | unchanged |
+| `pwsh.exe -File` | False | True | unchanged |
+| `pwsh.exe -Command "& <script>"` | False | True | unchanged |
+
+Windows PowerShell 5.1 therefore reports the redirected input of a `-File`
+script as pipeline input but does not read it. The shim now accepts that case
+(design D3), and `tests/windows/shim_tests.ps1` covers it.
+
+**Validation script (task 8.2, round 5).** After a new setup:
+
+| Edition | Result |
+| --- | --- |
+| PowerShell 7.7.0, `-StopMachine` | 43 passed, 2 failed |
+| Windows PowerShell 5.1.26100.9818 | 37 passed, 1 failed (redirected input, fixed since), 1 skipped |
+
+With `-StopMachine`, every refusal passed: a stopped machine (status 1, the
+distribution stayed stopped), help with a stopped machine (status 0), and a
+distribution started by `wsl.exe` alone, for launch and for setup. The
+restart failed: `podman machine start`, run right after `wsl --terminate`,
+stopped with `the WSL bootstrap script failed ... exit status 0xffffffff`
+(status 125), and the launch after it found the machine stopped. The next
+`wsl.exe` call failed with `Wsl/Service/CreateInstance/HCS_E_CONNECTION_TIMEOUT`
+until `wsl --shutdown` and `podman machine start`. The script now waits until
+WSL no longer lists the distribution as running, plus 5 s, and retries the
+start once.
+
+**Validation script (task 8.2, round 6).** Windows PowerShell 5.1.26100.9818
+with `-StopMachine`, Ubuntu running: 44 passed, 0 failed, 0 skipped, read from
+the console. Redirected input passed (`610ac3a80d0a007a`), and so did every
+stopped-machine case and the restart with `podman machine start`. The final
+cleanup then failed, because a process kept a folder of the work directory as
+its current directory after the restart, so the summary file was not written.
+The script now reports such a folder and still writes the summary, and runs
+`podman machine start` from the profile directory.
+
+With that script, the operator reran both editions:
+
+| Edition | Result |
+| --- | --- |
+| Windows PowerShell 5.1.26100.9818, `-StopMachine` | 44 passed, 0 failed, 0 skipped |
+| PowerShell 7.7.0 | 38 passed, 0 failed, 1 skipped (stopped machine; its refusals passed on PowerShell 7.7 in round 5) |
+
+Both runs noted that the work directory could not be removed: its
+`project with spaces` folder, from which the first session after the restart
+ran, stayed in use while WSL ran. A WSL process probably keeps it as its
+current directory; `wsl --shutdown` releases it. The README states this limit.
+
+**Shared suites (task 9.1).** The branch working tree and a `git archive main`
+copy ran on the same runner (Python 3.11.2, `SANDBOX_TEST_TMPDIR` on native
+executable storage, whose long path makes `AF_UNIX` socket paths too long):
+
+| Suite | Branch | `main` |
+| --- | --- | --- |
+| `test_launcher.py` | 109 tests; 1 environment failure (`AF_UNIX path too long`, provider session) | 107 tests; the same failure |
+| `test_wrapper.py` | 6 passed | 6 passed |
+| `test_session.py` | 20 tests; 13 environment failures (`AF_UNIX path too long`) | the same 13 |
+| `test_setup.py` | 78 passed | 68 passed |
+| `test_setup_wrapper.py` | 9 passed | 8 passed |
+| `test_qualification.py` | 31 passed, 7 skipped | 1 error (`ProcessLookupError` in `test_bounded_subprocess_group_cleanup`, a cleanup race that passed on the branch) |
+| `test_agent_profile.py` | 21 passed, 3 skipped | 21 passed, 3 skipped |
+| `test_alignment.py` | 21 passed | 17 passed, 1 skipped |
+| `test_windows_bootstrap.py` | 7 passed | absent |
+
+`bash tools/shellcheck.sh` passed on both trees. `bash tools/powershell.sh .`
+reported no PSScriptAnalyzer finding and 35 shim cases passed, and
+`git diff --check` was clean. The branch adds no failure; the environment
+failures are the ones recorded for earlier tags.
+
+**Runner modes (task 9.2).** On the same runner and engine (Podman client
+4.3.1, server 4.9.3, `systemd` manager, controllers `[cpu memory pids]`),
+with the runtime image whose build-inputs hash `b50c3422…` matches this tree.
+The guard toolchain image `localhost/sandbox-container-guard-toolchain:development`
+came from the build cache (`101d7cad…`, the image the other wrappers' setups had
+built from the same recipe), so nothing was downloaded.
+
+| Mode | Result |
+| --- | --- |
+| `--shared` (unit discovery) | 469 tests, 69 skipped; the 14 `AF_UNIX path too long` environment failures of task 9.1 (13 in `test_session.py`, 1 in `test_launcher.py`), and the `test_bounded_subprocess_group_cleanup` cleanup race (`/proc/<pid>/stat` gone), which also failed once on `main` in task 9.1 and passed in the branch's own run |
+| `--setup` | Passed: 78 tests |
+| `--setup-runtime` | Passed: 2 tests in 125 s |
+| `--qualification` | Passed: 31 tests in 147 s, 1 skipped (no authentication method in the profile) |
+| `--guard` | Passed: 20 tests in 109 s, 1 skipped (`--guard-idle`) |
+| `--network` | Passed: 16 tests in 344 s, 1 skipped (toolchain examples) |
+
+**After the code review (task 10.5, local part).** Same runner, engine and
+images, after the fixes of tasks 10.1 to 10.4:
+
+| Check | Result |
+| --- | --- |
+| `bash tools/shellcheck.sh .` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 37 shim cases |
+| `--shared` (unit discovery) | 472 tests, 69 skipped; only the 14 `AF_UNIX path too long` environment failures |
+| `--setup` | Passed: 80 tests |
+| `--setup-runtime` | Passed: 2 tests in 132 s |
+| `--qualification` | Passed: 31 tests in 108 s, 1 skipped |
+| `--guard` | Passed: 20 tests in 112 s, 1 skipped |
+| `--network` | Passed: 16 tests in 304 s, 1 skipped |
+| `bash tests/run-runtime.sh` | Passed: 19 tests in 254 s |
+
+**After the code review (task 10.5, Windows round 7).** After a new setup, with
+Ubuntu running and the work folder next to the checkout
+(`C:\Work\sandbox-container-windows-validate`):
+
+| Edition | Result |
+| --- | --- |
+| Windows PowerShell 5.1.26100.9818, `-StopMachine` | 46 passed, 0 failed, 0 skipped |
+| PowerShell 7.7.0 | 40 passed, 0 failed, 1 skipped (stopped machine) |
+
+The new cases refused `Documents` (`/mnt/c/Users/yari/Documents`) and a
+folder inside `AppData` (`/mnt/c/Users/yari/AppData/Local`) in both editions.
+Redirected input passed in both, and so did every stopped-machine case and the
+restart with Podman on 5.1. As in round 6, the project folder of the first
+session after the restart stayed in use until WSL stopped, so both runs noted
+that the work folder was not removed.
+
+**Runtime budget test that follows the engine (task 8.4).** On this runner
+(Podman client 4.3.1, server 4.9.3, `systemd` manager, controllers
+`[cpu memory pids]`, kernel `6.18.58.1-microsoft-standard-WSL2`), with the
+installed runtime image whose build-inputs hash `b50c3422…` matches this tree,
+`bash tests/run-runtime.sh` passed: 19 tests in 229 s. The changed test
+takes the delegated branch there. In the machine distribution (round 5,
+`cgroupfs`, after a fresh setup), `run-runtime.ps1` ran the suite from an ext4
+checkout copy, once started from each PowerShell edition: 19 tests passed in
+149 s and in 145 s, so the `cgroupfs` branch with the process rlimit holds too.
+
 ## Terminal attach with an engine-forced read-only `/dev`: 2026-11-10
 
 Change: `openspec/changes/allow-terminal-on-read-only-dev/`.

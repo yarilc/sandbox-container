@@ -30,6 +30,28 @@ started automatically. An explicit empty network override on a managed
 invocation selects the offline default instead of the saved choice. Offline
 sessions have no external network.
 
+Offline networking, provider networking and delegation need a same-host Unix
+Podman service. Before the network question, setup checks, without changing
+anything, whether a service answers at `CONTAINER_HOST`, at the saved endpoint
+or at the default endpoint. It also checks whether a usable systemd user manager
+(`systemctl --user show-environment`) could start the user `podman.socket`.
+
+A Podman machine distribution on WSL has no systemd user manager, so neither
+check succeeds there. In that case setup offers only unrestricted networking:
+
+- it explains why, and asks `Continue with unrestricted networking?`, which
+  defaults to no;
+- it saves the local engine as the launch endpoint;
+- it skips the delegation and endpoint questions.
+
+A saved offline mode is never changed silently: setup states that it cannot be
+kept and asks for the same confirmation. Declining ends setup without changes.
+To keep offline networking, make a service available first, then rerun setup:
+
+- start a foreground `podman system service` with a private runtime directory;
+- or set `CONTAINER_HOST` to the `unix://` endpoint of an existing same-host
+  service.
+
 After the worktree question, setup asks for the agent budgets and lifetime:
 `Agent memory limit` (default `4g`), `Agent CPU limit` (default `2`),
 `Agent process limit` (default `512`) and `Session lifetime in seconds, 0
@@ -180,6 +202,21 @@ Default paths:
 Source may be on a Windows mount; installation, private state and executable
 guard output need permission-enforcing native storage with protected ancestors.
 Setup copies an explicit input manifest, never a whole checkout or credentials.
+
+Every manifest input must have LF line endings. Bash cannot run a script with
+CRLF line endings. Setup refuses an input that contains a carriage return,
+names the file, and creates no release. The repository's `.gitattributes`
+keeps scripts LF even when Git for Windows has `core.autocrlf=true`. However, a
+clone made before that file existed keeps its CRLF working files. In such a
+checkout without local changes, rewrite the files with LF:
+
+```bash
+git rm -r -q --cached . && git reset --hard
+```
+
+Cloning the repository again works too. `git add --renormalize .` does not
+help: it fixes the index, not the working files.
+
 Group/other-writable ancestors, unsafe existing modes and paths overlapping the
 writable workspace/worktree/state are rejected without recursive repairs.
 An existing safe flat manual installation can coexist with managed releases.
@@ -278,6 +315,51 @@ If rolling back across a command-path or dispatcher-protocol change, restore
 the matching command/configuration as well; changing only `current` does not
 recreate a retired command or adapt an older launch helper's interface.
 
+## Windows with Podman machine
+
+On Windows, setup runs from the checkout through the PowerShell entry, in an
+interactive window:
+
+```powershell
+.\sandbox-container.ps1 --container-setup
+```
+
+The entry first checks these things, and stops with status 1 when one fails:
+
+- `sandbox-container.sh`, `launcher/core.sh` and `agent/launcher.sh` have LF
+  line endings; the message names the first file with CRLF and the command
+  above;
+- the WSL distribution is registered: `podman-machine-default`, or
+  `SANDBOX_CONTAINER_WSL_DISTRO`;
+- the distribution is running: start the machine with Podman Desktop or
+  `podman machine start`. The entry never starts it with `wsl.exe`;
+- the user's runtime directory `/run/user/<uid>` exists and is writable in the
+  distribution. Podman creates it when it starts the machine. A distribution
+  that `wsl.exe` alone started lacks it, and no `podman` command works there
+  (status 125). Run `wsl --terminate podman-machine-default`, then start the
+  machine with Podman.
+
+It then runs `bash sandbox-container.sh --container-setup` inside that
+distribution as its user (`user`, or `SANDBOX_CONTAINER_WSL_USER`), starting in
+the checkout's drive mount, for example `/mnt/c/Work/sandbox-container`. No
+Windows variable is forwarded to setup.
+
+Setup then works as on Linux:
+
+- the checkout on drvfs is only the source; the installation, the command and
+  the state go to the distribution's native storage, at the default paths
+  above;
+- the distribution has no launch service, so setup offers only unrestricted
+  networking (see [Choices and preparation](#choices-and-preparation));
+- the images are built by the machine's engine.
+
+After a successful setup the entry says to start sessions with
+`sandbox-container.ps1` from a project directory. A launch looks for the
+installation at `~/.local/lib/sandbox-container` in the distribution. When
+setup installed it elsewhere, set `SANDBOX_CONTAINER_WSL_INSTALLATION` to that
+absolute path. When the machine is recreated, the installation is gone, and a
+launch asks to rerun setup.
+
 ## Readiness and authentication
 
 Setup smoke-checks the actual installed wrapper with the selected state, network
@@ -334,11 +416,13 @@ The `container-setup` requirement coverage is:
 | --- | --- |
 | Dedicated interactive setup invocation | PTY early-dispatch, mixed-argument/pipeline rejection and help precedence tests |
 | Workflow questionnaire with explicit defaults | Default/retry/conflict PTY checks; fixture profiles with and without methods; saved-choice rerun; real offline/unrestricted paths |
+| Setup without a launch service offers only unrestricted networking | Probe order and user-manager unit tests; confirmed, declined and saved-offline questionnaires; real-wrapper PTY run with a failing `systemctl` |
 | Optional authority requires deliberate selection | Delegation conflict questionnaire; separate service confirmation; saved worktree/TTY checks |
 | Installed host prerequisites only | Missing command, unsupported context/platform and strict failed/malformed engine-response tests |
 | User-scoped Podman service preparation | Synthetic accepted/declined/unavailable systemd and exact-endpoint tests; real existing-service reuse |
 | Reviewed setup mutations and maintenance | Declined plan has no filesystem/image mutation; scoped maintenance/environment tests |
 | Protected complete installation | Native manifest copy from Windows checkout; path/ancestor/overlap/state/privacy checks |
+| Installation inputs with carriage returns are refused | CRLF manifest input refused before a release exists, with the LF re-checkout command |
 | Mode-specific image and guard preparation | Inspection/recipe pin/build failure/guard preflight tests; real compilation and offline/unrestricted smoke |
 | Persistent non-secret managed launch preferences | Schema/privacy/secret rejection, empty overrides, argv/stdin/cwd/TTY/status/signal and future-mount tests |
 | Credential-preserving authentication assistance | Fixture-profile login success/failure/cancellation and absent-key cases; no-method profile skips authentication |

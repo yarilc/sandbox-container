@@ -90,8 +90,11 @@ image inspection, build, or launch. Unrestricted local Podman needs no API servi
 delegation is disabled. An explicit same-host Unix `CONTAINER_HOST` is also
 supported, including when this wrapper runs inside another container; launch
 verification then queries that service even without delegating it to the shell.
-Named `CONTAINER_CONNECTION` contexts, implicit remote contexts, TCP/SSH,
-Podman Machine, and rootful engines are unsupported. All bind sources and build
+Named `CONTAINER_CONNECTION` contexts, implicit remote contexts, TCP/SSH
+(including the Podman machine connection that `podman.exe` uses), and rootful
+engines are unsupported. On Windows, the PowerShell entry runs the sandbox
+inside the Podman machine instead; see
+[Windows with Podman machine](#windows-with-podman-machine). All bind sources and build
 paths must exist on the same Linux host at their original absolute paths.
 Unix transport alone does not prove that a forwarded service is on that host.
 Launch-engine and enabled delegation verification each require exactly one
@@ -416,6 +419,113 @@ Migration: earlier versions always mounted the host certificate directory and
 set CA variables. Those sessions no longer trust the host CA by default. Set
 `SANDBOX_CONTAINER_TRUST_HOST_CA=1` to restore that behavior.
 
+## Windows with Podman machine
+
+On Windows, `sandbox-container.ps1` starts the sandbox from PowerShell on the
+local rootless engine of a Podman machine that Podman Desktop created with the
+WSL provider. The session runs inside the machine's WSL distribution
+(`podman-machine-default`, user `user`). The entry uses neither `podman.exe`
+nor the machine's SSH or API connection, so it works while other WSL
+distributions, such as Ubuntu, are running.
+
+Prerequisites:
+
+- Windows PowerShell 5.1 or PowerShell 7, with a policy that allows local
+  scripts, for example `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`;
+- a Podman machine with the WSL provider, created with Podman Desktop, and
+  started by Podman (Podman Desktop or `podman machine start`) before setup and
+  sessions;
+- a checkout of this repository in a folder on a Windows drive, with LF line
+  endings. The repository's `.gitattributes` keeps them LF even with
+  `core.autocrlf=true`; [docs/setup.md](docs/setup.md) explains how to fix an
+  older CRLF checkout.
+
+Run setup once from the checkout, in an interactive PowerShell window:
+
+```powershell
+cd C:\Work\sandbox-container
+.\sandbox-container.ps1 --container-setup
+```
+
+Setup runs the guided setup inside the machine distribution. The release,
+preferences and images are installed there, in `~/.local/lib/sandbox-container`.
+The machine has no launch service, so setup offers only unrestricted
+networking. Rerun setup after updating the checkout, and after the machine is
+recreated.
+
+Start sessions from a project directory on a Windows drive:
+
+```powershell
+cd C:\Work\my-project
+C:\Work\sandbox-container\sandbox-container.ps1
+C:\Work\sandbox-container\sandbox-container.ps1 -c 'git status'
+C:\Work\sandbox-container\sandbox-container.ps1 --container-help
+```
+
+The project is mounted at its drive path, for example `/mnt/c/Work/my-project`.
+A launch is refused before any engine query in these cases:
+
+- the machine is stopped: the entry does not start its distribution, because
+  `wsl.exe` would start it without the user's runtime directory
+  `/run/user/<uid>`, where no `podman` command works. Start the machine with
+  Podman Desktop or `podman machine start`;
+- the distribution runs without that directory, because `wsl.exe` alone
+  started it. Run `wsl --terminate podman-machine-default`, then start the
+  machine with Podman. Setup refuses both states too;
+
+- the location is a network share, a path inside a WSL distribution, a drive
+  the distribution does not mount, or not a file system path;
+- the project or the worktree parent contains the checkout, or lies inside it;
+- the project is a Windows system or profile folder (see
+  [Hardening, budgets and lifetime](#hardening-budgets-and-lifetime)).
+
+The exit status, the terminal and Ctrl+C work as on Linux. Closing the window
+also ends the session and removes its container.
+
+| Variable | Meaning |
+| --- | --- |
+| `SANDBOX_CONTAINER_WSL_DISTRO` | WSL distribution (default `podman-machine-default`) |
+| `SANDBOX_CONTAINER_WSL_USER` | user in the distribution (default `user`) |
+| `SANDBOX_CONTAINER_WSL_INSTALLATION` | absolute installation path in the distribution, when setup used another one |
+
+Set them with `$env:NAME = 'value'`. The entry forwards to the launcher in the
+distribution, by name, the other `SANDBOX_CONTAINER_*` variables whose names
+use only letters, digits and `_`, `SANDBOX_CONTAINER_CONFIG_DIR` when it holds
+a distribution path (starting with `/`), and the names listed in
+`SANDBOX_CONTAINER_ENV_VARS`. A Windows path in
+`SANDBOX_CONTAINER_CONFIG_DIR` is skipped with a notice, and the directory
+saved by setup applies. It forwards no other Windows variable. Path values
+are distribution paths, such as `/home/user/...`.
+
+Limits on Windows:
+
+- Only unrestricted networking without Podman delegation.
+  `SANDBOX_CONTAINER_NETWORK` may only be unset or `unrestricted`;
+  `SANDBOX_CONTAINER_PODMAN=1` and `--container-qualify` are refused.
+- PowerShell pipeline input, such as `'x' | .\sandbox-container.ps1 -c cat`, is
+  refused, because PowerShell alters it. Redirect a file from `cmd.exe`
+  instead:
+  `cmd /c "powershell -File C:\Work\sandbox-container\sandbox-container.ps1 -c cat < input.txt"`.
+- PowerShell parses the arguments first. Quote a `--` meant for Bash (`'--'`),
+  values with commas (`'a,b'`), numbers whose spelling matters (`'007'`) and
+  arguments of the form `-x:y`. The encoded arguments are limited to 32766
+  characters.
+- A variable with an empty value counts as unset.
+- `podman machine stop` (`wsl --terminate`) ends running sessions.
+- After the machine starts, the folder of its first session may stay in use
+  by a WSL process until `wsl --shutdown`, so Windows cannot delete that
+  folder meanwhile.
+- Projects on a Windows drive go through drvfs, which is slow on large trees.
+  Git for Windows clones with `core.autocrlf=true` look modified to Git in the
+  session: set `core.autocrlf=false` for the project, or give it a
+  `.gitattributes`.
+- A behavioral antivirus may quarantine checkout files while they are cloned
+  or extracted. Bitdefender's Advanced Threat Control (`Atc4.Detection`) once
+  removed `tests/fixtures/shell-agent/launcher.sh`, which only the Linux tests
+  use. Setup and the entry fail when a file they need is missing: restore it
+  from the antivirus quarantine, or ask the administrator, and report the
+  false positive to the vendor.
+
 ## Mounts, identity, and persistence
 
 The process inside the container uses `--userns=keep-id` and the caller's
@@ -593,7 +703,9 @@ process rlimit (512 tasks of the session user, threads included)`. The limit is
 per session: Linux 5.14 and later count it per user namespace, and every
 container has its own. The session cannot raise it, because it has no
 capabilities. Container startup uses a few of these tasks (about 13 were
-measured), so slightly fewer than `N` processes are available. The fallback
+measured), so slightly fewer than `N` processes are available. Through a Podman
+API service more of them can be taken: in the runtime suite on Podman machine
+6.1.4, a budget of 32 left too few to start the container. The fallback
 applies only when the engine reports kernel 5.14 or later
 (`podman info --format '{{.Host.Kernel}}'`). Older or unrecognized kernels may
 count every process of your user, so the process budget then stays unenforced,
@@ -615,9 +727,28 @@ shutdown budget.
 The writable workspace mount (the parent with `--container-git-worktree`) must
 not be `/`, your home directory, `/home`, `/root`, `/etc`, `/usr`, `/var`, `/bin`,
 `/sbin`, `/lib`, `/lib64`, `/boot`, `/opt`, `/srv`, `/mnt`, `/media`, `/proc`,
-`/sys`, `/dev`, `/run`, `/tmp` or a WSL drive root such as `/mnt/c`. Physical
-paths are compared, so symlinks do not bypass the check. Launch from a project
-subdirectory instead. Exact `SANDBOX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` permits a
+`/sys`, `/dev`, `/run`, `/tmp` or a WSL drive root such as `/mnt/c`.
+
+On a WSL drive mount, it also must not be one of these Windows folders, in any
+letter case, because drvfs ignores case:
+
+- `/mnt/<drive>/Users`;
+- a profile, `/mnt/<drive>/Users/<name>`, its `Documents`, its `OneDrive`
+  (also `OneDrive - <organization>`) or `OneDrive/Documents`, which hold the
+  PowerShell profile and modules;
+- anything inside the profile's `AppData`, which holds the startup folder;
+- `/mnt/<drive>/Windows`;
+- `/mnt/<drive>/Program Files` or `/mnt/<drive>/Program Files (x86)`;
+- `/mnt/<drive>/ProgramData`.
+
+Apart from `AppData`, only these exact folders are refused. A project below
+them, such as `/mnt/c/Users/me/projects/app` or
+`/mnt/c/Users/me/Documents/GitHub/app`, is accepted. In worktree mode, however, a
+project placed directly in a profile is refused, because its parent is the
+profile.
+
+Physical paths are compared, so symlinks do not bypass the check. Launch from a
+project subdirectory instead. Exact `SANDBOX_CONTAINER_ALLOW_UNSAFE_WORKSPACE=1` permits a
 refused directory with a warning and relaxes nothing else.
 
 ### Standard security policies

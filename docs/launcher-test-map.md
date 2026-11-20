@@ -523,3 +523,27 @@ These shared files change with the core; they are not wrapper tests and are not 
 | `tests/test_agent_profile.py` | `native.exec`, `native.exec_tmp`; `install.runtime_build` removed |
 | `tests/test_setup.py` | setup builds through the wrapper only (`runtime_build` removed); setup and smoke drop `ENV_VARS` and `READONLY_STATE` |
 | `tests/test_qualification.py` | a missing mode resolves to the profile default |
+
+## Windows Podman machine support
+
+Shared cases added for Windows support, with the requirement each one covers.
+
+| File | Case | Requirement |
+| --- | --- | --- |
+| `tests/test_alignment.py` | `test_repository_text_files_have_no_carriage_return`, `test_carriage_return_is_detected` | Scripts keep LF line endings in every repository |
+| `tests/test_setup.py` | `test_crlf_installation_input_is_refused_before_a_release_exists` | Installation inputs with carriage returns are refused |
+| `tests/test_launcher.py` | `test_windows_system_and_profile_folders_refused_before_engine` | Sensitive workspace roots are refused (Windows folders) |
+| `tests/test_setup.py` | `test_launch_service_checks_endpoints_then_the_user_manager`, `test_user_manager_needs_a_working_systemctl_user_session` | Setup without a launch service offers only unrestricted networking (probe) |
+| `tests/test_setup.py` | `test_without_a_launch_service_only_unrestricted_networking_is_offered`, `test_declined_unrestricted_networking_without_a_service_changes_nothing`, `test_saved_offline_mode_without_a_service_needs_explicit_confirmation` | Setup without a launch service offers only unrestricted networking (questionnaire) |
+| `tests/test_setup_wrapper.py` | `test_setup_without_a_launch_service_offers_only_unrestricted_networking` | Setup without a launch service offers only unrestricted networking (real wrapper) |
+| `tests/test_setup.py`, `tests/test_launcher.py` | `test_local_endpoint_leaves_container_host_unset`, `test_empty_engine_context_reaches_podman_unset` | Setup without a launch service offers only unrestricted networking (local endpoint leaves `CONTAINER_HOST` unset) |
+| `tests/test_setup.py` | `test_writable_mounts_must_not_reach_the_windows_entry`, `test_windows_entry_comparison_ignores_case_only_on_drive_mounts`, `test_managed_launch_names_the_overlapping_windows_entry` | Entry directory stays outside writable mounts |
+| `tests/test_windows_bootstrap.py` | `test_arguments_reach_the_managed_command_unchanged`, `test_no_arguments_and_one_empty_argument_differ`, `test_malformed_argument_transport_is_refused` | Arguments reach Bash unchanged (distribution side) |
+| `tests/test_windows_bootstrap.py` | `test_windows_paths_are_translated_or_refused_with_specific_messages`, `test_relative_invocation_from_the_home_directory` | Windows working directory translation |
+| `tests/test_windows_bootstrap.py` | `test_missing_transport_or_installation_parts_stop_before_the_command` | Installation location and missing installation |
+| `tests/test_windows_bootstrap.py` | `test_distribution_started_without_the_machine_stops_before_the_command` | Machine started by Podman (distribution started by WSL alone) |
+| `tests/test_windows_bootstrap.py` | `test_saved_restricted_preferences_stop_before_the_command` | Saved preferences limited to unrestricted networking |
+| `tests/test_setup.py` | `test_unreadable_socket_candidate_is_not_a_service`, `test_saved_delegation_without_a_service_is_announced` | Setup without a launch service offers only unrestricted networking (probe errors, saved delegation) |
+| `tests/test_setup.py` | `test_manifest_copies_complete_native_inputs_without_credentials` (bootstrap in the release) | Ordinary launches run the managed installation in the machine distribution |
+| `tests/test_alignment.py` | `test_powershell_entry_is_the_fixed_thin_entry`, `test_powershell_files_are_ascii`, `test_scan_detects_an_injected_identifier` (shim, bootstrap, shim tests) | Thin PowerShell entry script; Shared Windows shim and bootstrap; Supported PowerShell versions |
+| `tests/windows/shim_tests.ps1` | 37 cases, each named after its `windows-launcher` requirement and scenario: launches and selection, missing distribution, user and installation, stopped machine and a distribution started by WSL alone, arguments and their limit, forwarded, reserved, invalid and empty variables, a Windows configuration path, restoration, location, modes, pipeline input and 5.1 redirected input, exit status, help, setup routing and the CRLF refusal | `windows-launcher` scenarios that need no Windows host |

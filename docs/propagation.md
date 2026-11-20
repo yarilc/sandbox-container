@@ -105,6 +105,16 @@ History stays as written: `docs/validation.md`, `CHANGELOG.md`, `todo.md` and
 archived OpenSpec changes are never rewritten. The tool does not commit, merge,
 tag, push or run suites.
 
+Two files belong to the shared set but lie outside the copied directories.
+When a tag introduces or changes them, copy them by hand on the same branch:
+
+- `sandbox-container.ps1` becomes `<wrapper>-container.ps1`, byte for byte.
+  The thin Windows entry has the same text in every wrapper, and
+  `tests/test_alignment.py` checks it.
+- `.gitattributes` is copied as is. In a clean wrapper checkout, rewrite the
+  working files with LF afterwards: `git rm -r -q --cached . && git reset --hard`.
+  The line-ending test in `tests/test_alignment.py` then passes.
+
 ## 3. Verify and record
 
 Review `git diff` in the wrapper. Run every runner mode the tool listed, in the
