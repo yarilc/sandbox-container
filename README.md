@@ -299,7 +299,9 @@ The session receives `USER`, `EDITOR=nano` and `VISUAL=nano`, and by name
 `TERM`, `COLORTERM`, `LANG` and `LC_ALL` when set. Unrestricted sessions also
 receive `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their
 lowercase forms, run with `--init`, and see their container name as
-`CONTAINER_NAME`. `SANDBOX_CONTAINER_ENV_VARS` lists further host variable names
+`CONTAINER_NAME`. In offline and provider sessions the confined guard plays the
+role of `--init`: Ctrl+C and the shutdown signals reach the command, and the
+session ends with the command's status. `SANDBOX_CONTAINER_ENV_VARS` lists further host variable names
 (separated by whitespace) to forward by name, never by value; an invalid name
 stops the launch, an empty variable is not forwarded, and names the launcher
 sets itself (and, in offline mode, proxy and CA variables) are skipped with a
@@ -422,19 +424,24 @@ set CA variables. Those sessions no longer trust the host CA by default. Set
 ## Windows with Podman machine
 
 On Windows, `sandbox-container.ps1` starts the sandbox from PowerShell on the
-local rootless engine of a Podman machine that Podman Desktop created with the
-WSL provider. The session runs inside the machine's WSL distribution
-(`podman-machine-default`, user `user`). The entry uses neither `podman.exe`
-nor the machine's SSH or API connection, so it works while other WSL
-distributions, such as Ubuntu, are running.
+rootless engine of a Podman machine that Podman Desktop created with the WSL
+provider. The session runs inside the machine's WSL distribution
+(`podman-machine-default`, user `user`), in the PID and mount namespaces where
+the machine runs systemd and its Podman service, as the machine's own login
+shells do. The entry uses neither `podman.exe` nor the machine's SSH or
+Windows API connection, so it works while other WSL distributions, such as
+Ubuntu, are running.
 
 Prerequisites:
 
 - Windows PowerShell 5.1 or PowerShell 7, with a policy that allows local
   scripts, for example `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`;
-- a Podman machine with the WSL provider, created with Podman Desktop, and
-  started by Podman (Podman Desktop or `podman machine start`) before setup and
-  sessions;
+- a rootless Podman machine with the WSL provider, created with Podman
+  Desktop, and started by Podman (Podman Desktop or `podman machine start`)
+  before setup and sessions;
+- `sudo` without a password for the machine's user, which Podman machines
+  provide: sessions and setup enter the machine's systemd namespaces with
+  `sudo nsenter`, as its login shells do (`/usr/local/bin/enterns`);
 - a checkout of this repository in a folder on a Windows drive, with LF line
   endings. The repository's `.gitattributes` keeps them LF even with
   `core.autocrlf=true`; [docs/setup.md](docs/setup.md) explains how to fix an
@@ -451,9 +458,9 @@ Setup runs the guided setup inside the machine distribution. The release,
 preferences and images are installed there, in `~/.local/lib/sandbox-container`.
 Its output leaves out the Linux shell guidance; the entry prints how to start
 sessions.
-The machine has no launch service, so setup offers only unrestricted
-networking. Rerun setup after updating the checkout, and after the machine is
-recreated. To run the sandbox as a command without keeping the checkout,
+Setup finds the machine's own Podman service, so it offers offline
+networking, the default, and unrestricted networking, as on Linux. Rerun setup
+after updating the checkout, and after the machine is recreated. To run the sandbox as a command without keeping the checkout,
 install it instead ([Install as a command](#install-as-a-command)).
 
 Start sessions from a project directory on a Windows drive:
@@ -475,6 +482,8 @@ A launch is refused before any engine query in these cases:
 - the distribution runs without that directory, because `wsl.exe` alone
   started it. Run `wsl --terminate podman-machine-default`, then start the
   machine with Podman. Setup refuses both states too;
+- `sudo` asks the machine's user for a password, so the entry cannot enter the
+  machine's systemd namespaces. Setup refuses it too;
 
 - the location is a network share, a path inside a WSL distribution, a drive
   the distribution does not mount, or not a file system path;
@@ -483,10 +492,14 @@ A launch is refused before any engine query in these cases:
   [Hardening, budgets and lifetime](#hardening-budgets-and-lifetime)).
 
 The exit status, the terminal and Ctrl+C work as on Linux. Closing the window
-also ends the session and removes its container.
+also ends the session and removes its container. The machine's engine uses
+the `cgroupfs` manager: the memory and CPU budgets are not enforced, and the
+process budget uses the process rlimit, as the launch notices state (see
+[Hardening, budgets and lifetime](#hardening-budgets-and-lifetime)).
 
 | Variable | Meaning |
 | --- | --- |
+| `SANDBOX_CONTAINER_NETWORK` | `unrestricted` or `offline` for one launch (default: the mode setup saved); a restricted mode needs a setup that prepared it |
 | `SANDBOX_CONTAINER_WSL_DISTRO` | WSL distribution (default `podman-machine-default`) |
 | `SANDBOX_CONTAINER_WSL_USER` | user in the distribution (default `user`) |
 | `SANDBOX_CONTAINER_WSL_INSTALLATION` | absolute installation path in the distribution, when setup used another one |
@@ -502,9 +515,9 @@ are distribution paths, such as `/home/user/...`.
 
 Limits on Windows:
 
-- Only unrestricted networking without Podman delegation.
-  `SANDBOX_CONTAINER_NETWORK` may only be unset or `unrestricted`;
-  `SANDBOX_CONTAINER_PODMAN=1` and `--container-qualify` are refused.
+- No Podman delegation: `SANDBOX_CONTAINER_PODMAN=1` is refused, and a
+  release whose setup saved delegation, for example from a Linux shell in the
+  machine, asks to rerun setup from Windows.
 - PowerShell pipeline input, such as `'x' | .\sandbox-container.ps1 -c cat`, is
   refused, because PowerShell alters it. Redirect a file from `cmd.exe`
   instead:

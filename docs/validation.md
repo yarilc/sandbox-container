@@ -1,5 +1,244 @@
 # Validation record
 
+## Windows restricted networking (pending tag)
+
+Change: `openspec/changes/support-machine-restricted-networking/`. The operator
+ran four rounds of throwaway spike scripts, not committed, on 2026-11-21:
+
+- Windows with WSL kernel `6.6.87.2-microsoft-standard-WSL2`;
+- the Podman Desktop machine `podman-machine-default`: Podman 6.1.4, Fedora
+  Linux 44, user `user` (uid 1000), the `cgroupfs` manager;
+- `podman machine inspect`: `Rootful: false`, `UserModeNetworking: false`.
+
+The scripts ran from a `C:\Work` folder, and the suites ran from a snapshot
+of the branch tree copied to the distribution's ext4 file system.
+
+**Machine structure (rounds 2 and 3).**
+
+- PID 1 of a `wsl.exe --exec` session is WSL's `/init`. Podman started
+  `unshare --kill-child --fork --pid --mount --mount-proc --propagation shared
+  /lib/systemd/systemd`, so systemd is PID 1 of child PID and mount
+  namespaces (`NSpid: 21 1`).
+- The user's `systemd --user`, `dbus-broker`, `podman.socket` and the
+  service's `catatonit` run there.
+- `/etc/profile.d/enterns.sh` and `/usr/local/bin/enterns` take login shells
+  in with `sudo nsenter -m -p -t <systemd>` and `sudo -u $USER`. `user` has
+  passwordless `sudo` (`(ALL) NOPASSWD: ALL`).
+- `/usr/share/containers/containers.conf.d/999-podman-machine-wsl-cgroupfs.conf`
+  sets `cgroup_manager="cgroupfs"`.
+
+**Inventory from a `wsl.exe --exec` session (rounds 1 and 2).** Round 1 mixed
+Podman's warnings into the values it parsed, and its restart check compared
+the kernel boot id, which WSL distributions share. Round 2 is the reference.
+
+| Check | Result |
+| --- | --- |
+| A1 `/run/user/1000` | `drwx------ user:user`; `bus` socket present; linger `yes` |
+| A1 `systemctl --user show-environment` | Failed: `Transport endpoint is not connected` |
+| A1 `/run/user/1000/podman/podman.sock` | Socket, `srw-rw---- user:user`; API answers: `true linux true`, server 6.1.4, Netavark, `cgroupfs v2 [cpu io memory pids]`, crun |
+| A1 setup probe (`launch_service`) with `XDG_RUNTIME_DIR=/run/user/1000` | `True`: the default endpoint answers; user manager `False` |
+| A1 setup probe with `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir` | `False`: no socket there, no user manager |
+| A1 after `wsl --terminate` and `podman machine start` | Socket and API present again; the init's start time changed |
+| A2 binds through the service | Passed for `/mnt/c/Work/...`, `/home/user` and `/run/user/1000`: the container read the host's file and the host read the container's |
+| A2 container started by the service, used by the session's podman | Inspect and removal worked. Exec failed (`crun: the container ... is not running`), after `Failed to join existing conmon namespace, creating a new rootless podman user namespace` |
+| A2 `pause.pid` | Each side replaced the other's on every command: `pause.pid file refers to PID 272 which is not a pause process`. The service's `catatonit` runs in another PID, mount and user namespace |
+| A3 `platform_check` | Eligible: `{"arch": "x86_64", "backend": "netavark", "kernel": "6.6.87.2-microsoft-standard-WSL2", "seccomp": true, "selinux": false, "apparmor": false, "server": "6.1.4"}` |
+| A3 Landlock | ABI 3 (`landlock_create_ruleset` version query) |
+| A6 | Service rootless; no `/run/podman/podman.sock` |
+
+**Way into systemd's namespaces (round 3).** A prototype helper ran a command
+as the user in systemd's PID and mount namespaces, in two variants:
+
+- `nsenter`: `sudo -n nsenter --target <pid> --mount --pid --wd=<cwd>
+  --setuid 1000 --setgid 1000`;
+- `sudo`: the same `nsenter`, then `sudo -n -u user`, as `enterns`.
+
+The environment went through a mode-0600 file under `/run/user/1000`, which
+the inner part read and removed.
+
+| Check | `nsenter` | `sudo` |
+| --- | --- | --- |
+| PID 1 inside; identity | `systemd`; uid and gid 1000, groups `user` only | `systemd`; uid and gid 1000, groups `user wheel` |
+| `HOME`, `USER`, `LOGNAME`, `PATH`, `TERM`, `LANG`; directory | Kept | Kept |
+| A 40000-character `WSLENV` variable with quotes, `\`, `è` and `€` | Same bytes | Same bytes |
+| `XDG_RUNTIME_DIR` | `/run/user/1000` | `/run/user/1000` |
+| Exit status 37, piped stdin, separate stderr | Passed | Passed |
+| Terminal | A new pseudo-terminal (`use_pty`) | A new pseudo-terminal |
+| Time per command | 223 ms | 327 ms |
+| One rootless user namespace: `pause.pid` stable (`catatonit`), no warning | Passed | Passed |
+| `systemctl --user show-environment` | Works | Works |
+| Session's podman runs a command in, and removes, the service's container | Passed | Passed |
+| Environment files left | None | None |
+| Ctrl+C during `sandbox-container -c 'sleep 60'` (installed, unrestricted) | Status 2; container `test-prk-0` left in `Created` | Status 130; nothing left |
+| Window closed during the same session | A `conmon` process left, without a container | Nothing left |
+
+Inside the namespaces through the `nsenter` way, the round 2 inventory passed
+completely, before and after a restart:
+
+- user manager `running`;
+- setup probe `True` with the user manager `True`;
+- one `pause.pid`;
+- the session's podman ran a command in the service's container and removed
+  it.
+
+The `sudo` way became the design (D2).
+
+**Runner modes inside the namespaces (rounds 3 and 4).** These used the
+`sudo` way in round 4, the toolchain built in the machine (`7ea67bad7f58`),
+the runtime image `a5048f924d32` and the pinned Python base of the proxy
+image, which round 3 lacked.
+
+| Mode | Result |
+| --- | --- |
+| `--setup-runtime` | Passed: 2 tests in 78 s (fresh offline setup, unrestricted setup and shell) |
+| `--qualification` | Passed: 31 tests in 65 s, 1 skipped (no authentication method in the profile) |
+| `--guard` | 20 tests in 126 s, 1 skipped (`--guard-idle`). 1 failure, `test_existing_late_sockets_and_aliases_across_bind_roots`, in its unguarded control: `socket(AF_VSOCK)` gives `Operation not permitted` |
+| `--network` | 16 tests in 216 s, 1 skipped (toolchain examples). Offline and provider sessions, TLS binding, readiness, tampered bootstrap, proxy death, the Windows workspace and toolchain cases passed. The failures are listed below |
+
+The `--network` failures:
+
+- `test_agent_budgets_are_effective_and_lifetime_is_enforced`, both subtests:
+  - the launch notices stated that the memory and CPU budgets are not
+    enforced under `cgroupfs`, and the process budget uses the process
+    rlimit;
+  - the test then read `memory.max`, which is `max` there.
+- `test_proxy_budgets_at_maximum_streams_and_slow_inspection` read
+  `memory.max` too.
+- `test_proxy_resource_exhaustion_is_bounded_and_fails_closed`:
+  - the `pids` case reached the rlimit (`pids-budget-enforced`), then read
+    `pids.events`, which counts 0 without the controller;
+  - the `memory` case grew until the 15 s timeout, because the memory budget
+    is not enforced.
+
+The AF_VSOCK control (round 4) points at the machine's seccomp profile, not at
+the kernel:
+
+| Probe | Result |
+| --- | --- |
+| Rootless container, default profile | `PermissionError: [Errno 1] Operation not permitted` |
+| The same, `--security-opt seccomp=unconfined` | Created |
+| The distribution itself | Created |
+| `/usr/share/containers/seccomp.json` | One rule on socket family 40 |
+
+These failures are the engine limits recorded since `sandbox-ref-26` and in
+the phase 1 section below. The tests assume delegated cgroup controllers and an
+unguarded AF_VSOCK. The launcher's notices and qualification identity state
+the `cgroupfs` mechanisms; nothing was weakened, and the tests are unchanged.
+
+**Integration checks (task 5.3).** On the runner of the sections below
+(Podman client 4.3.1, server 4.9.3, `systemd` manager), on top of commit
+`fa520b7`, with the runtime image `localhost/sandbox-container:setup-c496ace9…`:
+
+| Check | Result |
+| --- | --- |
+| `git diff --check`, `bash tools/shellcheck.sh .` | Passed |
+| ShellCheck 0.11.0 on the new `launcher/windows/enter.sh` (not tracked yet) and `launcher/windows/bootstrap.sh` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 61 shim cases |
+| `--shared` (unit discovery) | 487 tests, 69 skipped; only the 14 `AF_UNIX path too long` environment failures (13 in `test_session.py`, 1 in `test_launcher.py`) |
+| `--setup` | Passed: 85 tests |
+| `--setup-runtime` | Passed: 2 tests in 140 s |
+
+The unit discovery includes `tests/test_windows_enter.py` (9 tests) and
+`tests/test_windows_bootstrap.py` (9 tests). A dry run of
+`tools/windows-validate.ps1` in the PowerShell 7 image, against a fake
+`wsl.exe` that answers every probe with success and prints nothing, completed
+and wrote its summary.
+
+**Operator run with the namespace helper (task 7.1, first round).** Windows
+PowerShell 5.1.26100.9818 and PowerShell 7.7.0, WSL 2.5.10.0, the machine
+started by Podman, no other distribution running.
+
+- An offline setup from Windows ended with `Sandbox qualification:
+  locally-qualified` and `Sandbox: ready`. Setup proposed the saved endpoint
+  `local` after the choice of offline networking and refused it once; task 6.2
+  changes that default.
+- `tools/windows-validate.ps1` passed in both editions: 41 passed, 0 failed,
+  4 skipped (no other distribution, the unrestricted-only refusal case,
+  `-Install`, `-StopMachine`). The new cases passed: an offline session without
+  network access (`blocked`), qualification (`locally-qualified`), the
+  delegation refusal, and the machine's service running a command in, then
+  removing, a session's container.
+- By hand, in both editions: `-c 'stty size'` printed `28 110`, as
+  `$Host.UI.RawUI.WindowSize`; in an interactive offline shell
+  `curl https://example.com` failed to resolve; closing the window left no
+  container (`podman ps -a` on Windows). Ctrl+C during `-c 'sleep 60'` did not
+  end the command: it ended after 60 s with status 0. The bundle needed the
+  antivirus disabled for the validation script.
+
+The runner modes then ran in the machine through the snapshot's own
+`launcher/windows/enter.sh`, with the previous guard. The results matched the
+spike's round 4:
+
+- `--setup-runtime` passed (2 tests in 74 s), and so did `--qualification`
+  (31 tests in 66 s, 1 skipped);
+- `--guard` had only the AF_VSOCK control failure, with the same probe
+  results;
+- `--network` had only the `cgroupfs` budget failures listed in the section
+  above.
+
+The interrupt was not lost on the way: on this runner, with plain Podman,
+`bash -c 'echo started; sleep 20'` without `--init` ignored Ctrl+C on a
+terminal (status 0 after 20 s), and with `--init` ended in 0.3 s with status
+130. Restricted containers had no init in front of the application, which ran
+as PID 1; task 6.1 makes the confined guard that init.
+
+**Guard init and setup endpoint (task 6.4).** Same runner and image, with the
+guard of task 6.1 and the setup change of task 6.2:
+
+| Check | Result |
+| --- | --- |
+| `git diff --check`, `bash tools/shellcheck.sh .`, ShellCheck on `launcher/windows/enter.sh` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 61 shim cases |
+| `--shared` (unit discovery) | 493 tests, 74 skipped; only the 14 `AF_UNIX path too long` environment failures |
+| `--setup` | Passed: 86 tests, including `test_restricted_mode_proposes_a_service_endpoint_over_a_saved_local_engine`, which fails at once without the change |
+| `--setup-runtime` | Passed: 2 tests in 146 s |
+| `--guard` | Passed: 25 tests in 116 s, 1 skipped (`--guard-idle`) |
+| `--qualification` | Passed: 31 tests in 114 s, 1 skipped (no authentication method in the profile) |
+| `--network` | Passed: 16 tests in 300 s, 1 skipped (toolchain examples) |
+
+The new guard cases, through the production guard in a rootless container:
+
+- Ctrl+C on a terminal ends `sh -c 'echo ready; exec sleep 30'` with status
+  130 within 10 s;
+- an application with a SIGINT handler counts exactly one interrupt;
+- `podman kill --signal TERM` ends `sleep` with status 143 within 10 s;
+- `sh -c 'sleep 30 & exit 37'` returns 37 without waiting for `sleep`;
+- the waiting guard (PID 1) holds only fd 2 and has the application's
+  `NoNewPrivs` and seccomp filter count;
+- in provider mode it holds no FD 3.
+
+Compiled from the previous `guard.c`, the interrupt case failed (`0 != 130`),
+the TERM case timed out, and the waiting-guard case found fds 0 to 3. The
+interrupt-count and background cases also pass with the previous guard; they
+guard against double delivery and waiting.
+
+**Operator run with the final code (task 7.1).** Same Windows host, the
+machine started by Podman, Ubuntu running:
+
+- Setup from Windows proposed `offline` and the endpoint `default` from the
+  saved preferences. It recompiled the guard with the toolchain
+  `7ea67bad7f58`, and ended with `Sandbox qualification: locally-qualified`
+  and `Sandbox: ready`.
+- `tools/windows-validate.ps1` passed in both editions: 42 passed, 0 failed,
+  3 skipped (the unrestricted-only refusal case, `-Install`, `-StopMachine`).
+  This includes another distribution being active, the offline session
+  without network access, qualification, and the one-engine check.
+- By hand, in both editions, the operator reported every step as passed:
+  - Ctrl+C during `-c 'sleep 60'` ended at once with status 130;
+  - in an interactive offline shell, `sleep 60` with Ctrl+C returned at once to
+    the prompt, and `curl https://example.com` failed;
+  - `-c 'stty size'` matched the window;
+  - closing the window left no container (`podman ps -a` on Windows).
+- The runner modes ran in the machine through the snapshot's
+  `launcher/windows/enter.sh`, with the new guard:
+
+  | Mode | Result |
+  | --- | --- |
+  | `--setup-runtime` | Passed: 2 tests in 89 s |
+  | `--qualification` | Passed: 31 tests in 64 s, 1 skipped |
+  | `--guard` | 25 tests in 127 s, 1 skipped. The 5 new init cases and the provider descriptor case passed. The only failure is the AF_VSOCK control, with the same probe results as before |
+  | `--network` | 16 tests in 237 s, 1 skipped. The only failures are the `cgroupfs` budget cases of the spike: `memory.max` and `pids.events` reads, and the unbounded memory case |
+
 ## Setup output and candidate tags (pending tag)
 
 Change: `openspec/changes/archive/2026-11-21-clean-up-setup-output-and-tags/`.

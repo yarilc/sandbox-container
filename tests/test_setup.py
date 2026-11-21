@@ -326,6 +326,33 @@ class SetupTests(unittest.TestCase):
         self.assertRaises(StopIteration, next, answers)
         return value, '\n'.join(printed)
 
+    def test_restricted_mode_proposes_a_service_endpoint_over_a_saved_local_engine(self):
+        # container-setup: Restricted modes propose a service endpoint.
+        self.value.update(network='unrestricted', auth='none', endpoint='local')
+        root, release = self.release()
+        (root / 'current').symlink_to(release.relative_to(root))
+        for network, expected in (('offline', 'default'), ('', 'local')):
+            with self.subTest(network=network or 'saved unrestricted'):
+                printed = []
+
+                def answer(prompt):
+                    if prompt.startswith('Podman launch endpoint') and any(
+                            item.startswith('Podman launch endpoint') for item in printed):
+                        raise AssertionError('the proposed endpoint was refused')
+                    printed.append(prompt)
+                    if prompt.startswith('Protected native installation directory'):
+                        return str(root)
+                    return network if prompt.startswith('Network mode') else ''
+                with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'SOURCE', ROOT), \
+                        patch.object(setup, 'launch_service', return_value=True), \
+                        patch('builtins.input', side_effect=answer), \
+                        patch('builtins.print', side_effect=lambda *a, **k: printed.append(' '.join(map(str, a)))):
+                    value, _ = setup.questionnaire()
+                output = '\n'.join(printed)
+                self.assertEqual(value['endpoint'], expected)
+                self.assertIn('Podman launch endpoint [' + expected + ']', output)
+                self.assertNotIn('This mode requires a same-host Unix service.', output)
+
     def test_without_a_launch_service_only_unrestricted_networking_is_offered(self):
         runtime = '/mnt/wslg/runtime-dir'
         value, output = self.no_service_questionnaire([
@@ -527,10 +554,11 @@ class SetupTests(unittest.TestCase):
         self.assertEqual((release / 'network/relay.py').stat().st_mode & 0o777, 0o644)
         self.assertEqual((release / 'network/tls_client_hello.py').read_bytes(), (ROOT / 'network/tls_client_hello.py').read_bytes())
         self.assertEqual((release / WRAPPER).stat().st_mode & 0o777, 0o700)
-        # Windows launches start the release's own bootstrap, never a checkout copy.
-        bootstrap = release / 'launcher/windows/bootstrap.sh'
-        self.assertEqual(bootstrap.stat().st_mode & 0o777, 0o700)
-        self.assertEqual(bootstrap.read_bytes(), (ROOT / 'launcher/windows/bootstrap.sh').read_bytes())
+        # Windows launches start the release's own bootstrap and namespace
+        # helper, never a checkout copy.
+        for name in ('launcher/windows/bootstrap.sh', 'launcher/windows/enter.sh'):
+            self.assertEqual((release / name).stat().st_mode & 0o777, 0o700)
+            self.assertEqual((release / name).read_bytes(), (ROOT / name).read_bytes())
         self.assertEqual((release / 'agent/policies/default.json').stat().st_mode & 0o777, 0o600)
         with patch.dict(os.environ, self.env, clear=True):
             common.protect_mounts(self.value, common.runtime_environment(self.value, release, overrides=False))

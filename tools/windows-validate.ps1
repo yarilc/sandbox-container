@@ -19,7 +19,10 @@
 # from the checkout (answer its setup questions), launches the command through
 # the new user PATH, and uninstalls; it refuses to start when an installation
 # already exists, and changes the user PATH only for the time of the run.
-# Ctrl+C and closing the window are checked by hand; the script prints how.
+# Ctrl+C, closing the window and the terminal size are checked by hand; the
+# script prints how. The mode cases follow the network mode that setup saved:
+# run the script after an offline setup for the restricted cases, and after an
+# unrestricted one for the refusal of an unprepared restricted mode.
 param(
     [string]$Checkout = (Split-Path -Parent $PSScriptRoot),
     [switch]$StopMachine,
@@ -38,6 +41,7 @@ $distro = [Environment]::GetEnvironmentVariable($P + '_WSL_DISTRO')
 if ([string]::IsNullOrEmpty($distro)) { $distro = 'podman-machine-default' }
 $user = [Environment]::GetEnvironmentVariable($P + '_WSL_USER')
 if ([string]::IsNullOrEmpty($user)) { $user = 'user' }
+$sessionLabel = $wrapperProfile.label_namespace + '.session'
 $installation = [Environment]::GetEnvironmentVariable($P + '_WSL_INSTALLATION')
 if ([string]::IsNullOrEmpty($installation)) {
     $bootstrap = '.local/lib/' + $name + '/current/launcher/windows/bootstrap.sh'
@@ -97,9 +101,10 @@ function Invoke-Process([string]$FileName, [string]$ArgumentLine, [string]$Direc
     return [pscustomobject]@{ Code = $process.ExitCode; Out = $out.Result; Err = $err.Result }
 }
 
-# Runs PowerShell code in a child of this edition. $E is the entry. The child
-# starts without the operator's <P>_* settings (except <P>_WSL_*) and WSLENV.
-function Invoke-Case([string]$Body, [string]$Location = $project) {
+# The command line of a child of this edition that runs PowerShell code. $E is
+# the entry. The child starts without the operator's <P>_* settings (except
+# <P>_WSL_*) and WSLENV.
+function Get-CaseArgument([string]$Body, [string]$Location) {
     $lines = @(
         '$ErrorActionPreference = ''Continue''',
         ('$E = ' + (ConvertTo-Literal $entry)),
@@ -112,7 +117,27 @@ function Invoke-Case([string]$Body, [string]$Location = $project) {
         'exit $LASTEXITCODE'
     )
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(($lines -join "`n")))
-    return (Invoke-Process $exe ('-NoProfile -NonInteractive -OutputFormat Text -EncodedCommand ' + $encoded) $work)
+    return ('-NoProfile -NonInteractive -OutputFormat Text -EncodedCommand ' + $encoded)
+}
+
+function Invoke-Case([string]$Body, [string]$Location = $project) {
+    return (Invoke-Process $exe (Get-CaseArgument $Body $Location) $work)
+}
+
+# The same without waiting: the process, and its output when it ends.
+function Invoke-BackgroundCase([string]$Body) {
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $exe
+    $info.Arguments = Get-CaseArgument $Body $project
+    $info.WorkingDirectory = $work
+    $info.UseShellExecute = $false
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::Start($info)
+    $process.StandardInput.Close()
+    return [pscustomobject]@{ Process = $process; Out = $process.StandardOutput.ReadToEndAsync();
+        Err = $process.StandardError.ReadToEndAsync() }
 }
 
 # The first line of text. A Windows PowerShell 5.1 child started with
@@ -149,6 +174,15 @@ function Invoke-DistributionStop {
 
 function ConvertTo-Hex([string]$Text) {
     return ((@([Text.Encoding]::UTF8.GetBytes($Text)) | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+# Runs a sh script through the machine's launch service, in the machine's
+# systemd namespaces (the checkout's helper). The script holds no double quote,
+# which Windows PowerShell 5.1 would break on the wsl.exe command line.
+function Invoke-ServicePodman([string]$Script) {
+    return Invoke-Probe @('-d', $distro, '-u', $user, '--cd', $Checkout, '--exec', '/bin/bash',
+        'launcher/windows/enter.sh', $name, '/bin/sh', '-c',
+        ('service=unix://$XDG_RUNTIME_DIR/podman/podman.sock; ' + $Script))
 }
 
 function Invoke-Probe([string[]]$WslArguments) {
@@ -202,7 +236,9 @@ try {
     if ($others.Count -eq 0) { Add-Result 'SKIP' 'Another distribution is active' 'start another WSL distribution and rerun' }
 
     $r = Invoke-Case '& $E -c ''printf ok'''
-    Test-Outcome 'Ordinary launch; Mode from setup' $r 0 'network mode=unrestricted'
+    Test-Outcome 'Ordinary launch; Mode from setup' $r 0 'network mode='
+    $savedMode = ''
+    if (($r.Out + "`n" + $r.Err) -match 'network mode=([a-z]+)') { $savedMode = $Matches[1] }
     if ($others.Count -gt 0) { Test-Outcome ('Another distribution is active (' + ($others -join ', ') + ')') $r 0 'ok' }
 
     Test-Outcome 'Exit status' (Invoke-Case '& $E -c ''exit 7''') 7 ''
@@ -271,11 +307,51 @@ try {
         }
     } else { Add-Result 'SKIP' 'Windows folders' 'no Windows profile or system folder' }
 
-    # Modes.
-    Test-Outcome 'Offline requested' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E')) 1 'supports only unrestricted networking'
-    Test-Outcome 'Delegation requested' (Invoke-Case ('$env:' + $P + '_PODMAN = ''1''; & $E')) 1 'is unsupported on Podman machine'
-    Test-Outcome 'Qualification requested' (Invoke-Case '& $E --container-qualify') 1 '--container-qualify'
+    # Modes: as setup prepared them; delegation stays refused.
+    Test-Outcome 'Delegation requested' (Invoke-Case ('$env:' + $P + '_PODMAN = ''1''; & $E')) 1 ('Podman delegation (' + $P + '_PODMAN=1) is unsupported on Podman machine')
     Test-Outcome 'Explicit unrestricted networking' (Invoke-Case ('$env:' + $P + '_NETWORK = ''unrestricted''; & $E -c ''printf ok''')) 0 'ok'
+    if ($savedMode -eq 'offline' -or $savedMode -eq 'provider') {
+        $connect = 'if (exec 3<>/dev/tcp/1.1.1.1/443) 2>/dev/null; then echo reached; else echo blocked; fi'
+        Test-Outcome 'Offline session (no network access)' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E -c ' +
+            (ConvertTo-Literal $connect))) 0 'blocked'
+        Test-Outcome 'Qualification' (Invoke-Case '& $E --container-qualify') 0 'status='
+        Add-Result 'SKIP' 'Restricted mode without a prepared installation' ('setup saved ' + $savedMode +
+            ' networking; run the script again after an unrestricted setup')
+    } else {
+        Test-Outcome 'Restricted mode without a prepared installation' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E -c true')) 1 'setup required'
+        Add-Result 'SKIP' 'Offline session; Qualification' ('setup saved ' + $savedMode + ' networking; run .\' + $name +
+            '.ps1 --container-setup with offline networking, then the script again')
+    }
+
+    # One engine: the machine's launch service runs a command in, and removes, a
+    # running session's container. Other running sessions of this wrapper would
+    # also match the label.
+    $background = Invoke-BackgroundCase '& $E -c ''sleep 60'''
+    $container = ''
+    for ($i = 0; $i -lt 45 -and -not $container; $i++) {
+        Start-Sleep -Seconds 2
+        $listed = Invoke-ServicePodman ('podman --remote --url $service ps --filter label=' + $sessionLabel + ' --format {{.ID}}')
+        $container = @($listed.Output | ForEach-Object { $_.Trim() } | Where-Object { $_ -cmatch '^[0-9a-f]{12,64}$' } |
+            Select-Object -First 1) -join ''
+    }
+    if (-not $container) {
+        Add-Result 'FAIL' 'One engine for sessions and the machine' 'the service listed no session container within 90 s'
+    } else {
+        $exec = Invoke-ServicePodman ('podman --remote --url $service exec ' + $container + ' /bin/true')
+        $removed = Invoke-ServicePodman ('podman --remote --url $service rm -f -t 0 ' + $container)
+        $ended = $background.Process.WaitForExit(60000)
+        $left = Invoke-ServicePodman ('podman --remote --url $service ps -a --filter id=' + $container + ' --format {{.ID}}')
+        $remaining = @($left.Output | Where-Object { $_.Trim() }).Count
+        if ($exec.Code -eq 0 -and $removed.Code -eq 0 -and $ended -and $remaining -eq 0) {
+            Add-Result 'PASS' 'One engine for sessions and the machine' ('the service ran a command in ' + $container +
+                ' and removed it; the session ended with status ' + $background.Process.ExitCode)
+        } else {
+            Add-Result 'FAIL' 'One engine for sessions and the machine' ('exec status ' + $exec.Code + ' (' +
+                (($exec.Output | Select-Object -First 2) -join ' ') + '); rm status ' + $removed.Code + '; session ended: ' +
+                $ended + '; containers left: ' + $remaining)
+        }
+    }
+    if (-not $background.Process.HasExited) { $background.Process.Kill() }
 
     # Entry directory outside writable mounts.
     Test-Outcome 'Launch from the checkout' (Invoke-Case '& $E -c true' $Checkout) 1 'overlaps the writable mount'
@@ -421,11 +497,10 @@ try {
     $failed = @($results | Where-Object { $_.StartsWith('RESULT FAIL') }).Count
     $skipped = @($results | Where-Object { $_.StartsWith('RESULT SKIP') }).Count
     $results.Add(('Summary: {0} passed, {1} failed, {2} skipped' -f $passed, $failed, $skipped))
-    $results.Add('By hand: Ctrl+C in an interactive session (one interrupt), and closing the window during a session;')
-    $results.Add('  afterwards wsl.exe -d ' + $distro + ' -u ' + $user + ' --exec podman ps -a must list no container of the session.')
+    $results.Add('By hand: Ctrl+C in an interactive session (one interrupt), closing the window during a session, and')
+    $results.Add('  ' + $name + '.ps1 -c ''stty size'' printing the window''s rows and columns; after Ctrl+C and the closed')
+    $results.Add('  window, podman ps -a (podman.exe on Windows) must list no container of the session.')
     [IO.File]::WriteAllLines($summaryFile, $results.ToArray())
-    [Console]::Out.WriteLine($results[$results.Count - 3])
-    [Console]::Out.WriteLine($results[$results.Count - 2])
-    [Console]::Out.WriteLine($results[$results.Count - 1])
+    foreach ($line in $results.GetRange($results.Count - 4, 4)) { [Console]::Out.WriteLine($line) }
     [Console]::Out.WriteLine('Saved: ' + $summaryFile)
 }

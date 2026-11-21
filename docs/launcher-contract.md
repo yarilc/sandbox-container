@@ -726,8 +726,10 @@ found 7 high, 14 medium and 13 low findings. The user decided:
 
 Windows users start the sandbox from PowerShell. The shared shim runs the
 managed installation inside the Podman machine's WSL distribution through the
-release's bootstrap. The OpenSpec change `support-windows-podman-machine`
-specifies the details. This section lists the rules that the shared launcher
+release's bootstrap, and sessions and setup run in the machine's systemd
+namespaces through the namespace helper. The OpenSpec changes
+`support-windows-podman-machine` and `support-machine-restricted-networking`
+specify the details. This section lists the rules that the shared launcher
 files enforce.
 
 ### Thin entry and shim
@@ -759,16 +761,18 @@ unset. The shim then handles the call in this order:
      and `-`) or `<P>_WSL_INSTALLATION` (an absolute path of the same
      characters and `/`);
    - `--container-setup` with other arguments;
-   - `<P>_NETWORK` other than `unrestricted`, `<P>_PODMAN=1` and
-     `--container-qualify`.
+   - `<P>_PODMAN=1`: Podman delegation is unsupported on Podman machine.
+     `<P>_NETWORK` and `--container-qualify` reach the launcher, which checks
+     them as on Linux.
 3. `--container-setup` checks the LF line endings of the Bash entry,
-   `launcher/core.sh` and `agent/launcher.sh`, that the distribution is
-   registered and running, and that the user's runtime directory
-   `/run/user/<uid>` is a writable directory there
+   `launcher/core.sh`, `agent/launcher.sh` and `launcher/windows/enter.sh`,
+   that the distribution is registered and running, and that the user's
+   runtime directory `/run/user/<uid>` is a writable directory there
    (`sh -c 'test -d /run/user/$(id -u) -a -w /run/user/$(id -u)'`). It then runs
-   `wsl.exe -d <distro> -u <user> --cd <entry directory> --exec /bin/bash <entry>.sh --container-setup`,
+   `wsl.exe -d <distro> -u <user> --cd <entry directory> --exec /bin/bash launcher/windows/enter.sh <name> /bin/bash <entry>.sh --container-setup`,
    with only `WRAPPER_WINDOWS_SETUP=1` in `WSLENV`, so that setup leaves out
-   its Linux shell guidance.
+   its Linux shell guidance. Help runs the wrapper directly, because it
+   queries no engine.
    The entry directory must be a folder on a Windows drive.
 4. A launch refuses a location outside the FileSystem provider, encodes the
    arguments, checks that the distribution is registered and running, and runs
@@ -904,10 +908,10 @@ at the first one that fails:
 
 1. A release whose `setup.json` or profile cannot be read stops with
    `the installation in <release> is incomplete; rerun setup from Windows with --container-setup`.
-2. A release whose `setup.json` saved networking other than `unrestricted`,
-   or Podman delegation, stops and asks to rerun setup from Windows. The shim
-   refuses only Windows variables, and saved preferences apply to every launch
-   without one.
+2. A release whose `setup.json` saved Podman delegation stops and asks to
+   rerun setup from Windows. The shim refuses only the Windows variable, and
+   saved preferences apply to every launch without one. Saved network modes
+   are the launcher's to check.
 3. A missing or read-only `/run/user/<uid>` stops with
    `the WSL distribution <distro> runs without the Podman machine: ...`, which
    asks to run `wsl --terminate <distro>` and then start the machine with
@@ -931,12 +935,51 @@ at the first one that fails:
 7. The bootstrap changes to the translated working directory and exports the
    translated `WRAPPER_WINDOWS_ENTRY`. It unsets `WRAPPER_WINDOWS_ARGS`,
    `WRAPPER_WINDOWS_CWD` and `WSLENV`, then runs the managed command with the
-   decoded arguments.
+   decoded arguments through the release's namespace helper:
+   `/bin/bash <release>/launcher/windows/enter.sh <name> <command> <arguments>`.
 
 From that point the managed launch applies its usual checks, including the
 rule below and the core's sensitive-workspace rules.
 
 Covering tests: `tests/test_windows_bootstrap.py`.
+
+### Namespace helper
+
+The Podman machine starts systemd in PID and mount namespaces of its own
+(`unshare --pid --mount`). The user's systemd manager, `podman.socket`, the
+Podman service and Podman's own connections run there, and the machine's
+login shells enter with `/usr/local/bin/enterns`. A `wsl.exe --exec` session
+stays outside: its podman would start a second rootless user namespace on the
+same storage, which cannot run commands in the service's containers.
+`launcher/windows/enter.sh`, installed in every release like the bootstrap, runs
+`bash enter.sh <prefix> <command> [args...]` as the calling user inside
+systemd's namespaces:
+
+1. When PID 1 is `systemd`, it runs the command directly, with
+   `XDG_RUNTIME_DIR=/run/user/<uid>`.
+2. Otherwise the target is the lowest root process named `systemd` whose
+   `NSpid` is `<pid> 1`. Without one it stops with status 1 and the machine
+   guidance (`wsl --terminate <distro>`, then `podman machine start`).
+3. It needs `sudo` and `nsenter`, and stops naming a missing one.
+   `sudo -n true` must succeed; otherwise it stops with status 1, because the
+   machine's user needs `sudo` without a password.
+4. It writes the environment (`env -0`) to a new mode-0600 file
+   `env.<pid>.<random>` in the private directory
+   `/run/user/<uid>/windows-entry`. `<pid>` is its own process, which `exec`
+   hands to `sudo`; a file whose process no longer runs was left by a failed
+   start and is removed first.
+5. It runs `sudo -n -- nsenter --target <pid> --mount --pid --wd=<directory> -- sudo -n -u <user> -- /bin/bash <helper> --inner <prefix> <file> <command> [args...]`.
+6. The inner part accepts only a regular file of that directory that it owns.
+   It reads the file, removes it, and runs
+   `env -i -- <saved variables> XDG_RUNTIME_DIR=/run/user/<uid> <command> [args...]`.
+
+The arguments stay an argument vector at every step, and the environment
+never reaches root's command line. The working directory, the standard
+streams, the terminal (`sudo` relays a new pseudo-terminal) and the exit status
+stay the same.
+
+Covering tests: `tests/test_windows_enter.py`, with a synthetic `/proc` and
+fake `sudo` and `nsenter`.
 
 ### Writable mounts never reach the Windows entry
 

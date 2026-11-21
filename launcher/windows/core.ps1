@@ -2,6 +2,8 @@
 # Windows PowerShell 5.1 and PowerShell 7. It runs the managed installation in
 # the Podman machine's WSL distribution through the release bootstrap
 # (launcher/windows/bootstrap.sh), and setup and help from this checkout.
+# Sessions and setup enter the PID and mount namespaces of the machine's
+# systemd through launcher/windows/enter.sh; help queries no engine.
 # User values cross into WSL only in the environment (WSLENV), never on the
 # wsl.exe command line. See docs/launcher-contract.md (Windows entry).
 # ASCII only: Windows PowerShell 5.1 reads files without a BOM as ANSI.
@@ -108,6 +110,13 @@ if ($null -eq $native) { Exit-Entry 'the wrapper profile agent/profile.json has 
 $configEnv = Get-ProfileText $native.Value 'config_dir_env' $envName
 $bypassEnv = Get-ProfileText $native.Value 'approval_bypass_env' $envName -Optional
 $entryName = $name + '.ps1'
+# Provider networking exists only for a profile with authentication methods.
+$authProperty = $wrapperProfile.PSObject.Properties['auth']
+$modeList = 'unrestricted or offline'
+if ($null -ne $authProperty -and $null -ne $authProperty.Value -and
+    @($authProperty.Value.PSObject.Properties).Count -gt 0) {
+    $modeList = 'unrestricted, offline or provider'
+}
 $guidance = 'Create a Podman machine with Podman Desktop, using the WSL provider, or set ' +
     $P + '_WSL_DISTRO to the name of its WSL distribution.'
 
@@ -240,7 +249,7 @@ function Assert-DrivePath([string]$Directory) {
 }
 
 function Assert-Checkout([string]$Folder) {
-    foreach ($relative in @($wrapperFile, 'launcher/core.sh', 'agent/launcher.sh')) {
+    foreach ($relative in @($wrapperFile, 'launcher/core.sh', 'agent/launcher.sh', 'launcher/windows/enter.sh')) {
         $path = [IO.Path]::Combine($Folder, $relative)
         try {
             $bytes = [IO.File]::ReadAllBytes($path)
@@ -268,9 +277,9 @@ function Write-WindowsHelp {
         ('  ' + $P + '_WSL_USER          user in the distribution (default: user)'),
         ('  ' + $P + '_WSL_INSTALLATION  absolute installation path in the distribution'),
         ('                                (default: ~/.local/lib/' + $name + ')'),
-        '  Only unrestricted networking without Podman delegation is supported:',
-        ('  ' + $P + '_NETWORK may only be unset or unrestricted; ' + $P + '_PODMAN=1 and'),
-        '  --container-qualify are refused.',
+        ('  ' + $P + '_NETWORK           ' + $modeList + ' (default: the mode setup saved)'),
+        '  Restricted modes need a setup that prepared them in the machine.',
+        ('  Podman delegation (' + $P + '_PODMAN=1) is refused.'),
         '  PowerShell pipeline input is refused; redirect standard input from cmd.exe.',
         '  Variables with an empty value count as unset. Quote a -- meant for Bash: ''--''.',
         ''
@@ -374,17 +383,11 @@ if ($null -ne $installState -and $installState -cne 'complete') {
         'checkout or a downloaded copy')
 }
 
-# Phase 1 on Windows: unrestricted networking without delegation only.
-$platform = 'Podman machine on Windows supports only unrestricted networking without Podman delegation'
-$network = Get-Setting ($P + '_NETWORK')
-if ($null -ne $network -and $network -cne 'unrestricted') {
-    Exit-Entry ($platform + '; unset ' + $P + '_NETWORK or set it to unrestricted (it is ' + $network + ')')
-}
+# Network modes and qualification follow setup and the launcher's own checks.
+# Podman delegation stays unsupported: the delegated socket would control the
+# machine's whole engine.
 if ((Get-Setting ($P + '_PODMAN')) -ceq '1') {
-    Exit-Entry ($platform + '; delegation (' + $P + '_PODMAN=1) is unsupported on Podman machine')
-}
-if ($strings.Contains('--container-qualify')) {
-    Exit-Entry ($platform + '; --container-qualify verifies restricted modes and is unavailable')
+    Exit-Entry ('Podman delegation (' + $P + '_PODMAN=1) is unsupported on Podman machine; unset ' + $P + '_PODMAN')
 }
 
 # A running machine that Podman started (design D6 of the Windows entry).
@@ -402,9 +405,11 @@ function Assert-MachineReady {
 # Runs setup from a folder as a statement, so that it keeps the terminal, and
 # leaves its status in $script:SessionCode. WRAPPER_WINDOWS_SETUP=1 tells setup
 # that this entry prints the next step, so it leaves out Linux shell guidance.
+# The folder's namespace helper runs it where the machine's service runs.
 function Invoke-Setup([string]$Directory) {
     Invoke-WslSession @{ WSLENV = 'WRAPPER_WINDOWS_SETUP/u'; WRAPPER_WINDOWS_SETUP = '1' } @('-d', $distro,
-        '-u', $user, '--cd', $Directory, '--exec', '/bin/bash', $wrapperFile, '--container-setup')
+        '-u', $user, '--cd', $Directory, '--exec', '/bin/bash', 'launcher/windows/enter.sh', $name, '/bin/bash',
+        $wrapperFile, '--container-setup')
     if (($script:SessionCode -eq -1 -or $script:SessionCode -eq 255) -and -not (Test-User)) { Exit-MissingUser }
 }
 

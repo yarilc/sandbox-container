@@ -108,7 +108,11 @@ Provider mode retains exactly one bootstrap-verified preconnected data channel
 to its protected session proxy; offline retains none. A versioned bounded
 multiplex protocol supports repeated/concurrent independently authorized tunnels.
 The relay is confined, no unfiltered supervisor remains, and neither proxy nor
-protocol sends host descriptors or exposes administration. Channel death fails
+protocol sends host descriptors or exposes administration. The guard stays as
+the container's confined init: it runs the application as a child in the
+terminal's foreground process group, forwards the signals sent to it, reaps
+orphans, exits with the application's status, and holds neither the data FD
+nor standard input and output. Channel death fails
 closed and requires a new session; no finite one-shot socket pool or reconnect
 exception is permitted. Close the data FD before executing the application branch.
 An established channel does not expire merely because no frames arrive: an idle

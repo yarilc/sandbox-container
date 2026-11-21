@@ -15,8 +15,10 @@ Antigravity wrappers:
 - `sandbox-container.ps1` is the thin Windows entry, identical in every
   wrapper: it runs the shared shim `launcher/windows/core.ps1`, which starts
   the managed installation inside a Podman machine's WSL distribution through
-  `launcher/windows/bootstrap.sh`. Windows supports only unrestricted
-  networking without delegation; see the README's Windows section.
+  `launcher/windows/bootstrap.sh`, and runs sessions and setup in the machine's
+  systemd namespaces through `launcher/windows/enter.sh`. Windows supports
+  every network mode that setup prepared, without Podman delegation; see the
+  README's Windows section.
 - `Containerfile` defines the shell image on the same pinned base and package
   baseline as the agent wrappers, with the pinned OpenSpec CLI and no agent CLI,
   including `nano` with `EDITOR` and `VISUAL` set to it. The image disables

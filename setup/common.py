@@ -31,7 +31,8 @@ DRIVE_MOUNT = re.compile(r'/mnt/[A-Za-z](?:/|$)')
 
 
 MANIFEST = (
-    PROFILE.wrapper, 'launcher/core.sh', 'launcher/windows/bootstrap.sh', 'agent/launcher.sh', 'Containerfile', '.containerignore', agent_profile.PROFILE, agent_profile.POLICY,
+    PROFILE.wrapper, 'launcher/core.sh', 'launcher/windows/bootstrap.sh', 'launcher/windows/enter.sh',
+    'agent/launcher.sh', 'Containerfile', '.containerignore', agent_profile.PROFILE, agent_profile.POLICY,
     'setup/common.py', 'setup/setup.py', 'setup/launch.py', 'setup/smoke.py', 'setup/diagnostics.py',
     'setup/toolchains.py',
     'network/Containerfile', 'network/.containerignore',

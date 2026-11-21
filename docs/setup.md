@@ -36,8 +36,11 @@ anything, whether a service answers at `CONTAINER_HOST`, at the saved endpoint
 or at the default endpoint. It also checks whether a usable systemd user manager
 (`systemctl --user show-environment`) could start the user `podman.socket`.
 
-A Podman machine distribution on WSL has no systemd user manager, so neither
-check succeeds there. In that case setup offers only unrestricted networking:
+In a Podman machine distribution on WSL both checks succeed only inside the
+PID and mount namespaces of the machine's systemd, where the Windows entry runs
+setup ([Windows with Podman machine](#windows-with-podman-machine)). In a plain
+`wsl.exe` shell of that distribution neither succeeds. When neither check
+succeeds, setup offers only unrestricted networking:
 
 - it explains why, and asks `Continue with unrestricted networking?`, which
   defaults to no;
@@ -340,9 +343,9 @@ interactive window:
 
 The entry first checks these things, and stops with status 1 when one fails:
 
-- `sandbox-container.sh`, `launcher/core.sh` and `agent/launcher.sh` have LF
-  line endings; the message names the first file with CRLF and the command
-  above;
+- `sandbox-container.sh`, `launcher/core.sh`, `agent/launcher.sh` and
+  `launcher/windows/enter.sh` have LF line endings; the message names the
+  first file with CRLF and the command above;
 - the WSL distribution is registered: `podman-machine-default`, or
   `SANDBOX_CONTAINER_WSL_DISTRO`;
 - the distribution is running: start the machine with Podman Desktop or
@@ -355,11 +358,29 @@ The entry first checks these things, and stops with status 1 when one fails:
 
 It then runs `bash sandbox-container.sh --container-setup` inside that
 distribution as its user (`user`, or `SANDBOX_CONTAINER_WSL_USER`), starting in
-the checkout's drive mount, for example `/mnt/c/Work/sandbox-container`. No
-Windows variable is forwarded to setup, except `WRAPPER_WINDOWS_SETUP=1`. That
-marker makes setup leave out the Linux `PATH` guidance and the managed-command
-lines, and print that the Windows entry starts sessions; the entry then prints
-the exact command.
+the checkout's drive mount, for example `/mnt/c/Work/sandbox-container`.
+
+Setup runs through the checkout's `launcher/windows/enter.sh`. The machine runs
+systemd, its user manager and the Podman service in PID and mount namespaces
+of their own; its login shells enter them with `/usr/local/bin/enterns`.
+The helper enters them the same way:
+
+- `sudo -n nsenter --target <systemd> --mount --pid`, then `sudo -n -u <user>`
+  back to the user;
+- the environment crosses `sudo` in a private file under `/run/user/<uid>`,
+  which the inner part reads and removes;
+- the working directory, the terminal and the exit status stay;
+- `XDG_RUNTIME_DIR` becomes `/run/user/<uid>`.
+
+The machine's user needs `sudo` without a password, which Podman machines
+provide; otherwise setup stops with status 1 and says so. Inside those
+namespaces setup and the machine's service share one rootless user namespace,
+and the service check and the user manager work as on Linux.
+
+No Windows variable is forwarded to setup, except `WRAPPER_WINDOWS_SETUP=1`.
+That marker makes setup leave out the Linux `PATH` guidance and the
+managed-command lines, and print that the Windows entry starts sessions; the
+entry then prints the exact command.
 
 `.\sandbox-container.ps1 --container-install` runs the same checks, copies
 the checkout's setup inputs and Windows scripts into
@@ -373,8 +394,13 @@ Setup then works as on Linux:
 - the checkout on drvfs is only the source; the installation, the command and
   the state go to the distribution's native storage, at the default paths
   above;
-- the distribution has no launch service, so setup offers only unrestricted
-  networking (see [Choices and preparation](#choices-and-preparation));
+- setup finds the machine's own service at
+  `/run/user/<uid>/podman/podman.sock`, so it offers every network mode that
+  the profile allows, with offline as the default (see
+  [Choices and preparation](#choices-and-preparation));
+- the engine uses the `cgroupfs` manager: the memory and CPU budgets are not
+  enforced, and the process budget uses the process rlimit, as the launch
+  notices state;
 - the images are built by the machine's engine.
 
 After a successful setup the entry says to start sessions with

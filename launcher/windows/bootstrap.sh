@@ -11,7 +11,9 @@
 #   WRAPPER_WINDOWS_ENTRY  raw Windows path of the entry's directory
 # It decodes the arguments, translates both paths, changes to the workspace and
 # runs the release's managed command with WRAPPER_WINDOWS_ENTRY translated, so
-# setup/launch.py keeps every writable mount away from the entry.
+# setup/launch.py keeps every writable mount away from the entry. The command
+# runs in the PID and mount namespaces of the machine's systemd, where the
+# launch service and Podman's own connections run (launcher/windows/enter.sh).
 # See docs/launcher-contract.md (Windows entry).
 set -Eeuo pipefail
 
@@ -29,7 +31,7 @@ script=$(readlink -f -- "${BASH_SOURCE[0]}")
 release=${script%/launcher/windows/bootstrap.sh}
 [[ "$release" != "$script" ]] || die "the bootstrap must run from launcher/windows in a release"
 # One read of the release: the profile name for messages, the managed command,
-# and whether the saved preferences are the only ones supported on Windows.
+# and whether the saved preferences leave Podman delegation off.
 read_release='import json, sys
 release = sys.argv[1]
 name = json.load(open(release + "/agent/profile.json"))["name"]
@@ -38,17 +40,17 @@ command = saved["command"]
 assert command.startswith("/") and "\n" not in command and "\r" not in command
 print(name)
 print(command)
-print("supported" if saved.get("network") == "unrestricted" and saved.get("podman") is False else "unsupported")'
+print("supported" if saved.get("podman") is False else "unsupported")'
 details=$(python3 -I -c "$read_release" "$release" 2>/dev/null) \
     || die "the installation in $release is incomplete; rerun setup from Windows with --container-setup"
 prefix=${details%%$'\n'*}
 details=${details#*$'\n'}
 managed_command=${details%%$'\n'*}
-# Saved offline or provider networking, or delegation, would apply to every
-# launch without a Windows variable; the shim refuses only those variables.
+# Saved delegation would apply to every launch without a Windows variable; the
+# shim refuses only the variable. Saved network modes are the launcher's to check.
 [[ "${details#*$'\n'}" == supported ]] \
-    || die "the installation in $release saved networking other than unrestricted, or Podman delegation," \
-        "which Podman machine on Windows does not support; rerun setup from Windows with --container-setup"
+    || die "the installation in $release saved Podman delegation, which Podman machine on Windows does not" \
+        "support; rerun setup from Windows with --container-setup"
 
 # Only a distribution that Podman started has the user's runtime directory;
 # after a start by wsl.exe alone no podman command works (design D6).
@@ -98,4 +100,4 @@ cd -- "$translated" || die "cannot enter the current directory: $translated"
 
 export WRAPPER_WINDOWS_ENTRY="$entry"
 unset WRAPPER_WINDOWS_ARGS WRAPPER_WINDOWS_CWD WSLENV
-exec "$managed_command" "${args[@]}"
+exec /bin/bash "$release/launcher/windows/enter.sh" "$prefix" "$managed_command" "${args[@]}"

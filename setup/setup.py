@@ -241,6 +241,10 @@ def questionnaire():
     value['command'] = path_question('Managed launch command path', value['command'])
     needs_service = value['network'] != 'unrestricted' or value['podman']
     default_endpoint = value['endpoint'] if old else os.environ.get('CONTAINER_HOST') or ('default' if needs_service else 'local')
+    # A saved local engine cannot serve a restricted mode or delegation, for
+    # example after an unrestricted setup without a launch service.
+    if needs_service and default_endpoint == 'local':
+        default_endpoint = 'default'
     if not service:
         value['endpoint'] = 'local'
     else:

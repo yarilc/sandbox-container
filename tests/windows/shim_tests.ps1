@@ -108,7 +108,7 @@ function Build-Checkout([string]$Root, [string]$Fixture) {
     [IO.File]::WriteAllText((Join-Path $Root 'launcher/windows/user-path.ps1'),
         [IO.File]::ReadAllText((Join-Path $source 'launcher/windows/user-path.ps1')) + $fakeUserPath)
     Copy-Item -LiteralPath $profileFile -Destination (Join-Path $Root 'agent/profile.json')
-    foreach ($file in @($fixtureProfile.wrapper, 'launcher/core.sh', 'agent/launcher.sh')) {
+    foreach ($file in @($fixtureProfile.wrapper, 'launcher/core.sh', 'agent/launcher.sh', 'launcher/windows/enter.sh')) {
         [IO.File]::WriteAllText((Join-Path $Root $file), "#!/usr/bin/env bash`n:`n")
     }
     return (Join-Path $Root ($fixtureProfile.name + '.ps1'))
@@ -233,7 +233,7 @@ function Initialize-Case {
 }
 
 # Installer helpers: the payload of the synthetic checkout and the installed copy.
-$Payload = @($agentProfile.wrapper, 'launcher/core.sh', 'agent/launcher.sh', 'agent/profile.json')
+$Payload = @($agentProfile.wrapper, 'launcher/core.sh', 'agent/launcher.sh', 'launcher/windows/enter.sh', 'agent/profile.json')
 function Get-Target { return (Join-Path (Join-Path $env:LOCALAPPDATA 'Programs') $Name) }
 function Invoke-Install {
     $env:FAKE_WSL_MANIFEST = $Payload -join ' '
@@ -438,17 +438,24 @@ try {
         Set-Location -LiteralPath 'Env:'
         Assert-Refused (Invoke-Entry { & $Entry }) 'is not a file system path'
     }
-    Test-Case 'Only unrestricted networking without delegation / Offline requested' {
-        $env:FIXTURE_AGENT_NETWORK = 'offline'
-        Assert-Refused (Invoke-Entry { & $Entry }) 'supports only unrestricted networking'
+    Test-Case 'Network modes from setup, without delegation / Offline session; Provider session' {
+        foreach ($mode in @('offline', 'provider')) {
+            $env:FIXTURE_AGENT_NETWORK = $mode
+            $call = Get-LaunchCall (Invoke-Entry { & $Entry })
+            Assert-Equal $mode $call.Env['FIXTURE_AGENT_NETWORK'] ('forwarded ' + $mode)
+            Assert-Text 'FIXTURE_AGENT_NETWORK/u' $call.WslEnv ('WSLENV names ' + $mode)
+        }
     }
-    Test-Case 'Only unrestricted networking without delegation / Delegation requested' {
+    Test-Case 'Network modes from setup, without delegation / Qualification' {
+        Assert-Equal @('--container-qualify') (Get-Argument (Invoke-Entry { & $Entry --container-qualify })) 'arguments'
+    }
+    Test-Case 'Network modes from setup, without delegation / Delegation requested' {
         $env:FIXTURE_AGENT_PODMAN = '1'
-        Assert-Refused (Invoke-Entry { & $Entry }) 'delegation (FIXTURE_AGENT_PODMAN=1) is unsupported'
-        Clear-Setting 'FIXTURE_AGENT_PODMAN'
-        Assert-Refused (Invoke-Entry { & $Entry --container-qualify }) '--container-qualify verifies restricted modes'
+        Assert-Refused (Invoke-Entry { & $Entry }) 'Podman delegation (FIXTURE_AGENT_PODMAN=1) is unsupported on Podman machine'
+        $env:FIXTURE_AGENT_NETWORK = 'offline'
+        Assert-Refused (Invoke-Entry { & $Entry --container-qualify }) 'Podman delegation (FIXTURE_AGENT_PODMAN=1) is unsupported'
     }
-    Test-Case 'Only unrestricted networking without delegation / Mode from setup; explicit unrestricted' {
+    Test-Case 'Network modes from setup, without delegation / Mode from setup; explicit unrestricted' {
         $env:FIXTURE_AGENT_PODMAN = '0'
         Assert-Equal 0 (Invoke-Entry { & $Entry }).Code 'delegation disabled'
         $env:FIXTURE_AGENT_NETWORK = 'unrestricted'
@@ -481,7 +488,9 @@ try {
         $env:FIXTURE_AGENT_NETWORK = 'offline'
         $r = Invoke-Entry { & $Core -EntryDirectory $WinEntry -Arguments @('x', @('a', 'b'), '--container-help') -PipelineInput }
         Assert-Equal 0 $r.Code 'status'
-        foreach ($text in @('FIXTURE_AGENT_WSL_DISTRO', 'FIXTURE_AGENT_WSL_USER', 'FIXTURE_AGENT_WSL_INSTALLATION', 'unrestricted', 'pipeline input', '--container-install', '--container-uninstall')) {
+        foreach ($text in @('FIXTURE_AGENT_WSL_DISTRO', 'FIXTURE_AGENT_WSL_USER', 'FIXTURE_AGENT_WSL_INSTALLATION',
+                'FIXTURE_AGENT_NETWORK           unrestricted, offline or provider (default: the mode setup saved)',
+                'Podman delegation (FIXTURE_AGENT_PODMAN=1) is refused.', 'pipeline input', '--container-install', '--container-uninstall')) {
             Assert-Text $text $r.Out 'Windows part'
         }
         Assert-Equal @('-d', 'podman-machine-default', '-u', 'user', '--cd', $WinEntry, '--exec', '/bin/bash', $agentProfile.wrapper, '--container-help') $r.Calls[1].Arguments.ToArray() 'wrapper help call'
@@ -527,7 +536,7 @@ try {
         $r = Invoke-Entry { & $Core -EntryDirectory $WinEntry -Arguments @('--container-setup') }
         Assert-Equal 0 $r.Code 'status'
         Assert-Equal 3 $r.Calls.Count 'running list, runtime probe, setup'
-        Assert-Equal @('-d', 'podman-machine-default', '-u', 'user', '--cd', $WinEntry, '--exec', '/bin/bash', $agentProfile.wrapper, '--container-setup') $r.Calls[2].Arguments.ToArray() 'setup call'
+        Assert-Equal @('-d', 'podman-machine-default', '-u', 'user', '--cd', $WinEntry, '--exec', '/bin/bash', 'launcher/windows/enter.sh', $Name, '/bin/bash', $agentProfile.wrapper, '--container-setup') $r.Calls[2].Arguments.ToArray() 'setup call through the namespace helper'
         Assert-Equal 'WRAPPER_WINDOWS_SETUP/u' $r.Calls[2].WslEnv 'only the Windows setup marker'
         Assert-Equal '1' $r.Calls[2].Env['WRAPPER_WINDOWS_SETUP'] 'marker value'
         Assert-True (-not (Test-Path -LiteralPath 'Env:WRAPPER_WINDOWS_SETUP')) 'marker removed from the session'
@@ -537,6 +546,16 @@ try {
     Test-Case 'Setup from the Windows checkout / Setup with other arguments' {
         Assert-Refused (Invoke-Entry { & $Core -EntryDirectory $WinEntry -Arguments @('--container-setup', '--container-shell') }) '--container-setup must be used alone'
         Assert-Refused (Invoke-Entry { & $Core -EntryDirectory '\\server\share\checkout' -Arguments @('--container-setup') }) 'is not a folder on a Windows drive'
+    }
+    Test-Case 'Sessions and setup in the machine''s systemd namespaces / Checkout without the namespace helper' {
+        $helper = Join-Path $script:Checkout 'launcher/windows/enter.sh'
+        [IO.File]::Delete($helper)
+        try {
+            $r = Invoke-Entry { & $Core -EntryDirectory $WinEntry -Arguments @('--container-setup') }
+            Assert-Refused $r 'the checkout is incomplete: launcher/windows/enter.sh cannot be read'
+        } finally {
+            [IO.File]::WriteAllText($helper, "#!/usr/bin/env bash`n:`n")
+        }
     }
     Test-Case 'Checkout line endings checked before setup / Checkout converted to CRLF' {
         [IO.File]::WriteAllText((Join-Path $script:Checkout 'launcher/core.sh'), "#!/usr/bin/env bash`r`n:`r`n")
@@ -596,7 +615,7 @@ try {
         Assert-Text ('adding ' + $target + ' to your user PATH') $r.Out 'announcement'
         Assert-Text ('installed in ' + $target) $r.Out 'next step'
         $setup = $r.Calls[$r.Calls.Count - 1]
-        Assert-Equal @('-d', 'podman-machine-default', '-u', 'user', '--cd', $target, '--exec', '/bin/bash', $agentProfile.wrapper, '--container-setup') $setup.Arguments.ToArray() 'setup from the installed copy'
+        Assert-Equal @('-d', 'podman-machine-default', '-u', 'user', '--cd', $target, '--exec', '/bin/bash', 'launcher/windows/enter.sh', $Name, '/bin/bash', $agentProfile.wrapper, '--container-setup') $setup.Arguments.ToArray() 'setup from the installed copy'
         Assert-Equal '1' $setup.Env['WRAPPER_WINDOWS_SETUP'] 'Windows setup marker'
         Assert-True (-not [IO.File]::Exists($target + '.lock')) 'lock released'
     }

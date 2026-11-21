@@ -33,7 +33,8 @@ SHARED_TESTS = (
     'tests/fixtures/agent/profile.json', 'tests/fixtures/agent/policies/default.json',
     'tests/fixtures/shell-agent/profile.json', 'tests/fixtures/shell-agent/policies/default.json',
     'tests/fixtures/agent/launcher.sh', 'tests/fixtures/shell-agent/launcher.sh', 'tests/fake_podman.py',
-    'tests/test_launcher.py', 'tests/test_windows_bootstrap.py', 'tests/windows/shim_tests.ps1',
+    'tests/test_launcher.py', 'tests/test_windows_bootstrap.py', 'tests/test_windows_enter.py',
+    'tests/windows/shim_tests.ps1',
 )
 FIXTURE_FILES = 'tests/fixtures/'
 SKIPPED_PARTS = ('__pycache__', 'bin')
@@ -176,6 +177,7 @@ class SharedComponentAlignment(unittest.TestCase):
 
     def test_scan_detects_an_injected_identifier(self):
         for name in ('network/control.py', 'launcher/windows/core.ps1', 'launcher/windows/bootstrap.sh',
+                     'launcher/windows/enter.sh',
                      'launcher/windows/install.ps1', 'launcher/windows/user-path.ps1', 'tests/windows/shim_tests.ps1'):
             with self.subTest(file=name), tempfile.TemporaryDirectory() as directory:
                 copy = Path(directory)

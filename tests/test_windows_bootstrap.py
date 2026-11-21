@@ -2,7 +2,9 @@
 
 The bootstrap runs inside the Podman machine's WSL distribution. Here it runs on
 Linux from a synthetic release: a fake ``wslpath`` maps drive paths into a
-temporary directory, and a fake managed command records what it receives.
+temporary directory, and a fake managed command records what it receives. The
+release's namespace helper reads a synthetic /proc whose PID 1 is systemd, so
+it runs the command directly; tests/test_windows_enter.py covers the helper.
 """
 import base64
 import json
@@ -31,7 +33,8 @@ print(os.path.join(os.environ['TEST_DRIVES'], raw[0].lower(), rest).rstrip('/'))
 '''
 FAKE_COMMAND = r'''#!/usr/bin/env python3
 import json, os, sys
-names = ('WRAPPER_WINDOWS_ARGS', 'WRAPPER_WINDOWS_CWD', 'WRAPPER_WINDOWS_ENTRY', 'WSLENV', 'KEPT')
+names = ('WRAPPER_WINDOWS_ARGS', 'WRAPPER_WINDOWS_CWD', 'WRAPPER_WINDOWS_ENTRY', 'WSLENV', 'KEPT',
+         'XDG_RUNTIME_DIR')
 with open(os.environ['TEST_RECORD'], 'w') as output:
     json.dump({'argv': sys.argv[1:], 'cwd': os.getcwd(), 'env': {n: os.environ.get(n) for n in names}}, output)
 sys.exit(int(os.environ.get('TEST_EXIT', '0')))
@@ -75,15 +78,24 @@ class WindowsBootstrapTests(unittest.TestCase):
                     'TEST_DRIVES': str(self.drives), 'TEST_RECORD': str(self.record),
                     'WRAPPER_WINDOWS_CWD': 'C:\\Work\\my project', 'WRAPPER_WINDOWS_ENTRY': 'C:\\Work\\checkout',
                     'WSLENV': 'WRAPPER_WINDOWS_ARGS/u:WRAPPER_WINDOWS_CWD/u:WRAPPER_WINDOWS_ENTRY/u:KEPT/u',
-                    'WSL_DISTRO_NAME': 'machine-distro',
+                    'WSL_DISTRO_NAME': 'machine-distro', 'XDG_RUNTIME_DIR': '/mnt/wslg/runtime-dir',
                     'KEPT': 'value'}
 
     def install_bootstrap(self, runtime):
-        # The release copy checks this directory instead of /run/user/<uid>.
+        # The release copies check this directory instead of /run/user/<uid>,
+        # and the helper reads a /proc whose PID 1 is systemd.
         text = (ROOT / 'launcher/windows/bootstrap.sh').read_text()
         self.assertEqual(text.count('/run/user/$(id -u)'), 1)
         target = self.release / 'launcher/windows/bootstrap.sh'
         target.write_text(text.replace('/run/user/$(id -u)', str(runtime)))
+        proc = self.base / 'proc'
+        (proc / '1').mkdir(parents=True, exist_ok=True)
+        (proc / '1/comm').write_text('systemd\n')
+        text = (ROOT / 'launcher/windows/enter.sh').read_text()
+        for old, new in (('proc=/proc', 'proc=' + str(proc)), ('runtime=/run/user/$(id -u)', 'runtime=' + str(runtime))):
+            self.assertEqual(text.count(old), 1)
+            text = text.replace(old, new)
+        (self.release / 'launcher/windows/enter.sh').write_text(text)
 
     def run_bootstrap(self, **env):
         values = self.env | env
@@ -102,10 +114,11 @@ class WindowsBootstrapTests(unittest.TestCase):
         record = self.recorded()
         self.assertEqual(record['argv'], arguments)
         self.assertEqual(record['cwd'], str(self.project))
-        # Only the translated entry directory stays; the transport and WSLENV are gone.
+        # Only the translated entry directory stays; the transport and WSLENV
+        # are gone, and the machine's runtime directory applies.
         self.assertEqual(record['env'], {'WRAPPER_WINDOWS_ARGS': None, 'WRAPPER_WINDOWS_CWD': None,
                                          'WRAPPER_WINDOWS_ENTRY': str(self.entry), 'WSLENV': None,
-                                         'KEPT': 'value'})
+                                         'KEPT': 'value', 'XDG_RUNTIME_DIR': str(self.runtime)})
 
     def test_no_arguments_and_one_empty_argument_differ(self):
         for value, expected in ((None, []), ('', []), (payload(['']), ['']), (payload(['', '']), ['', ''])):
@@ -188,17 +201,28 @@ class WindowsBootstrapTests(unittest.TestCase):
                 self.assertIn('podman machine start', result.stderr)
                 self.assertFalse(self.record.exists())
 
-    def test_saved_restricted_preferences_stop_before_the_command(self):
-        # windows-launcher: Only unrestricted networking without delegation / Saved preferences.
-        for change in ({'network': 'offline'}, {'network': 'provider'}, {'podman': True}, {'network': None}):
-            with self.subTest(change=change):
-                (self.release / 'setup.json').write_text(json.dumps(self.saved | change))
+    def test_saved_delegation_stops_before_the_command(self):
+        # windows-launcher: Saved delegation refused / Saved delegation.
+        saved = {key: value for key, value in self.saved.items() if key != 'podman'}
+        for value in ({**saved, 'podman': True}, {**saved, 'podman': 'false'}, saved):
+            with self.subTest(saved=value):
+                (self.release / 'setup.json').write_text(json.dumps(value))
                 result = self.run_bootstrap()
                 self.assertEqual(result.returncode, 1)
-                self.assertIn(PROFILE.name + ': the installation in ' + str(self.release) + ' saved networking other '
-                              'than unrestricted, or Podman delegation', result.stderr)
-                self.assertIn('--container-setup', result.stderr)
+                self.assertIn(PROFILE.name + ': the installation in ' + str(self.release) + ' saved Podman '
+                              'delegation, which Podman machine on Windows does not support; rerun setup from '
+                              'Windows with --container-setup', result.stderr)
                 self.assertFalse(self.record.exists())
+
+    def test_saved_network_modes_run_the_command(self):
+        # windows-launcher: Saved delegation refused / Saved offline networking.
+        for network in ('offline', 'provider', 'unrestricted'):
+            with self.subTest(network=network):
+                self.record.unlink(missing_ok=True)
+                (self.release / 'setup.json').write_text(json.dumps(self.saved | {'network': network}))
+                result = self.run_bootstrap()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.recorded()['cwd'], str(self.project))
 
     def test_relative_invocation_from_the_home_directory(self):
         # The shim starts the bootstrap with a path relative to the user's home.
