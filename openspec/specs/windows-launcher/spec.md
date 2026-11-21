@@ -292,6 +292,7 @@ On Windows the entry SHALL pass `<P>_NETWORK` unset, `unrestricted`, `offline` o
 #### Scenario: Restricted mode without a prepared installation
 - **WHEN** `$env:<P>_NETWORK='offline'` is set but setup prepared only unrestricted networking
 - **THEN** the launch exits with status 1 and the launcher's setup guidance, before any engine query
+- **AND** the guidance names `<name>.ps1 --container-setup` from Windows, not the wrapper path in the distribution
 
 #### Scenario: Qualification
 - **WHEN** the user runs `<name>.ps1 --container-qualify` after an offline setup
