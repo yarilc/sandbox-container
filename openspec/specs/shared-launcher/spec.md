@@ -91,7 +91,7 @@ The core SHALL be tested by `tests/test_launcher.py` with the shared fake engine
 - **THEN** the shared launcher tests pass unchanged
 
 ### Requirement: Shared Windows shim and bootstrap
-The shared launcher SHALL include the Windows shim `launcher/windows/core.ps1` and the bootstrap `launcher/windows/bootstrap.sh`, copied byte for byte from the reference tag like the other shared files. Neither SHALL contain agent identifiers: the shim SHALL read the wrapper name, file name and variable prefix from `agent/profile.json`. Setup SHALL install the bootstrap in every release.
+The shared launcher SHALL include the Windows shim `launcher/windows/core.ps1`, the installer scripts under `launcher/windows/` and the bootstrap `launcher/windows/bootstrap.sh`, copied byte for byte from the reference tag like the other shared files. None SHALL contain agent identifiers: the shim and the installer SHALL read the wrapper name, file name and variable prefix from `agent/profile.json`. Setup SHALL install the bootstrap in every release.
 
 #### Scenario: Shim edited in a wrapper
 - **WHEN** a wrapper's `launcher/windows/core.ps1` differs from the reference tag
@@ -100,6 +100,10 @@ The shared launcher SHALL include the Windows shim `launcher/windows/core.ps1` a
 #### Scenario: Agent-neutral shim
 - **WHEN** the alignment test scans the shim and the bootstrap
 - **THEN** neither contains the reference's name, prefix or other profile identifiers
+
+#### Scenario: Agent-neutral installer
+- **WHEN** the alignment test scans the installer scripts
+- **THEN** none contains the reference's name, prefix or other profile identifiers, and each is ASCII
 
 ### Requirement: Thin PowerShell entry script
 Each wrapper SHALL provide `<wrapper>-container.ps1` next to its Bash entry. It SHALL only set strict error handling and run the shared shim with its own directory, its arguments and whether it received pipeline input. The PowerShell entries of all wrappers SHALL be identical. Because propagation copies only shared directories, the adoption steps SHALL name the entry and the repository's `.gitattributes`.

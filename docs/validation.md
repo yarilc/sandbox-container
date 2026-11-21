@@ -2,7 +2,7 @@
 
 ## Windows installer (pending tag)
 
-Change: `openspec/changes/add-windows-installer/`.
+Change: `openspec/changes/archive/2026-11-21-add-windows-installer/`.
 
 **Integration checks (task 7.1).** On the runner of task 9.2 in the section below
 (Podman client 4.3.1, server 4.9.3, `systemd` manager), on top of commit
