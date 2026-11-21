@@ -514,8 +514,12 @@ use only letters, digits and `_`, `SANDBOX_CONTAINER_CONFIG_DIR` when it holds
 a distribution path (starting with `/`), and the names listed in
 `SANDBOX_CONTAINER_ENV_VARS`. A Windows path in
 `SANDBOX_CONTAINER_CONFIG_DIR` is skipped with a notice, and the directory
-saved by setup applies. It forwards no other Windows variable. Path values
-are distribution paths, such as `/home/user/...`.
+saved by setup applies. In a wrapper whose profile declares authentication
+methods, the entry also forwards their key variables, for example
+`ANTHROPIC_API_KEY` in Claude: `$env:ANTHROPIC_API_KEY = '...'` before the
+entry supplies the key as an exported variable does on Linux. The help lists
+them. It forwards no other Windows variable. Path values are distribution
+paths, such as `/home/user/...`.
 
 Limits on Windows:
 
@@ -539,12 +543,16 @@ Limits on Windows:
   Git for Windows clones with `core.autocrlf=true` look modified to Git in the
   session: set `core.autocrlf=false` for the project, or give it a
   `.gitattributes`.
-- A behavioral antivirus may quarantine checkout files while they are cloned
-  or extracted. Bitdefender's Advanced Threat Control (`Atc4.Detection`) once
-  removed `tests/fixtures/shell-agent/launcher.sh`, which only the Linux tests
-  use. Setup and the entry fail when a file they need is missing: restore it
-  from the antivirus quarantine, or ask the administrator, and report the
-  false positive to the vendor.
+- Bitdefender's Advanced Threat Control (`Atc4.Detection`) has blocked the
+  operator validation script `tools/windows-validate.ps1`, and quarantined
+  files while validation bundles were extracted with `tar`, for example
+  `tests/fixtures/shell-agent/launcher.sh`, which only the Linux tests use.
+  Setup, the installer and sessions ran with it active, and another Windows
+  system with other antivirus products ran the validation without problems.
+  Run the validation script with the checkout folder excluded, or with the
+  protection paused for the run, as your administrator allows. Setup and the
+  entry fail when a file they need is missing: restore it from the quarantine,
+  and report the false positive to the vendor.
 
 ### Trusting a host CA on Windows
 

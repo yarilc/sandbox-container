@@ -797,13 +797,18 @@ nonempty value:
 - the profile's configuration-directory variable, only with a distribution
   path (starting with `/`); a Windows path gets a notice;
 - the profile's approval-bypass variable;
+- the key variables of the profile's authentication methods (`credential_env`,
+  such as `ANTHROPIC_API_KEY`), as on Linux, where they are in the launcher's
+  environment; the core still passes only the selected method's key to a
+  provider session;
 - the valid names listed in `<P>_ENV_VARS`.
 
 It never forwards `WSLENV`, `WRAPPER_WINDOWS_*`, `BASH_ENV`, `ENV`,
 `SHELLOPTS`, `BASHOPTS`, `CDPATH`, `GLOBIGNORE`, `IFS`, `PS4`, `LD_*`,
 `PYTHON*`, `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `PWD`, `OLDPWD`,
 `TMPDIR`, `XDG_*`, `WSL_*`, `CONTAINER_*` or `CONTAINERS_*`. It prints one
-notice for each such name listed in `<P>_ENV_VARS`.
+notice for each such name listed in `<P>_ENV_VARS`, and for a key variable with
+such a name that is set. The help's Windows part names the key variables.
 
 The shim never starts a stopped distribution: `wsl.exe -l --running -q`, then
 `wsl.exe -l -q` tell a running, stopped or missing distribution apart without

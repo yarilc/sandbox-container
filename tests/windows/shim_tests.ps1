@@ -405,6 +405,29 @@ try {
             [Environment]::SetEnvironmentVariable('FIXTURE_AGENT_X:BASH_ENV/u', $null)
         }
     }
+    Test-Case 'Environment forwarded by name / Credential variable of an authentication method; Credential variable not set' {
+        $env:FIXTURE_API_KEY = 'key value'
+        $env:WSLENV = 'USERPROFILE/p'
+        $r = Invoke-Entry { & $Entry -c true }
+        $call = Get-LaunchCall $r
+        Assert-True (($call.WslEnv -split ':') -contains 'FIXTURE_API_KEY/u') 'FIXTURE_API_KEY in WSLENV'
+        Assert-Equal 'key value' $call.Env['FIXTURE_API_KEY'] 'FIXTURE_API_KEY value'
+        Assert-Equal 'USERPROFILE/p' $env:WSLENV 'WSLENV restored'
+        Assert-Equal 'key value' $env:FIXTURE_API_KEY 'PowerShell value kept'
+        foreach ($value in @($null, '')) {
+            [Environment]::SetEnvironmentVariable('FIXTURE_API_KEY', $value)
+            $call = Get-LaunchCall (Invoke-Entry { & $Entry -c true })
+            Assert-True (-not $call.WslEnv.Contains('FIXTURE_API_KEY')) ('key ' + (Format-Value $value) + ' is not forwarded')
+        }
+        $env:FIXTURE_API_KEY = 'key value'
+        $call = Get-LaunchCall (Invoke-Entry { & $ShellEntry -c true })
+        Assert-True (-not $call.WslEnv.Contains('FIXTURE_API_KEY')) 'a profile without methods forwards no key'
+        $shellCore = Join-Path $shellCheckout 'launcher/windows/core.ps1'
+        $r = Invoke-Entry { & $shellCore -EntryDirectory $WinEntry -Arguments @('--container-help') }
+        Assert-Equal 0 $r.Code ('help status: ' + $r.Err)
+        Assert-Text 'Windows entry (fixture-shell.ps1' $r.Out 'shell Windows part'
+        Assert-True (-not $r.Out.Contains('Authentication keys')) 'no key line in the help of a profile without methods'
+    }
     Test-Case 'Environment forwarded by name / Windows path in the configuration-directory variable' {
         $env:FIXTURE_CONFIG_DIR = 'C:\Users\me\.fixture'
         $r = Invoke-Entry { & $Entry }
@@ -490,7 +513,8 @@ try {
         Assert-Equal 0 $r.Code 'status'
         foreach ($text in @('FIXTURE_AGENT_WSL_DISTRO', 'FIXTURE_AGENT_WSL_USER', 'FIXTURE_AGENT_WSL_INSTALLATION',
                 'FIXTURE_AGENT_NETWORK           unrestricted, offline or provider (default: the mode setup saved)',
-                'Podman delegation (FIXTURE_AGENT_PODMAN=1) is refused.', 'pipeline input', '--container-install', '--container-uninstall')) {
+                'Podman delegation (FIXTURE_AGENT_PODMAN=1) is refused.', 'pipeline input', '--container-install', '--container-uninstall',
+                'Authentication keys forwarded when set: FIXTURE_API_KEY.')) {
             Assert-Text $text $r.Out 'Windows part'
         }
         Assert-Equal @('-d', 'podman-machine-default', '-u', 'user', '--cd', $WinEntry, '--exec', '/bin/bash', $agentProfile.wrapper, '--container-help') $r.Calls[1].Arguments.ToArray() 'wrapper help call'

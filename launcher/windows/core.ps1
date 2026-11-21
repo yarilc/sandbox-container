@@ -117,6 +117,15 @@ if ($null -ne $authProperty -and $null -ne $authProperty.Value -and
     @($authProperty.Value.PSObject.Properties).Count -gt 0) {
     $modeList = 'unrestricted, offline or provider'
 }
+# The key variables of the authentication methods. On Linux they are in the
+# launcher's environment; the core passes only the selected method's key.
+$credentialEnvs = New-Object 'System.Collections.Generic.List[string]'
+if ($null -ne $authProperty -and $null -ne $authProperty.Value) {
+    foreach ($method in @($authProperty.Value.PSObject.Properties)) {
+        $credential = Get-ProfileText $method.Value 'credential_env' $envName -Optional
+        if ($null -ne $credential -and -not $credentialEnvs.Contains($credential)) { $credentialEnvs.Add($credential) }
+    }
+}
 $guidance = 'Create a Podman machine with Podman Desktop, using the WSL provider, or set ' +
     $P + '_WSL_DISTRO to the name of its WSL distribution.'
 
@@ -281,9 +290,12 @@ function Write-WindowsHelp {
         '  Restricted modes need a setup that prepared them in the machine.',
         ('  Podman delegation (' + $P + '_PODMAN=1) is refused.'),
         '  PowerShell pipeline input is refused; redirect standard input from cmd.exe.',
-        '  Variables with an empty value count as unset. Quote a -- meant for Bash: ''--''.',
-        ''
+        '  Variables with an empty value count as unset. Quote a -- meant for Bash: ''--''.'
     )
+    if ($credentialEnvs.Count -gt 0) {
+        $lines += ('  Authentication keys forwarded when set: ' + ($credentialEnvs -join ', ') + '.')
+    }
+    $lines += ''
     foreach ($line in $lines) { [Console]::Out.WriteLine($line) }
 }
 
@@ -513,16 +525,26 @@ foreach ($key in [Environment]::GetEnvironmentVariables().Keys) {
 }
 [void]$forwarded.Add($configEnv)
 if ($null -ne $bypassEnv) { [void]$forwarded.Add($bypassEnv) }
+function Test-ReservedName([string]$Variable) {
+    $upper = $Variable.ToUpperInvariant()
+    if ($reservedNames -contains $upper) { return $true }
+    foreach ($start in $reservedPrefixes) { if ($upper.StartsWith($start, [StringComparison]::Ordinal)) { return $true } }
+    return $false
+}
+foreach ($credential in $credentialEnvs) {
+    if (-not (Test-ReservedName $credential)) {
+        [void]$forwarded.Add($credential)
+    } elseif ($null -ne (Get-Setting $credential)) {
+        [Console]::Error.WriteLine($name + ': ' + $credential + ' is not forwarded, because the distribution sets it')
+    }
+}
 $listed = Get-Setting ($P + '_ENV_VARS')
 if ($null -ne $listed) {
     $noticed = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($variable in ($listed -split '\s+')) {
         # The core reports invalid names itself; they are not forwarded.
         if ($variable -cnotmatch '^[A-Za-z_][A-Za-z0-9_]*\z') { continue }
-        $upper = $variable.ToUpperInvariant()
-        $reserved = $reservedNames -contains $upper
-        foreach ($start in $reservedPrefixes) { if ($upper.StartsWith($start, [StringComparison]::Ordinal)) { $reserved = $true } }
-        if ($reserved) {
+        if (Test-ReservedName $variable) {
             if ($noticed.Add($variable)) {
                 [Console]::Error.WriteLine($name + ': ' + $P + '_ENV_VARS: ' + $variable +
                     ' is not forwarded, because the distribution sets it')

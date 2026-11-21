@@ -23,6 +23,10 @@
 # script prints how. The mode cases follow the network mode that setup saved:
 # run the script after an offline setup for the restricted cases, and after an
 # unrestricted one for the refusal of an unprepared restricted mode.
+# Bitdefender's Advanced Threat Control (Atc4.Detection) has blocked this
+# script, which other antivirus products did not: run it with the checkout
+# folder excluded, or with the protection paused for the run, as the
+# administrator allows (README, Limits on Windows).
 param(
     [string]$Checkout = (Split-Path -Parent $PSScriptRoot),
     [switch]$StopMachine,

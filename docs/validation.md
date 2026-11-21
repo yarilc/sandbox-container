@@ -1,5 +1,43 @@
 # Validation record
 
+## Windows pre-tag gaps (pending tag)
+
+Change: `openspec/changes/archive/2026-11-21-close-windows-pre-tag-gaps/`.
+
+**Antivirus (operator report, 2026-11-21).** The problem appears only with
+Bitdefender (Advanced Threat Control, `Atc4.Detection`). It affects only the
+validation scripts (`tools/windows-validate.ps1` and the throwaway operator
+scripts) and the extraction of validation bundles with `tar`. Setup and the
+installer do not trigger it. On another Windows system with other antivirus
+products the operator saw no problem. It is documented in the README's
+Windows limits and in the header of `tools/windows-validate.ps1`; nothing in
+the code works around it.
+
+**Checks on this runner (task 3.1), 2026-11-21.** Same runner as below:
+
+| Check | Result |
+| --- | --- |
+| `git diff --check`, `bash tools/shellcheck.sh .` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 62 shim cases, including the new credential-variable case (forwarded when set, not when unset or empty, none for a profile without methods, named in the help) |
+| `--shared` (unit discovery), with `tests/test_alignment.py` | 495 tests, 74 skipped; only the 14 `AF_UNIX path too long` environment failures (13 in `test_session.py`, 1 in `test_launcher.py`) |
+
+**Operator run on Windows (task 4.2), 2026-11-21.** Snapshot of the branch
+tree with this change. Windows WSL 3.0.5.0, kernel 6.18.58.1-1, Windows
+PowerShell 5.1.26100.9711; the machine `podman-machine-default` with Ubuntu
+running. The steps of design D2:
+
+| Step | Result |
+| --- | --- |
+| 1. Setup from Windows, unrestricted, endpoint answered `local`; then `windows-validate.ps1` | 41 passed, 0 failed, 3 skipped. "One engine for sessions and the machine" passed: the service ran a command in the session's container and removed it. The unprepared restricted mode named `sandbox-container.ps1 --container-setup from Windows` |
+| 2. Setup in a shell opened with `wsl -d podman-machine-default`; then `windows-validate.ps1` | The shell entered the machine's systemd namespaces (the machine's notice "You will be automatically entered into a nested process namespace", `/proc/1/comm` `systemd`, `XDG_RUNTIME_DIR=/run/user/1000`). Run from the home directory, setup stopped with `Managed installation/command overlaps a writable workspace or state mount`, because the home contains `~/.local/lib/sandbox-container`; Linux behaves the same. Run again from `/mnt/c/Work/sandbox-container`, with the proposed answers (unrestricted, endpoint `local`, host CA trust with `/etc/ssl/certs/ca-certificates.crt`), it ended with `Sandbox: ready`. The validation then gave 41 passed, 0 failed, 3 skipped, with "One engine" passing |
+| 3. Setup from Windows, offline | The endpoint question proposed `[default]` over the saved `local`. `sandbox-container.ps1 -c 'echo ok'` from a project folder printed `ok`, with `network mode=offline`, `status=locally-qualified`, Landlock ABI 7 and `sandbox-egress-guard: enforced revision=abi3-seccomp-mux-v1 abi=7` |
+
+Every step passed, so nothing changes (design D2). The `local` endpoint works
+from Windows, and a shell of the machine runs setup inside its systemd
+namespaces. The "One engine" failure of the earlier run stays tied to the
+release that run started from, whose settings are not known.
+
+
 ## Windows remaining cases (pending tag)
 
 Change: `openspec/changes/archive/2026-11-21-validate-windows-remaining-cases/`. From the Windows
