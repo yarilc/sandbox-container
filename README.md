@@ -417,6 +417,10 @@ of the pinned base image. On a network that intercepts TLS (a corporate proxy th
 re-signs certificates), enable host CA trust with a bundle that contains the
 interception CA, or the build fails with a certificate verification error.
 
+With a Podman machine on Windows, the host is the machine: it must first
+import the CAs that Windows trusts
+([Trusting a host CA on Windows](#trusting-a-host-ca-on-windows)).
+
 Migration: earlier versions always mounted the host certificate directory and
 set CA variables. Those sessions no longer trust the host CA by default. Set
 `SANDBOX_CONTAINER_TRUST_HOST_CA=1` to restore that behavior.
@@ -541,6 +545,33 @@ Limits on Windows:
   use. Setup and the entry fail when a file they need is missing: restore it
   from the antivirus quarantine, or ask the administrator, and report the
   false positive to the vendor.
+
+### Trusting a host CA on Windows
+
+Setup and sessions run in the machine, so host CA trust uses a bundle of the
+machine, not the Windows certificate store. On a network that intercepts TLS
+(a corporate proxy that re-signs certificates), the machine trusts the
+interception CA only when Podman imports the Windows store into it. Without
+it, image pulls and builds in the machine and HTTPS requests in sessions fail
+with a certificate verification error. With Podman 6.0 or later, enable the
+import once. `podman machine set` fails while the machine runs, so stop it
+first:
+
+```powershell
+podman machine stop
+podman machine set --import-native-ca
+podman machine start
+```
+
+The import happens at every machine start: Podman copies the CAs that Windows
+trusts into the machine and runs `update-ca-trust`, so the machine's system
+bundle contains them. Restart the machine after Windows gains a new CA.
+
+Then run setup and answer yes to "Trust a host CA bundle?". Keep the bundle
+setup proposes, the machine's system bundle (see
+[Trusting a host CA](#trusting-a-host-ca)): setup passes it to the image builds
+and saves it for sessions. Rerun setup after the machine is recreated, and
+enable the import again on the new machine.
 
 ### Install as a command
 

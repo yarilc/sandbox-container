@@ -148,6 +148,8 @@ and `test_gitconfig_deprecated_alias` (P).
   wrapper exists to use its provider's API. The reference shell, with no
   method, defaults to `offline`. Without the provider settings, a default
   launch stops with setup guidance before any engine or state operation.
+  From the Windows entry the guidance names the Windows setup step
+  ("Bootstrap" under "Windows entry" below).
 - **U2.** Legacy names are removed without compatibility hooks: the project
   has no release yet, so backward compatibility is not a goal.
 - **U3.** `--container-build` alone builds the image and exits in every
@@ -940,6 +942,17 @@ at the first one that fails:
 
 From that point the managed launch applies its usual checks, including the
 rule below and the core's sensitive-workspace rules.
+
+The core's setup guidance follows the entry. When `WRAPPER_WINDOWS_ENTRY` is
+not empty, both "setup required" refusals (a restricted mode without a
+protected installation, and a default provider launch without its saved
+settings) name `run <AGENT_NAME>.ps1 --container-setup from Windows`;
+otherwise they name `run bash <invoked wrapper> --container-setup and use the
+managed launcher`. The variable is internal to the Windows path: a Linux
+launch that exports it gets the Windows step, and nothing else changes.
+Covering tests: `test_setup_guidance_from_the_windows_entry_names_the_windows_step`
+and `test_provider_setup_guidance_from_the_windows_entry` in
+`tests/test_launcher.py`.
 
 Covering tests: `tests/test_windows_bootstrap.py`.
 

@@ -318,7 +318,8 @@ try {
         Add-Result 'SKIP' 'Restricted mode without a prepared installation' ('setup saved ' + $savedMode +
             ' networking; run the script again after an unrestricted setup')
     } else {
-        Test-Outcome 'Restricted mode without a prepared installation' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E -c true')) 1 'setup required'
+        # The launcher's guidance names the Windows step, not the wrapper path in the machine.
+        Test-Outcome 'Restricted mode without a prepared installation' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E -c true')) 1 ('setup required: offline sessions need a protected installation; run ' + $name + '.ps1 --container-setup from Windows')
         Add-Result 'SKIP' 'Offline session; Qualification' ('setup saved ' + $savedMode + ' networking; run .\' + $name +
             '.ps1 --container-setup with offline networking, then the script again')
     }

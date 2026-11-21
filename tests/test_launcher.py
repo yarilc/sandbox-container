@@ -216,6 +216,21 @@ class LauncherTests(unittest.TestCase):
                 self.assertFalse(self.state.exists())
                 self.assertFalse(Path(env['HOME']).exists())
 
+    def test_setup_guidance_from_the_windows_entry_names_the_windows_step(self):
+        # A launch from the Windows entry prepares the machine from Windows.
+        result = self.run_wrapper(FIXTURE_SHELL_NETWORK='offline', WRAPPER_WINDOWS_ENTRY='/mnt/c/Work')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('setup required: offline sessions need a protected installation; '
+                      'run fixture-shell.ps1 --container-setup from Windows, '
+                      'or set FIXTURE_SHELL_NETWORK=unrestricted for a direct session', result.stderr)
+        self.assertNotIn('bash ', result.stderr)
+        self.assertNotIn(str(WRAPPER), result.stderr)
+        self.assertNotIn('managed launcher', result.stderr)
+        self.assertFalse(self.calls())
+        result = self.run_wrapper(FIXTURE_SHELL_NETWORK='offline', WRAPPER_WINDOWS_ENTRY='')
+        self.assertIn('; run bash ', result.stderr)
+        self.assertIn('--container-setup and use the managed launcher', result.stderr)
+
     def test_missing_mode_precedes_options_prerequisites_and_other_configuration(self):
         (self.project / 'setup.json').write_text('{"network":"unrestricted"}')
         (self.project / 'qualification').mkdir()
@@ -1953,6 +1968,32 @@ class AgentProfileSettingsTests(unittest.TestCase):
                 self.assertIn('setup required: provider sessions', result.stderr)
                 self.assertIn('--container-setup', result.stderr)
                 self.assertEqual(self.engine_calls(), [])
+
+    def test_provider_setup_guidance_from_the_windows_entry(self):
+        # Both refusals name the Windows step: without an installation, and with
+        # one but without the provider settings setup saves.
+        install = self.base / 'install'
+        shutil.copytree(AGENT_ROOT, install)
+        (install / 'network/bin').mkdir(exist_ok=True)
+        (install / 'network/bin/guard.sha256').write_text('0' * 64 + '  guard\n')
+        step = 'run ' + AGENT_PROFILE.name + '.ps1 --container-setup from Windows'
+        cases = (
+            (AGENT_WRAPPER, 'provider sessions need a protected installation; ' + step +
+                ', or set ' + AGENT_PROFILE.env_prefix + '_NETWORK=unrestricted'),
+            (install / AGENT_PROFILE.wrapper, 'provider sessions, the default for ' + AGENT_PROFILE.display_name +
+                ', need the settings setup saves; ' + step + '\n'),
+        )
+        for wrapper, message in cases:
+            with self.subTest(wrapper=wrapper):
+                result = self.run_agent(wrapper=wrapper, WRAPPER_WINDOWS_ENTRY='/mnt/c/Work')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('setup required: ' + message, result.stderr)
+                self.assertNotIn(str(wrapper), result.stderr)
+                self.assertNotIn('managed launcher', result.stderr)
+                result = self.run_agent(wrapper=wrapper)
+                self.assertIn('--container-setup and use the managed launcher', result.stderr)
+                self.assertNotIn('.ps1', result.stderr)
+        self.assertEqual(self.engine_calls(), [])
 
     def test_shell_profile_defaults_to_offline(self):
         result = self.run_agent(wrapper=WRAPPER)

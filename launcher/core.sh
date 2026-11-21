@@ -315,15 +315,21 @@ core_settings() {
     # Host tools are diagnosed later, so a missing readlink leaves the path empty here.
     script_path=$WRAPPER_PATH
     script_dir=${script_path%/*}
-    setup_wrapper=$WRAPPER_INVOKED
-    [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
-    printf -v setup_command 'bash %q --container-setup' "$setup_wrapper"
+    # A launch from the Windows entry (WRAPPER_WINDOWS_ENTRY, set by the
+    # bootstrap) prepares the machine with setup from Windows.
+    if [[ -n "${WRAPPER_WINDOWS_ENTRY:-}" ]]; then
+        setup_step="run $AGENT_NAME.ps1 --container-setup from Windows"
+    else
+        setup_wrapper=$WRAPPER_INVOKED
+        [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
+        printf -v setup_step 'run bash %q --container-setup and use the managed launcher' "$setup_wrapper"
+    fi
     # A restricted session needs a protected installation with the built guard and
     # its manifest. Without one, give setup guidance before any engine or state
     # operation; session.py prepare still validates the installation fully.
     if ((restricted)) \
         && { [[ -z "$script_path" ]] || ! compgen -G "$script_dir/network/bin/*.sha256" >/dev/null; }; then
-        die "setup required: $network_mode sessions need a protected installation; run $setup_command and use the managed launcher, or set ${P}_NETWORK=unrestricted for a direct session"
+        die "setup required: $network_mode sessions need a protected installation; $setup_step, or set ${P}_NETWORK=unrestricted for a direct session"
     fi
     # Provider mode needs the settings setup saves; a default provider launch
     # without them is a missing setup, an explicit one a configuration error.
@@ -331,7 +337,7 @@ core_settings() {
     if [[ "$network_mode" == provider ]]; then
         if [[ -z "${cfg_NETWORK:-}" ]] && [[ -z "${cfg_NETWORK_PROFILE:-}" || -z "${cfg_NETWORK_POLICY:-}" \
             || -z "${cfg_NETWORK_RUNTIME_DIR:-}" || -z "${cfg_EGRESS_IMAGE:-}" ]]; then
-            die "setup required: provider sessions, the default for $AGENT_DISPLAY_NAME, need the settings setup saves; run $setup_command and use the managed launcher"
+            die "setup required: provider sessions, the default for $AGENT_DISPLAY_NAME, need the settings setup saves; $setup_step"
         fi
         [[ -n "${cfg_NETWORK_PROFILE:-}" && -n "${cfg_NETWORK_POLICY:-}" ]] \
             || die "provider mode requires ${P}_NETWORK_PROFILE and ${P}_NETWORK_POLICY"

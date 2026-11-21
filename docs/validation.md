@@ -1,5 +1,73 @@
 # Validation record
 
+## Windows remaining cases (pending tag)
+
+Change: `openspec/changes/archive/2026-11-21-validate-windows-remaining-cases/`. From the Windows
+entry, the launcher's "setup required" refusals now name
+`<name>.ps1 --container-setup from Windows`.
+
+**Host CA trust with the Podman machine (operator report, 2026-11-21).** On a
+network with TLS inspection, the operator verified setup with host CA trust on
+`podman-machine-default`, keeping the default bundle that setup proposed. The
+machine trusts the Windows CAs only after `podman machine set
+--import-native-ca`, which fails while the machine runs; without it, the
+sandbox's configuration does not get the interception CA. `README.md` and
+`docs/setup.md` now give the steps (task 1.4).
+
+**Checks on this runner (task 2.1), 2026-11-21.** Same runner as the guard
+init checks below:
+
+| Check | Result |
+| --- | --- |
+| `git diff --check`, `bash tools/shellcheck.sh .` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 61 shim cases |
+| `tools/windows-validate.ps1` dry run with a fake `wsl.exe` (PowerShell 7) | Completed; the unprepared restricted-mode case now expects the Windows step |
+| `--shared` (unit discovery) | 495 tests, 74 skipped. The 14 `AF_UNIX path too long` environment failures as before (13 in `test_session.py`, 1 in `test_launcher.py`). `test_fixture_identifiers_stay_in_the_fixtures` found the fixture name in the new provider case, which now reads it from the profile; the alignment suite and the case pass. `test_ignored_signals_force_owned_removal` (`INT`) ended in 2.9 s instead of more than 3.5 s; on the branch head it failed in 2 of 4 runs, so it is a timing flake of this runner, not a new failure |
+| New cases | `test_setup_guidance_from_the_windows_entry_names_the_windows_step` and `test_provider_setup_guidance_from_the_windows_entry` pass, with the 5 existing setup-guidance cases |
+
+**Operator run on Windows (task 3.2), 2026-11-21.** Snapshot of the branch
+tree with this change. Windows WSL 3.0.5.0, kernel 6.18.58.1-1 (WSL and the
+kernel were updated since the previous runs); the Podman Desktop machine
+`podman-machine-default`, user `user`, with Ubuntu running. The summary files
+were copied after each run.
+
+| Run | Release in the machine | Summary |
+| --- | --- | --- |
+| `windows-validate.ps1 -Install -StopMachine`, Windows PowerShell 5.1.26100.9711 | The release of a setup run earlier from a Linux shell in the machine, saved with unrestricted networking (its endpoint is not known); the installer's setup replaced it with offline networking | 51 passed, 2 failed, 1 skipped |
+| `windows-validate.ps1 -Install -StopMachine`, PowerShell 7.7.0 | This change, offline | 54 passed, 0 failed, 1 skipped |
+| Setup with unrestricted networking and the `default` endpoint, then `windows-validate.ps1`, 5.1 | This change, unrestricted | 41 passed, 0 failed, 3 skipped |
+| Setup with offline networking, then `windows-validate.ps1` as a control run, 5.1 | This change, offline | 42 passed, 0 failed, 3 skipped |
+
+- Installer, both editions: install from the checkout and setup from the
+  installed copy through the namespace helper, the user `PATH` in the registry
+  and in a new window, the refusal of an install from the installed copy, and
+  the uninstall of the `PATH` entry and of the folder passed.
+- Stopped machine, both editions: the launch refusal, the help, the machine
+  staying stopped, the launch and setup refusals of a distribution that
+  `wsl.exe` alone started, and the restart with `podman machine start` passed.
+- Unprepared restricted mode, with this change's release: `setup required:
+  offline sessions need a protected installation; run sandbox-container.ps1
+  --container-setup from Windows, or set SANDBOX_CONTAINER_NETWORK=unrestricted
+  for a direct session`.
+- The two failures of the first 5.1 run came from the earlier release, because
+  the matrix runs before the installer's setup:
+  - the unprepared restricted mode printed the Linux step of the earlier
+    launcher (`run bash /home/user/.local/lib/sandbox-container/releases/<id>/sandbox-container.sh
+    --container-setup and use the managed launcher`);
+  - "One engine for sessions and the machine": the service listed the
+    session's container, but `exec` failed with `crun: container ... does
+    not exist: open /run/user/1000/crun/<id>/status`, and the session did not
+    end within 60 s. The helper was the same in both releases. That release
+    came from a setup in a Linux shell of the machine, whose way into the
+    machine and endpoint are not known. With this change's release the case
+    passed in offline mode on both editions and in unrestricted mode on 5.1.
+- The final offline setup proposed the `default` endpoint, which the
+  unrestricted setup had saved. The replacement of a saved `local` endpoint
+  did not run on Windows; `test_restricted_mode_proposes_a_service_endpoint_over_a_saved_local_engine`
+  covers it.
+- After the final offline setup, `sandbox-container.ps1 -c 'echo ok'` from a
+  project folder printed `ok`.
+
 ## Windows restricted networking (pending tag)
 
 Change: `openspec/changes/archive/2026-11-21-support-machine-restricted-networking/`. The operator

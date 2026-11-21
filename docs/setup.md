@@ -183,6 +183,8 @@ over verified HTTPS, so hosts that block plain HTTP can still build. On networks
 that intercept TLS, answer yes to host CA trust and select a bundle containing the
 interception CA: setup passes it to the runtime image and guard toolchain builds
 as a non-persisted build secret. Without it, such builds fail with a certificate verification error.
+On Windows, the Podman machine must first import the Windows CAs
+([Windows with Podman machine](#windows-with-podman-machine)).
 Consent grants exact maintenance authorization only to these preparation
 commands. It is not saved or enabled for subsequent ordinary launches.
 
@@ -398,6 +400,15 @@ Setup then works as on Linux:
   `/run/user/<uid>/podman/podman.sock`, so it offers every network mode that
   the profile allows, with offline as the default (see
   [Choices and preparation](#choices-and-preparation));
+- host CA trust offers the machine's system bundle. On a network that
+  intercepts TLS, that bundle contains the interception CA only after
+  `podman machine set --import-native-ca` (Podman 6.0 or later), which fails
+  while the machine runs: stop it first. Podman then imports the CAs that Windows trusts at every
+  machine start and runs `update-ca-trust`. Run it before setup, then answer
+  yes to host CA trust and keep the proposed bundle; otherwise pulls, builds
+  and sessions fail certificate verification. The README section
+  [Trusting a host CA on Windows](../README.md#trusting-a-host-ca-on-windows)
+  gives the commands;
 - the engine uses the `cgroupfs` manager: the memory and CPU budgets are not
   enforced, and the process budget uses the process rlimit, as the launch
   notices state;
