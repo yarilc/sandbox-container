@@ -737,6 +737,16 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
         with self.assertRaisesRegex(common.SetupError, 'outside'):
             setup.current_release(root)
 
+    def test_manifest_mode_prints_the_installation_inputs(self):
+        # The Windows installer reads this list (launcher/windows/install.ps1).
+        result = subprocess.run([sys.executable, '-I', 'setup/common.py', '--manifest'], cwd=ROOT,
+                                capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, b'')
+        self.assertEqual(result.stdout, b''.join(name.encode() + b'\0' for name in common.MANIFEST))
+        refused = subprocess.run([sys.executable, '-I', 'setup/common.py'], cwd=ROOT, capture_output=True, timeout=30)
+        self.assertEqual((refused.returncode, refused.stdout), (2, b''))
+
     def test_crlf_installation_input_is_refused_before_a_release_exists(self):
         root, release = self.release()
         (root / 'current').symlink_to(release.relative_to(root))

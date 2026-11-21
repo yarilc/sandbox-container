@@ -344,6 +344,13 @@ distribution as its user (`user`, or `SANDBOX_CONTAINER_WSL_USER`), starting in
 the checkout's drive mount, for example `/mnt/c/Work/sandbox-container`. No
 Windows variable is forwarded to setup.
 
+`.\sandbox-container.ps1 --container-install` runs the same checks, copies
+the checkout's setup inputs and Windows scripts into
+`%LOCALAPPDATA%\Programs\sandbox-container`, adds that folder to the user
+`PATH`, and then runs setup from that copy. Later, `sandbox-container
+--container-setup` also runs from the installed copy, so the checkout can be
+deleted.
+
 Setup then works as on Linux:
 
 - the checkout on drvfs is only the source; the installation, the command and

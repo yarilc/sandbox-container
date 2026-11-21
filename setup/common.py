@@ -414,3 +414,12 @@ def prepare_state(env, *, create=False):
         if child.exists():
             private(child)
     return checked
+
+
+if __name__ == '__main__':
+    # The Windows installer copies these files into its per-user folder
+    # (launcher/windows/install.ps1); one NUL-terminated record per file.
+    if sys.argv[1:] != ['--manifest']:
+        print('usage: python3 -I setup/common.py --manifest', file=sys.stderr)
+        sys.exit(2)
+    sys.stdout.write(''.join(name + '\0' for name in MANIFEST))

@@ -815,6 +815,70 @@ Covering tests: `tests/windows/shim_tests.ps1`, run by `tools/powershell.sh`
 with a fake `wsl.exe`; `test_powershell_entry_is_the_fixed_thin_entry` and
 `test_powershell_files_are_ascii` in `tests/test_alignment.py`.
 
+### Installer
+
+`--container-install` and `--container-uninstall` must each be the only
+argument. Uninstall works from the installed copy and from a checkout, before
+the mode checks. An install runs the setup checks first: drive path, line
+endings, a running machine started by Podman. It then reads the payload list:
+setup's own `MANIFEST`, from
+`wsl.exe ... --cd <checkout> --exec python3 -I -B setup/common.py --manifest`
+(NUL-terminated names on standard output only; `wsl.exe` warnings on standard
+error are ignored, and `-B` writes no bytecode into the source), plus the entry
+and the `launcher/windows/*.ps1` files with a plain lowercase name. With
+that list it calls `launcher/windows/install.ps1`, then runs setup from the
+installed copy.
+
+| Path | Content |
+| --- | --- |
+| `%LOCALAPPDATA%\Programs\<name>\` | the payload, at its relative paths |
+| `...\<name>\install.json` | `state` (`incomplete` or `complete`), `files`, `source`, `time` |
+| `%LOCALAPPDATA%\Programs\<name>.lock` | held exclusively while an install or uninstall runs |
+
+`install.ps1` refuses a source inside the target and a target that is a
+reparse point, takes the lock, then refuses before writing:
+
+- a parent of the target that is a reparse point;
+- on Windows, a target owned by an account other than the user or
+  `BUILTIN\Administrators` (an elevated session of the same user);
+- an existing non-empty target without `install.json`;
+- an invalid name;
+- a missing or non-regular input;
+- an input with a carriage return;
+- a user `PATH` that would exceed 32766 characters.
+
+Names read back from `install.json` must pass the same name rule as the
+inputs, so a damaged list cannot point outside the folder. File names are
+compared case-insensitively on Windows. It writes `install.json` as
+`incomplete` with the union of the old and new lists. It writes each file through `<file>.new`, replaces it (`File.Replace`
+or `File.Move`) and checks its SHA-256. It removes the files that are no
+longer listed and their empty folders, and writes `install.json` as
+`complete`. It then reads the user `PATH` again and adds the folder through
+`launcher/windows/user-path.ps1`, which keeps the registry value kind and
+broadcasts `WM_SETTINGCHANGE`. The installed files are new local files, without
+the Mark of the Web.
+
+The shim refuses launches and setup from a folder whose `install.json` is not
+`complete`. It refuses an install from the installed copy itself.
+
+Uninstall removes the `PATH` entry first, then the listed files, the
+`__pycache__` folders beside them that hold only `.pyc` files (setup runs
+Python from the installed copy) and the empty folders. `install.json` goes
+last, with the folder, so that a second uninstall still knows what to remove;
+an empty folder without it is removed too. An unexpected error ends either
+action with the wrapper's prefix and status 1.
+
+The lock covers installs and uninstalls only. A setup or a launch that starts
+from the installed copy while an update replaces its files can read a mix of
+old and new files: run updates when no setup runs from the installed copy. It names the machine installation that stays. It reports
+anything that remains, with `wsl --shutdown` as the way to release a folder in
+use, and then exits with status 1. A target without `install.json` is never
+deleted.
+
+Covering tests: `tests/windows/shim_tests.ps1` (installer cases, with
+`LOCALAPPDATA` in a temporary folder and a file instead of the registry) and
+`tests/test_setup.py` (`--manifest`).
+
 ### Bootstrap
 
 `launcher/windows/bootstrap.sh` is installed in every release, like the core.

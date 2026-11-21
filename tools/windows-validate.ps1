@@ -2,9 +2,10 @@
 # PowerShell 5.1 or PowerShell 7. Reference-only: never copied.
 #
 # Run it after <name>.ps1 --container-setup, with the Podman machine set up and
-# another WSL distribution (for example Ubuntu) running:
+# started by Podman, and another WSL distribution (for example Ubuntu) running.
+# It stops at once when the machine is stopped, without starting it:
 #
-#   .\tools\windows-validate.ps1 [-Checkout <wrapper checkout>] [-StopMachine]
+#   .\tools\windows-validate.ps1 [-Checkout <wrapper checkout>] [-StopMachine] [-Install]
 #
 # It runs the windows-launcher scenario matrix against the checkout's entry.
 # Each case runs in a child process of the same PowerShell edition, so its
@@ -14,11 +15,15 @@
 # and drive letter it created. -StopMachine also checks the refusals of a
 # stopped machine and of a distribution that wsl.exe alone started; it runs
 # wsl.exe --terminate, which ends running sessions, and then restarts the
-# machine with podman.exe when it is installed.
+# machine with podman.exe when it is installed. -Install runs the installer
+# from the checkout (answer its setup questions), launches the command through
+# the new user PATH, and uninstalls; it refuses to start when an installation
+# already exists, and changes the user PATH only for the time of the run.
 # Ctrl+C and closing the window are checked by hand; the script prints how.
 param(
     [string]$Checkout = (Split-Path -Parent $PSScriptRoot),
-    [switch]$StopMachine
+    [switch]$StopMachine,
+    [switch]$Install
 )
 Set-StrictMode -Version 3
 $ErrorActionPreference = 'Stop'
@@ -47,6 +52,20 @@ $sibling = Join-Path (Split-Path -Parent $Checkout) ($name + '-validate-sibling'
 $summaryFile = Join-Path ([IO.Path]::GetTempPath()) ($name + '-windows-validate-' + $PSVersionTable.PSEdition + '.txt')
 $results = New-Object System.Collections.Generic.List[string]
 $substDrive = $null
+$localData = [Environment]::GetEnvironmentVariable('LOCALAPPDATA')
+if ([string]::IsNullOrEmpty($localData)) { $localData = [Environment]::GetFolderPath('LocalApplicationData') }
+$installFolder = [IO.Path]::GetFullPath([IO.Path]::Combine($localData, 'Programs', $name))
+if ($Install) {
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        [Console]::Error.WriteLine('-Install needs Windows: it changes the user PATH in the registry')
+        exit 2
+    }
+    if (Test-Path -LiteralPath $installFolder) {
+        [Console]::Error.WriteLine('-Install refuses to start: ' + $installFolder + ' exists; run ' + $name +
+            ' --container-uninstall first')
+        exit 2
+    }
+}
 
 function ConvertTo-Literal([string]$Text) { return "'" + $Text.Replace("'", "''") + "'" }
 
@@ -154,6 +173,24 @@ try {
     $others = @($running.Output | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -ne $distro })
     $results.Add('Distribution: ' + $distro + ', user ' + $user + '; other running distributions: ' + ($others -join ', '))
     foreach ($line in $results) { [Console]::Out.WriteLine($line) }
+
+    # The machine must run, started by Podman, before any wsl.exe -d call: such a
+    # call would start a stopped distribution without Podman, and every case
+    # would then fail.
+    if (-not (@($running.Output | ForEach-Object { $_.Trim() }) -contains $distro)) {
+        Add-Result 'FAIL' 'Machine running' ('the Podman machine is stopped: the WSL distribution ''' + $distro +
+            ''' is not running. Start it with Podman Desktop or podman machine start, then run this script again')
+        exit 2
+    }
+    $runtimeProbe = Invoke-Probe @('-d', $distro, '-u', $user, '--exec', '/bin/sh', '-c',
+        'test -d /run/user/$(id -u) -a -w /run/user/$(id -u)')
+    if ($runtimeProbe.Code -ne 0) {
+        Add-Result 'FAIL' 'Machine running' ('the WSL distribution ''' + $distro + ''' runs without the Podman ' +
+            'machine (no /run/user/<uid>). Run wsl --terminate ' + $distro + ', then start the machine with Podman ' +
+            'Desktop or podman machine start, and run this script again')
+        exit 2
+    }
+    Add-Result 'PASS' 'Machine running' ('started by Podman; /run/user/<uid> present')
 
     # Setup state: the release bootstrap must exist.
     $state = Invoke-Probe @('-d', $distro, '-u', $user, '--exec', '/bin/sh', '-c', ('cd && test -f ' + $bootstrap))
@@ -275,6 +312,65 @@ try {
     Test-Outcome 'Help with a machine (wrapper help)' $r 0 'Usage:'
     Test-Outcome 'Help without a machine' (Invoke-Case ('$env:' + $P + '_WSL_DISTRO = ''validate-missing''; & $E --container-help')) 0 'Podman Desktop'
     Test-Outcome 'Setup with other arguments' (Invoke-Case '& $E --container-setup --container-shell') 1 'must be used alone'
+
+    if ($Install) {
+        . ([IO.Path]::Combine($Checkout, 'launcher', 'windows', 'user-path.ps1'))
+        $before = Read-UserPath
+        $installedEntry = Join-Path $installFolder ($name + '.ps1')
+        try {
+            [Console]::Out.WriteLine('Install: answer the setup questions as for --container-setup.')
+            $process = Start-Process -FilePath $exe -ArgumentList @('-NoProfile', '-File', ('"' + $entry + '"'),
+                '--container-install') -WorkingDirectory $Checkout -NoNewWindow -Wait -PassThru
+            $markerFile = Join-Path $installFolder 'install.json'
+            $state = ''
+            if (Test-Path -LiteralPath $markerFile) { $state = ([IO.File]::ReadAllText($markerFile) | ConvertFrom-Json).state }
+            if ($process.ExitCode -eq 0 -and $state -ceq 'complete') {
+                Add-Result 'PASS' 'Install from a checkout' ('status 0; ' + $installFolder + ' complete')
+            } else {
+                Add-Result 'FAIL' 'Install from a checkout' ('status ' + $process.ExitCode + '; install.json state ' + $state)
+            }
+            $after = Read-UserPath
+            $expectedKind = if ($before.Value) { $before.Kind } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+            if ($after.Value -ceq (Get-PathWithEntry $before.Value $installFolder) -and $after.Kind -eq $expectedKind) {
+                Add-Result 'PASS' 'Command on the user PATH (registry)' ('kind ' + $after.Kind + '; other entries unchanged')
+            } else {
+                Add-Result 'FAIL' 'Command on the user PATH (registry)' ('kind ' + $after.Kind + '; value ' + $after.Value)
+            }
+            # A new window reads PATH from the registry; so does this child.
+            $fresh = '$env:Path = [Environment]::GetEnvironmentVariable(''Path'', ''Machine'') + '';'' + ' +
+                '[Environment]::GetEnvironmentVariable(''Path'', ''User''); '
+            Test-Outcome 'Command on the user PATH (new window)' (Invoke-Case ($fresh + '& ' + $name + ' -c ''printf ok''')) 0 'ok'
+            Test-Outcome 'Install from the installed copy' (Invoke-Case ('& ' + (ConvertTo-Literal $installedEntry) +
+                ' --container-install')) 1 'this is the installed copy'
+            $removed = Invoke-Case ('& ' + (ConvertTo-Literal $installedEntry) + ' --container-uninstall')
+            $restored = Read-UserPath
+            if ($restored.Value -ceq $before.Value -and ($before.Value -eq '' -or $restored.Kind -eq $before.Kind)) {
+                Add-Result 'PASS' 'Uninstall (user PATH)' 'restored to its value before the install'
+            } else {
+                Add-Result 'FAIL' 'Uninstall (user PATH)' ('value ' + $restored.Value)
+            }
+            if ($removed.Code -eq 0 -and -not (Test-Path -LiteralPath $installFolder)) {
+                Add-Result 'PASS' 'Uninstall (folder)' ('status 0; ' + $installFolder + ' removed')
+            } elseif ($removed.Code -eq 1 -and $removed.Err.Contains('wsl --shutdown') -and
+                    -not $removed.Err.Contains('did not create')) {
+                Add-Result 'PASS' 'Uninstall (folder in use)' ('status 1; reported: ' + (Get-FirstLine $removed.Err))
+            } else {
+                Add-Result 'FAIL' 'Uninstall' ('status ' + $removed.Code + '; ' + (Get-FirstLine $removed.Err))
+            }
+        } finally {
+            # Whatever failed above, the user PATH loses the entry this run added.
+            $now = Read-UserPath
+            $cleaned = Get-PathWithoutEntry $now.Value $installFolder
+            if ($cleaned -cne $now.Value) {
+                [void](Write-UserPath $cleaned $now.Kind)
+                [Console]::Out.WriteLine('Removed ' + $installFolder + ' from the user PATH after the run.')
+            }
+            if (Test-Path -LiteralPath $installFolder) {
+                [Console]::Out.WriteLine('Left ' + $installFolder + '; remove it with --container-uninstall from ' +
+                    'the checkout.')
+            }
+        }
+    } else { Add-Result 'SKIP' 'Install' 'rerun with -Install (changes the user PATH during the run)' }
 
     if ($StopMachine) {
         Invoke-DistributionStop

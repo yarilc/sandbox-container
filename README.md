@@ -451,7 +451,8 @@ Setup runs the guided setup inside the machine distribution. The release,
 preferences and images are installed there, in `~/.local/lib/sandbox-container`.
 The machine has no launch service, so setup offers only unrestricted
 networking. Rerun setup after updating the checkout, and after the machine is
-recreated.
+recreated. To run the sandbox as a command without keeping the checkout,
+install it instead ([Install as a command](#install-as-a-command)).
 
 Start sessions from a project directory on a Windows drive:
 
@@ -525,6 +526,58 @@ Limits on Windows:
   use. Setup and the entry fail when a file they need is missing: restore it
   from the antivirus quarantine, or ask the administrator, and report the
   false positive to the vendor.
+
+### Install as a command
+
+Instead of setup from the checkout, you can install the entry for your
+Windows account:
+
+```powershell
+cd C:\Work\sandbox-container
+.\sandbox-container.ps1 --container-install
+```
+
+The install copies the entry, the Windows scripts and every file that setup
+needs into `%LOCALAPPDATA%\Programs\sandbox-container`. It then adds that
+folder to your user `PATH` (`HKCU\Environment`, no administrator rights; the
+other entries and their `%VAR%` references stay as they are) and runs setup
+from the copy. The installer announces the `PATH` change before making it;
+nothing is written to the PowerShell profile or system-wide. Afterwards the
+checkout can be deleted, and a new PowerShell window runs the command from any
+project directory:
+
+```powershell
+cd C:\Work\my-project
+sandbox-container
+sandbox-container -c 'git status'
+sandbox-container --container-setup
+```
+
+New PowerShell windows and new Windows Terminal tabs find the command; the
+window or tab that ran the install may not. When setup fails after the copy,
+the copy and the `PATH` entry stay; finish with
+`sandbox-container --container-setup`.
+
+To update, run `--container-install` again from a newer checkout or download.
+It replaces the installed files, removes the ones the new version no longer
+has, and runs setup. Do not update while a setup runs from the installed
+copy. The installed command refuses to install itself. An
+interrupted install leaves the copy marked incomplete: the command then
+refuses to start sessions until the next install completes. Two installs never
+run at once.
+
+`sandbox-container --container-uninstall` (also from a checkout) removes the
+`PATH` entry and the installed copy. The installation inside the Podman machine
+stays until the machine is reset. A folder still used by a WSL process is
+reported; `wsl --shutdown` releases it.
+
+The scripts are not signed. The installer writes new local files, so the
+installed command runs under the default `RemoteSigned` policy. A downloaded
+zip keeps the Mark of the Web on its files: run its first install as
+`powershell -ExecutionPolicy Bypass -File .\sandbox-container.ps1 --container-install`,
+or `Unblock-File` its files first. Running the installer is your decision to
+trust that source. Policies stricter than `RemoteSigned`, such as `AllSigned`,
+are unsupported.
 
 ## Mounts, identity, and persistence
 

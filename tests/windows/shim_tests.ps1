@@ -68,8 +68,28 @@ shift 4
 case "$*" in
     '--exec /bin/sh -c cd && test -f '*) exit "${FAKE_WSL_INSTALLED:-0}" ;;
     '--exec /bin/sh -c test -d /run/user/'*) exit "${FAKE_WSL_RUNTIME:-0}" ;;
+    '--cd '*' --exec python3 -I -B setup/common.py --manifest')
+        # wsl.exe may warn on stderr, in UTF-16 when WSL_UTF8 is unset.
+        [ -z "${FAKE_WSL_WARNING:-}" ] || printf 'wsl: warning\n' | iconv -f UTF-8 -t UTF-16LE >&2
+        for item in ${FAKE_WSL_MANIFEST-}; do printf '%s\0' "$item"; done
+        exit 0 ;;
 esac
 exit "${FAKE_WSL_EXIT:-0}"
+'@
+
+$fakeUserPath = @'
+
+# Test store instead of the registry (tests/windows/shim_tests.ps1).
+function Read-UserPath {
+    $value = ''
+    if ([IO.File]::Exists($env:FIXTURE_USER_PATH_FILE)) { $value = [IO.File]::ReadAllText($env:FIXTURE_USER_PATH_FILE) }
+    return [pscustomobject]@{ Value = $value; Kind = 'ExpandString' }
+}
+function Write-UserPath([string]$Value, $Kind) {
+    [IO.File]::WriteAllText($env:FIXTURE_USER_PATH_FILE, $Value)
+    [IO.File]::WriteAllText($env:FIXTURE_USER_PATH_FILE + '.kind', [string]$Kind)
+    return $true
+}
 '@
 
 # A synthetic checkout: the real entry and shim with a fixture profile.
@@ -83,6 +103,10 @@ function Build-Checkout([string]$Root, [string]$Fixture) {
     }
     Copy-Item -LiteralPath $entries[0].FullName -Destination (Join-Path $Root ($fixtureProfile.name + '.ps1'))
     Copy-Item -LiteralPath (Join-Path $source 'launcher/windows/core.ps1') -Destination (Join-Path $Root 'launcher/windows/core.ps1')
+    Copy-Item -LiteralPath (Join-Path $source 'launcher/windows/install.ps1') -Destination (Join-Path $Root 'launcher/windows/install.ps1')
+    # The real string functions, with a file instead of the registry.
+    [IO.File]::WriteAllText((Join-Path $Root 'launcher/windows/user-path.ps1'),
+        [IO.File]::ReadAllText((Join-Path $source 'launcher/windows/user-path.ps1')) + $fakeUserPath)
     Copy-Item -LiteralPath $profileFile -Destination (Join-Path $Root 'agent/profile.json')
     foreach ($file in @($fixtureProfile.wrapper, 'launcher/core.sh', 'agent/launcher.sh')) {
         [IO.File]::WriteAllText((Join-Path $Root $file), "#!/usr/bin/env bash`n:`n")
@@ -197,7 +221,33 @@ function Initialize-Case {
     }
     $env:FAKE_WSL_RECORD = $script:Record
     [IO.File]::WriteAllText((Join-Path $script:Checkout 'launcher/core.sh'), "#!/usr/bin/env bash`n:`n")
+    # A fresh per-user folder and user PATH for every case.
+    $local = Join-Path $work 'local'
+    if ([IO.Directory]::Exists($local)) { [IO.Directory]::Delete($local, $true) }
+    $env:LOCALAPPDATA = $local
+    $env:FIXTURE_USER_PATH_FILE = Join-Path $work 'user-path.txt'
+    foreach ($file in @($env:FIXTURE_USER_PATH_FILE, ($env:FIXTURE_USER_PATH_FILE + '.kind'))) {
+        if ([IO.File]::Exists($file)) { [IO.File]::Delete($file) }
+    }
     Set-Location -LiteralPath $project
+}
+
+# Installer helpers: the payload of the synthetic checkout and the installed copy.
+$Payload = @($agentProfile.wrapper, 'launcher/core.sh', 'agent/launcher.sh', 'agent/profile.json')
+function Get-Target { return (Join-Path (Join-Path $env:LOCALAPPDATA 'Programs') $Name) }
+function Invoke-Install {
+    $env:FAKE_WSL_MANIFEST = $Payload -join ' '
+    return (Invoke-Entry { & $Core -EntryDirectory $WinEntry -Arguments @('--container-install') })
+}
+function Get-InstallState { return ([IO.File]::ReadAllText((Join-Path (Get-Target) 'install.json')) | ConvertFrom-Json) }
+# The stored value, followed by '|' and its kind once the installer wrote it.
+function Get-UserPathFile {
+    $value = ''
+    if ([IO.File]::Exists($env:FIXTURE_USER_PATH_FILE)) { $value = [IO.File]::ReadAllText($env:FIXTURE_USER_PATH_FILE) }
+    if ([IO.File]::Exists($env:FIXTURE_USER_PATH_FILE + '.kind')) {
+        $value += '|' + [IO.File]::ReadAllText($env:FIXTURE_USER_PATH_FILE + '.kind')
+    }
+    return $value
 }
 
 $script:Results = New-Object System.Collections.Generic.List[string]
@@ -430,7 +480,7 @@ try {
         $env:FIXTURE_AGENT_NETWORK = 'offline'
         $r = Invoke-Entry { & $Core -EntryDirectory $WinEntry -Arguments @('x', @('a', 'b'), '--container-help') -PipelineInput }
         Assert-Equal 0 $r.Code 'status'
-        foreach ($text in @('FIXTURE_AGENT_WSL_DISTRO', 'FIXTURE_AGENT_WSL_USER', 'FIXTURE_AGENT_WSL_INSTALLATION', 'unrestricted', 'pipeline input')) {
+        foreach ($text in @('FIXTURE_AGENT_WSL_DISTRO', 'FIXTURE_AGENT_WSL_USER', 'FIXTURE_AGENT_WSL_INSTALLATION', 'unrestricted', 'pipeline input', '--container-install', '--container-uninstall')) {
             Assert-Text $text $r.Out 'Windows part'
         }
         Assert-Equal @('-d', 'podman-machine-default', '-u', 'user', '--cd', $WinEntry, '--exec', '/bin/bash', $agentProfile.wrapper, '--container-help') $r.Calls[1].Arguments.ToArray() 'wrapper help call'
@@ -498,6 +548,273 @@ try {
         $call = Get-LaunchCall $r
         Assert-Equal '/home/user/.config/fixture-shell' $call.Env['FIXTURE_SHELL_CONFIG_DIR'] 'configuration directory'
         Assert-Equal ('cd && exec /bin/bash .local/lib/' + $shellProfile.name + '/current/launcher/windows/bootstrap.sh') $call.Arguments[7] 'bootstrap'
+    }
+    Test-Case 'Command on the user PATH / Existing PATH entries (string rules)' {
+        . (Join-Path $source 'launcher/windows/user-path.ps1')
+        $env:FIXTURE_PATH_ROOT = 'C:\Users\me\AppData\Local'
+        $folder = 'C:\Users\me\AppData\Local\Programs\tool'
+        foreach ($case in @(
+                @('', $folder),
+                @('A;B', ('A;B;' + $folder)),
+                @('A;', ('A;' + $folder + ';')),
+                @('A;;B', ('A;;B;' + $folder)),
+                @('A;c:\users\ME\appdata\local\programs\TOOL\;B', 'A;c:\users\ME\appdata\local\programs\TOOL\;B'),
+                @('%FIXTURE_PATH_ROOT%\Programs\tool;A', '%FIXTURE_PATH_ROOT%\Programs\tool;A'),
+                @('%FIXTURE_PATH_ROOT%\Microsoft\WindowsApps', ('%FIXTURE_PATH_ROOT%\Microsoft\WindowsApps;' + $folder)))) {
+            Assert-Equal $case[1] (Get-PathWithEntry $case[0] $folder) ('add to ' + $case[0])
+        }
+        foreach ($case in @(
+                @('', ''),
+                @($folder, ''),
+                @(('A;' + $folder + ';B'), 'A;B'),
+                @(('A;;c:\users\me\appdata\local\programs\tool\;B;' + $folder), 'A;;B'),
+                @('%FIXTURE_PATH_ROOT%\Programs\tool;%OTHER%\bin', '%OTHER%\bin'),
+                @('A;B', 'A;B'))) {
+            Assert-Equal $case[1] (Get-PathWithoutEntry $case[0] $folder) ('remove from ' + $case[0])
+        }
+        # Uninstall restores the value the install found, byte for byte (round 9).
+        foreach ($value in @('', 'A', 'A;', 'A;B;', 'A;;B', ';A', '%FIXTURE_PATH_ROOT%\bin;')) {
+            Assert-Equal $value (Get-PathWithoutEntry (Get-PathWithEntry $value $folder) $folder) ('round trip of ' + $value)
+        }
+    }
+    Test-Case 'Self-contained installed copy / Install from a checkout; Command on the user PATH; First install' {
+        $r = Invoke-Install
+        Assert-Equal 0 $r.Code ('status: ' + $r.Err)
+        $target = Get-Target
+        $state = Get-InstallState
+        Assert-Equal 'complete' $state.state 'install.json state'
+        $expected = @($Payload + @(($Name + '.ps1'), 'launcher/windows/core.ps1', 'launcher/windows/install.ps1', 'launcher/windows/user-path.ps1') | Sort-Object -CaseSensitive)
+        Assert-Equal $expected @($state.files) 'installed files'
+        foreach ($file in $expected) {
+            $a = [IO.File]::ReadAllBytes((Join-Path $script:Checkout $file)); $b = [IO.File]::ReadAllBytes((Join-Path $target $file))
+            Assert-True ([Convert]::ToBase64String($a) -ceq [Convert]::ToBase64String($b)) ($file + ' has the source bytes')
+        }
+        Assert-Equal ($target + '|ExpandString') (Get-UserPathFile) 'user PATH'
+        Assert-Text ('adding ' + $target + ' to your user PATH') $r.Out 'announcement'
+        Assert-Text ('installed in ' + $target) $r.Out 'next step'
+        $setup = $r.Calls[$r.Calls.Count - 1]
+        Assert-Equal @('-d', 'podman-machine-default', '-u', 'user', '--cd', $target, '--exec', '/bin/bash', $agentProfile.wrapper, '--container-setup') $setup.Arguments.ToArray() 'setup from the installed copy'
+        Assert-True (-not [IO.File]::Exists($target + '.lock')) 'lock released'
+    }
+    Test-Case 'Self-contained installed copy / Source deleted after install; Setup from the installed copy' {
+        $env:FAKE_WSL_WARNING = '1'
+        Assert-Equal 0 (Invoke-Install).Code 'install despite a wsl.exe warning on stderr'
+        $target = Get-Target
+        $away = $script:Checkout + '-away'
+        [IO.Directory]::Move($script:Checkout, $away)
+        try {
+            $r = Invoke-Entry { & (Join-Path $target ($Name + '.ps1')) -c true }
+            Assert-Equal 0 $r.Code ('launch from the installed copy: ' + $r.Err)
+            Assert-Equal $target (Get-LaunchCall $r).Env['WRAPPER_WINDOWS_ENTRY'] 'entry directory'
+            $r = Invoke-Entry { & (Join-Path $target 'launcher/windows/core.ps1') -EntryDirectory 'C:\Users\me\AppData\Local\Programs\fixture' -Arguments @('--container-setup') }
+            Assert-Equal 0 $r.Code ('setup from the installed copy: ' + $r.Err)
+            Assert-Text ('start sessions with ' + $Name + ' from a project directory') $r.Out 'next step without .\'
+        } finally {
+            [IO.Directory]::Move($away, $script:Checkout)
+        }
+    }
+    Test-Case 'Self-contained installed copy / Only exact Windows script names' {
+        $extra = Join-Path $script:Checkout 'launcher/windows/Backup Copy.ps1'
+        [IO.File]::WriteAllText($extra, '# not a shared script')
+        try {
+            Assert-Equal 0 (Invoke-Install).Code 'install'
+        } finally {
+            [IO.File]::Delete($extra)
+        }
+        Assert-True (-not [IO.File]::Exists((Join-Path (Get-Target) 'launcher/windows/Backup Copy.ps1'))) 'not installed'
+    }
+    Test-Case 'Interrupted or concurrent install / Unexpected error' {
+        [void][IO.Directory]::CreateDirectory($env:FIXTURE_USER_PATH_FILE)
+        try {
+            $r = Invoke-Install
+        } finally {
+            [IO.Directory]::Delete($env:FIXTURE_USER_PATH_FILE)
+        }
+        Assert-Equal 1 $r.Code 'status'
+        Assert-Text ($Name + ': the install stopped: ') $r.Err 'message with the prefix'
+    }
+    Test-Case 'Command on the user PATH / Existing PATH entries (install)' {
+        [IO.File]::WriteAllText($env:FIXTURE_USER_PATH_FILE, '%FIXTURE_X%\bin;' + (Get-Target).ToUpperInvariant() + '\')
+        Assert-Equal 0 (Invoke-Install).Code 'install'
+        Assert-Equal ('%FIXTURE_X%\bin;' + (Get-Target).ToUpperInvariant() + '\') (Get-UserPathFile) 'PATH unchanged when already listed'
+    }
+    Test-Case 'Update from a newer source / Newer checkout' {
+        $extra = Join-Path $script:Checkout 'extra'
+        [void](New-Item -ItemType Directory -Force -Path $extra)
+        [IO.File]::WriteAllText((Join-Path $extra 'old.txt'), "old`n")
+        try {
+            $env:FAKE_WSL_MANIFEST = ($Payload + 'extra/old.txt') -join ' '
+            Assert-Equal 0 (Invoke-Entry { & $Core -EntryDirectory $WinEntry -Arguments @('--container-install') }).Code 'first install'
+            Assert-True ([IO.File]::Exists((Join-Path (Get-Target) 'extra/old.txt'))) 'extra file installed'
+            [IO.File]::WriteAllText((Join-Path $script:Checkout 'agent/launcher.sh'), "#!/usr/bin/env bash`n: newer`n")
+            $r = Invoke-Install
+            Assert-Equal 0 $r.Code ('update: ' + $r.Err)
+            Assert-Equal "#!/usr/bin/env bash`n: newer`n" ([IO.File]::ReadAllText((Join-Path (Get-Target) 'agent/launcher.sh'))) 'updated file'
+            Assert-True (-not [IO.Directory]::Exists((Join-Path (Get-Target) 'extra'))) 'dropped file and folder removed'
+            Assert-True (-not (@((Get-InstallState).files) -contains 'extra/old.txt')) 'dropped file unlisted'
+        } finally {
+            [IO.Directory]::Delete($extra, $true)
+            [IO.File]::WriteAllText((Join-Path $script:Checkout 'agent/launcher.sh'), "#!/usr/bin/env bash`n:`n")
+        }
+    }
+    Test-Case 'Update from a newer source / Install from the installed copy' {
+        Assert-Equal 0 (Invoke-Install).Code 'install'
+        $r = Invoke-Entry { & (Join-Path (Get-Target) ($Name + '.ps1')) --container-install }
+        Assert-Refused $r 'this is the installed copy'
+    }
+    Test-Case 'Interrupted or concurrent install / Copy interrupted' {
+        Assert-Equal 0 (Invoke-Install).Code 'install'
+        $blocked = Join-Path (Get-Target) 'agent/launcher.sh'
+        [IO.File]::Delete($blocked)
+        [void](New-Item -ItemType Directory -Path $blocked)
+        $r = Invoke-Install
+        Assert-Equal 1 $r.Code 'interrupted install'
+        Assert-Text 'cannot write agent/launcher.sh' $r.Err 'message'
+        Assert-Equal 'incomplete' (Get-InstallState).state 'marker'
+        Assert-Refused (Invoke-Entry { & (Join-Path (Get-Target) ($Name + '.ps1')) -c true }) 'is incomplete; run --container-install again'
+        [IO.Directory]::Delete($blocked)
+        Assert-Equal 0 (Invoke-Install).Code 'repairing install'
+        Assert-Equal 'complete' (Get-InstallState).state 'marker after repair'
+    }
+    Test-Case 'Interrupted or concurrent install / Two installs at once' {
+        [void][IO.Directory]::CreateDirectory((Join-Path $env:LOCALAPPDATA 'Programs'))
+        # Held in shared mode: the installer's own exclusive open must be what fails.
+        $held = New-Object IO.FileStream(((Get-Target) + '.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+        try {
+            $r = Invoke-Install
+        } finally {
+            $held.Dispose()
+        }
+        Assert-Equal 1 $r.Code 'second install'
+        Assert-Text 'another install or uninstall' $r.Err 'message'
+        Assert-True (-not [IO.Directory]::Exists((Get-Target))) 'nothing copied'
+    }
+    Test-Case 'Checks before an install / CRLF source' {
+        $data = Join-Path $script:Checkout 'agent/data.txt'
+        [IO.File]::WriteAllText($data, "a`r`nb`r`n")
+        try {
+            $env:FAKE_WSL_MANIFEST = ($Payload + 'agent/data.txt') -join ' '
+            $r = Invoke-Entry { & $Core -EntryDirectory $WinEntry -Arguments @('--container-install') }
+        } finally {
+            [IO.File]::Delete($data)
+        }
+        Assert-Equal 1 $r.Code 'status'
+        Assert-Text 'installation input has CRLF line endings: agent/data.txt' $r.Err 'message'
+        Assert-True (-not [IO.Directory]::Exists((Get-Target))) 'nothing copied'
+    }
+    Test-Case 'Checks before an install / Junction as install folder' {
+        $elsewhere = Join-Path $work 'elsewhere'
+        [void][IO.Directory]::CreateDirectory($elsewhere)
+        [void][IO.Directory]::CreateDirectory((Join-Path $env:LOCALAPPDATA 'Programs'))
+        [void](New-Item -ItemType SymbolicLink -Path (Get-Target) -Target $elsewhere)
+        try {
+            $r = Invoke-Install
+            Assert-Equal 1 $r.Code 'status'
+            Assert-Text 'is a link (reparse point)' $r.Err 'message'
+            Assert-Equal 0 @([IO.Directory]::GetFileSystemEntries($elsewhere)).Count 'nothing written through the link'
+        } finally {
+            [IO.File]::Delete((Get-Target))
+            [IO.Directory]::Delete($elsewhere, $true)
+        }
+    }
+    Test-Case 'Checks before an install / Stopped machine' {
+        $env:FAKE_WSL_RUNNING = 'none'
+        $r = Invoke-Install
+        Assert-Refused $r 'the Podman machine is stopped' 2
+        Assert-True (-not [IO.Directory]::Exists((Get-Target))) 'nothing copied'
+    }
+    Test-Case 'Checkout line endings checked before setup / Install from a CRLF checkout; Checks before an install (distribution started by WSL alone)' {
+        [IO.File]::WriteAllText((Join-Path $script:Checkout 'launcher/core.sh'), "#!/usr/bin/env bash`r`n:`r`n")
+        $r = Invoke-Install
+        Assert-Refused $r 'the checkout has CRLF line endings: launcher/core.sh'
+        [IO.File]::WriteAllText((Join-Path $script:Checkout 'launcher/core.sh'), "#!/usr/bin/env bash`n:`n")
+        $env:FAKE_WSL_RUNTIME = '1'
+        Assert-Refused (Invoke-Install) 'runs without the Podman machine' 2
+        Assert-True (-not [IO.Directory]::Exists((Get-Target))) 'nothing copied'
+    }
+    Test-Case 'Install and uninstall options used alone / Install with other arguments' {
+        Assert-Refused (Invoke-Entry { & $Entry --container-install -c true }) '--container-install must be used alone'
+        Assert-Refused (Invoke-Entry { & $Entry --container-uninstall x }) '--container-uninstall must be used alone'
+        Assert-True (-not [IO.Directory]::Exists((Get-Target))) 'nothing copied'
+    }
+    Test-Case 'Setup runs from the installed copy / Setup declined after the copy' {
+        $env:FAKE_WSL_EXIT = '1'
+        $r = Invoke-Install
+        Assert-Equal 1 $r.Code 'status'
+        Assert-Text ('run ' + $Name + ' --container-setup to finish') $r.Err 'message'
+        Assert-Equal 'complete' (Get-InstallState).state 'copy stays'
+        Assert-Equal ((Get-Target) + '|ExpandString') (Get-UserPathFile) 'PATH entry stays'
+    }
+    Test-Case 'Uninstall / Uninstall' {
+        [IO.File]::WriteAllText($env:FIXTURE_USER_PATH_FILE, 'C:\keep')
+        Assert-Equal 0 (Invoke-Install).Code 'install'
+        # Setup runs Python from the installed copy, which caches bytecode there.
+        $cache = Join-Path (Get-Target) 'agent/__pycache__'
+        [void][IO.Directory]::CreateDirectory($cache)
+        [IO.File]::WriteAllText((Join-Path $cache 'module.cpython-314.pyc'), 'bytecode')
+        [IO.File]::WriteAllText((Join-Path $cache 'other.cpython-314.pyc.140245'), 'partial bytecode')
+        $env:FIXTURE_AGENT_WSL_DISTRO = 'bad name'
+        $r = Invoke-Entry { & (Join-Path (Get-Target) ($Name + '.ps1')) --container-uninstall }
+        Assert-Equal 0 $r.Code ('uninstall: ' + $r.Err)
+        Assert-Equal 'C:\keep|ExpandString' (Get-UserPathFile) 'PATH entry removed, others kept'
+        Assert-True (-not [IO.Directory]::Exists((Get-Target))) 'folder removed'
+        Assert-Text 'the installation inside the Podman machine stays' $r.Out 'machine note'
+        Assert-Equal 0 $r.Calls.Count 'no wsl.exe call'
+    }
+    Test-Case 'Install and uninstall options used alone / Uninstall from a checkout; missing installation' {
+        Assert-Equal 0 (Invoke-Install).Code 'install'
+        $r = Invoke-Entry { & $Entry --container-uninstall }
+        Assert-Equal 0 $r.Code ('uninstall: ' + $r.Err)
+        Assert-True (-not [IO.Directory]::Exists((Get-Target))) 'folder removed'
+        $r = Invoke-Entry { & $Entry --container-uninstall }
+        Assert-Equal 0 $r.Code 'nothing installed'
+        Assert-Text 'nothing is installed in' $r.Out 'message'
+    }
+    Test-Case 'Uninstall / Files the installer did not create' {
+        Assert-Equal 0 (Invoke-Install).Code 'install'
+        $own = Join-Path (Get-Target) 'agent/notes.txt'
+        [IO.File]::WriteAllText($own, 'kept')
+        $r = Invoke-Entry { & $Entry --container-uninstall }
+        Assert-Equal 1 $r.Code 'status'
+        Assert-Text 'still holds files that the installer did not create' $r.Err 'message'
+        Assert-Text ('not removed: ' + (Join-Path (Get-Target) 'agent')) $r.Err 'folder with the foreign file named'
+        Assert-True ([IO.File]::Exists($own)) 'the foreign file is kept'
+        Assert-True ([IO.File]::Exists((Join-Path (Get-Target) 'install.json'))) 'install.json kept for the next uninstall'
+        [IO.File]::Delete($own)
+        $r = Invoke-Entry { & $Entry --container-uninstall }
+        Assert-Equal 0 $r.Code ('second uninstall: ' + $r.Err)
+        Assert-True (-not [IO.Directory]::Exists((Get-Target))) 'folder removed'
+    }
+    Test-Case 'Uninstall / Names in install.json stay inside the folder' {
+        Assert-Equal 0 (Invoke-Install).Code 'install'
+        $outside = Join-Path (Join-Path $env:LOCALAPPDATA 'Programs') 'outside.txt'
+        [IO.File]::WriteAllText($outside, 'keep')
+        $marker = Join-Path (Get-Target) 'install.json'
+        $state = Get-InstallState
+        $state.files = @($state.files) + @('../outside.txt', 'install.json')
+        [IO.File]::WriteAllText($marker, ($state | ConvertTo-Json -Depth 3))
+        $r = Invoke-Entry { & $Entry --container-uninstall }
+        Assert-Equal 0 $r.Code ('uninstall: ' + $r.Err)
+        Assert-True ([IO.File]::Exists($outside)) 'the file outside the folder is kept'
+        Assert-True (-not [IO.Directory]::Exists((Get-Target))) 'folder removed'
+    }
+    Test-Case 'Uninstall / Empty folder left by an interrupted uninstall' {
+        [void][IO.Directory]::CreateDirectory((Get-Target))
+        $r = Invoke-Entry { & $Entry --container-uninstall }
+        Assert-Equal 0 $r.Code ('uninstall: ' + $r.Err)
+        Assert-True (-not [IO.Directory]::Exists((Get-Target))) 'empty folder removed'
+    }
+    Test-Case 'Uninstall / Folder in use' {
+        Assert-Equal 0 (Invoke-Install).Code 'install'
+        $blocked = Join-Path (Get-Target) 'agent/launcher.sh'
+        [IO.File]::Delete($blocked)
+        [void](New-Item -ItemType Directory -Path $blocked)
+        $r = Invoke-Entry { & $Entry --container-uninstall }
+        Assert-Equal 1 $r.Code 'status'
+        Assert-Text 'wsl --shutdown' $r.Err 'release hint'
+        Assert-Text ('not removed: ' + $blocked) $r.Err 'remaining item'
+        Assert-Equal '|ExpandString' (Get-UserPathFile) 'PATH entry removed'
+        [IO.Directory]::Delete((Get-Target), $true)
     }
 } finally {
     Set-Location -LiteralPath $location

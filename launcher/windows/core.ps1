@@ -111,6 +111,24 @@ $entryName = $name + '.ps1'
 $guidance = 'Create a Podman machine with Podman Desktop, using the WSL provider, or set ' +
     $P + '_WSL_DISTRO to the name of its WSL distribution.'
 
+# Per-user installation (launcher/windows/install.ps1). Windows always sets
+# LOCALAPPDATA; the tests point it at a temporary folder.
+$onWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+$localData = Get-Setting 'LOCALAPPDATA'
+if ($null -eq $localData) { $localData = [Environment]::GetFolderPath('LocalApplicationData') }
+$installFolder = $null
+if ($localData) { $installFolder = [IO.Path]::GetFullPath([IO.Path]::Combine($localData, 'Programs', $name)) }
+# install.json marks this folder as an installed copy, complete or not.
+$installState = $null
+$markerPath = [IO.Path]::Combine($checkout, 'install.json')
+if ([IO.File]::Exists($markerPath)) {
+    try {
+        $installState = [string](([IO.File]::ReadAllText($markerPath) | ConvertFrom-Json).state)
+    } catch {
+        $installState = 'unreadable'
+    }
+}
+
 # Arguments. Help takes precedence over everything else, as in the core.
 $help = $false
 foreach ($item in $Arguments) {
@@ -213,14 +231,17 @@ function Exit-MissingUser {
         '''; set ' + $P + '_WSL_USER to the machine''s user (Podman Desktop machines use ''user'')')
 }
 
-# Setup and help run Bash from this checkout, from its directory on drvfs.
-function Assert-Checkout {
-    if ($EntryDirectory -cnotmatch '^[A-Za-z]:\\[^"]*[^\\"]\z') {
-        Exit-Entry ('the entry directory ' + $EntryDirectory + ' is not a folder on a Windows drive; ' +
+# Setup and help run Bash from a folder on drvfs: the checkout, or the installed copy.
+function Assert-DrivePath([string]$Directory) {
+    if ($Directory -cnotmatch '^[A-Za-z]:\\[^"]*[^\\"]\z') {
+        Exit-Entry ('the entry directory ' + $Directory + ' is not a folder on a Windows drive; ' +
             'keep the checkout in a folder on a drive such as C:')
     }
+}
+
+function Assert-Checkout([string]$Folder) {
     foreach ($relative in @($wrapperFile, 'launcher/core.sh', 'agent/launcher.sh')) {
-        $path = [IO.Path]::Combine($checkout, $relative)
+        $path = [IO.Path]::Combine($Folder, $relative)
         try {
             $bytes = [IO.File]::ReadAllBytes($path)
         } catch {
@@ -239,6 +260,10 @@ function Write-WindowsHelp {
         ('Windows entry (' + $entryName + ', Podman machine):'),
         ('  Sessions run in the Podman machine''s WSL distribution, through the'),
         ('  installation that ' + $entryName + ' --container-setup creates there.'),
+        ('  ' + $entryName + ' --container-install copies this checkout to'),
+        ('  %LOCALAPPDATA%\Programs\' + $name + ', adds that folder to your user PATH and runs'),
+        ('  setup; then ' + $name + ' works from any project directory.'),
+        ('  ' + $name + ' --container-uninstall removes that copy and its PATH entry.'),
         ('  ' + $P + '_WSL_DISTRO        WSL distribution (default: podman-machine-default)'),
         ('  ' + $P + '_WSL_USER          user in the distribution (default: user)'),
         ('  ' + $P + '_WSL_INSTALLATION  absolute installation path in the distribution'),
@@ -274,7 +299,8 @@ if ($help) {
         [Console]::Out.WriteLine($stoppedText.Substring(0, 1).ToUpperInvariant() + $stoppedText.Substring(1))
         exit 0
     }
-    Assert-Checkout
+    Assert-DrivePath $EntryDirectory
+    Assert-Checkout $checkout
     Invoke-WslSession @{ WSLENV = $null } @('-d', $distro, '-u', $user, '--cd', $EntryDirectory, '--exec',
         '/bin/bash', $wrapperFile, '--container-help')
     if (($script:SessionCode -eq -1 -or $script:SessionCode -eq 255) -and -not (Test-User)) {
@@ -283,6 +309,20 @@ if ($help) {
         exit 0
     }
     exit $script:SessionCode
+}
+
+# Uninstall needs no WSL: it works from the installed copy and from a checkout,
+# whatever the mode, the WSL settings or the input.
+if ($strings.Contains('--container-uninstall')) {
+    if ($strings.Count -ne 1) {
+        Exit-Entry ('--container-uninstall must be used alone: .\' + $entryName + ' --container-uninstall')
+    }
+    if ($null -eq $installFolder) { Exit-Entry 'LOCALAPPDATA is not set, so the installation cannot be found' }
+    $machineNote = 'the installation inside the Podman machine stays (' + $installationText + ' and its ' +
+        'managed command, for ''' + $user + ''' in ''' + $distro + '''); resetting the machine removes it'
+    & ([IO.Path]::Combine($PSScriptRoot, 'install.ps1')) -Action Uninstall -Source $checkout -Target $installFolder `
+        -Name $name -MachineNote $machineNote
+    exit $LASTEXITCODE
 }
 
 # Windows PowerShell 5.1 also reports standard input that cmd.exe redirects to
@@ -318,6 +358,21 @@ $setup = $strings.Contains('--container-setup')
 if ($setup -and $strings.Count -ne 1) {
     Exit-Entry ('--container-setup must be used alone: .\' + $entryName + ' --container-setup')
 }
+if ($strings.Contains('--container-install') -and $strings.Count -ne 1) {
+    Exit-Entry ('--container-install must be used alone: .\' + $entryName + ' --container-install')
+}
+$install = $strings.Contains('--container-install')
+$fromInstalledCopy = $null -ne $installFolder -and ([string]::Equals($checkout, $installFolder,
+    [StringComparison]::OrdinalIgnoreCase) -or $checkout.StartsWith($installFolder + [IO.Path]::DirectorySeparatorChar,
+    [StringComparison]::OrdinalIgnoreCase))
+if ($install -and $fromInstalledCopy) {
+    Exit-Entry ('this is the installed copy in ' + $checkout + '; run --container-install from a checkout or a ' +
+        'downloaded copy')
+}
+if ($null -ne $installState -and $installState -cne 'complete') {
+    Exit-Entry ('the installation in ' + $checkout + ' is incomplete; run --container-install again from a ' +
+        'checkout or a downloaded copy')
+}
 
 # Phase 1 on Windows: unrestricted networking without delegation only.
 $platform = 'Podman machine on Windows supports only unrestricted networking without Podman delegation'
@@ -332,8 +387,8 @@ if ($strings.Contains('--container-qualify')) {
     Exit-Entry ($platform + '; --container-qualify verifies restricted modes and is unavailable')
 }
 
-if ($setup) {
-    Assert-Checkout
+# A running machine that Podman started (design D6 of the Windows entry).
+function Assert-MachineReady {
     Assert-Machine
     $probe = Test-MachineRuntime
     if ($probe.Code -eq -1 -or $probe.Code -eq 255) {
@@ -342,14 +397,87 @@ if ($setup) {
             $probe.Code + '): ' + (($probe.Output | ForEach-Object { ($_ -replace "`0", '').Trim() }) -join ' '))
     }
     if ($probe.Code -ne 0) { Exit-Entry $unstartedText }
-    Invoke-WslSession @{ WSLENV = $null } @('-d', $distro, '-u', $user, '--cd', $EntryDirectory, '--exec',
+}
+
+# Runs setup from a folder as a statement, so that it keeps the terminal, and
+# leaves its status in $script:SessionCode.
+function Invoke-Setup([string]$Directory) {
+    Invoke-WslSession @{ WSLENV = $null } @('-d', $distro, '-u', $user, '--cd', $Directory, '--exec',
         '/bin/bash', $wrapperFile, '--container-setup')
+    if (($script:SessionCode -eq -1 -or $script:SessionCode -eq 255) -and -not (Test-User)) { Exit-MissingUser }
+}
+
+# The payload: setup's own manifest, read in the distribution, and the Windows
+# files. Only standard output holds the list: wsl.exe may print warnings, in
+# UTF-16, on standard error. -B keeps Python from caching bytecode in the source.
+function Get-InstallManifest {
+    $ErrorActionPreference = 'Continue'
+    $saved = [Environment]::GetEnvironmentVariable('WSLENV')
+    Restore-Variable 'WSLENV' $null
+    try {
+        $items = @(& wsl.exe -d $distro -u $user --cd $EntryDirectory --exec python3 -I -B setup/common.py --manifest 2>&1)
+        $code = $LASTEXITCODE
+    } finally {
+        Restore-Variable 'WSLENV' $saved
+    }
+    $text = @($items | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } |
+        ForEach-Object { [string]$_ }) -join "`n"
+    if ($code -ne 0) {
+        $errors = @($items | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } |
+            ForEach-Object { ([string]$_ -replace "`0", '').Trim() })
+        Exit-Entry ('cannot read the installation inputs of ' + $checkout + ' in the WSL distribution ''' + $distro +
+            ''' (exit code ' + $code + '): ' + ($errors -join ' '))
+    }
+    $list = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($item in ($text -split "`0")) { if ($item) { $list.Add($item) } }
+    if ($list.Count -eq 0) { Exit-Entry 'setup reported no installation inputs' }
+    $list.Add($entryName)
+    # Exact names only: on .NET Framework '*.ps1' also matches 8.3 names and longer extensions.
+    foreach ($file in [IO.Directory]::GetFiles([IO.Path]::Combine($checkout, 'launcher', 'windows'), '*.ps1')) {
+        $leaf = [IO.Path]::GetFileName($file)
+        if ($leaf -cmatch '^[a-z][a-z0-9-]*\.ps1\z') { $list.Add('launcher/windows/' + $leaf) }
+    }
+    return , $list.ToArray()
+}
+
+if ($setup) {
+    Assert-DrivePath $EntryDirectory
+    Assert-Checkout $checkout
+    Assert-MachineReady
+    Invoke-Setup $EntryDirectory
     $code = $script:SessionCode
-    if (($code -eq -1 -or $code -eq 255) -and -not (Test-User)) { Exit-MissingUser }
-    if ($code -eq 0) {
+    if ($code -eq 0 -and $null -ne $installState) {
+        [Console]::Out.WriteLine($name + ': start sessions with ' + $name + ' from a project directory')
+    } elseif ($code -eq 0) {
         [Console]::Out.WriteLine($name + ': start sessions with .\' + $entryName + ' from a project directory')
     }
     exit $code
+}
+
+if ($install) {
+    if ($null -eq $installFolder) { Exit-Entry 'LOCALAPPDATA is not set, so there is no folder to install into' }
+    Assert-DrivePath $EntryDirectory
+    # The install folder must be on a drive too: setup runs from it.
+    if ($onWindows -and $installFolder -cnotmatch '^[A-Za-z]:\\[^"]*[^\\"]\z') {
+        Exit-Entry ('the install folder ' + $installFolder + ' is not on a Windows drive; LOCALAPPDATA must be a ' +
+            'folder on a drive such as C:')
+    }
+    Assert-Checkout $checkout
+    Assert-MachineReady
+    $files = Get-InstallManifest
+    & ([IO.Path]::Combine($PSScriptRoot, 'install.ps1')) -Action Install -Source $checkout -Target $installFolder `
+        -Name $name -Files $files
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    Assert-Checkout $installFolder
+    Invoke-Setup $installFolder
+    if ($script:SessionCode -ne 0) {
+        [Console]::Error.WriteLine($name + ': setup did not complete; the installed copy in ' + $installFolder +
+            ' and its PATH entry stay: run ' + $name + ' --container-setup to finish')
+        exit $script:SessionCode
+    }
+    [Console]::Out.WriteLine($name + ': installed in ' + $installFolder + '. Open a new PowerShell window or ' +
+        'Terminal tab and run ' + $name + ' from a project directory; this window may not find it yet.')
+    exit 0
 }
 
 # Ordinary launch through the release bootstrap.

@@ -176,7 +176,7 @@ class SharedComponentAlignment(unittest.TestCase):
 
     def test_scan_detects_an_injected_identifier(self):
         for name in ('network/control.py', 'launcher/windows/core.ps1', 'launcher/windows/bootstrap.sh',
-                     'tests/windows/shim_tests.ps1'):
+                     'launcher/windows/install.ps1', 'launcher/windows/user-path.ps1', 'tests/windows/shim_tests.ps1'):
             with self.subTest(file=name), tempfile.TemporaryDirectory() as directory:
                 copy = Path(directory)
                 for shared in (*SHARED_DIRECTORIES, 'tests'):
@@ -215,7 +215,8 @@ $ErrorActionPreference = 'Stop'
 exit $LASTEXITCODE
 '''
 # PowerShell files that Windows PowerShell 5.1 reads: ASCII only (no BOM needed).
-POWERSHELL_SHARED = ('launcher/windows/core.ps1', 'tests/windows/shim_tests.ps1')
+POWERSHELL_SHARED = ('launcher/windows/core.ps1', 'launcher/windows/install.ps1', 'launcher/windows/user-path.ps1',
+                     'tests/windows/shim_tests.ps1')
 SCALARS = ('AGENT_NAME', 'AGENT_DISPLAY_NAME', 'AGENT_WRAPPER', 'AGENT_ENV_PREFIX', 'AGENT_LABEL_NAMESPACE',
            'AGENT_IMAGE', 'AGENT_PROXY_IMAGE', 'AGENT_HOME', 'AGENT_COMMAND', 'AGENT_EXEC', 'AGENT_CONFIG_DIR_ENV',
            'AGENT_CONFIG_HOME', 'AGENT_PRIVATE_SHARED_DIRS', 'AGENT_APPROVAL_BYPASS_ENV', 'AGENT_EXEC_TMP')

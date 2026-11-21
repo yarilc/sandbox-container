@@ -1,5 +1,84 @@
 # Validation record
 
+## Windows installer (pending tag)
+
+Change: `openspec/changes/add-windows-installer/`.
+
+**Integration checks (task 7.1).** On the runner of task 9.2 in the section below
+(Podman client 4.3.1, server 4.9.3, `systemd` manager), on top of commit
+`bbbddbb`, with the same runtime image:
+
+| Check | Result |
+| --- | --- |
+| `git diff --check` | Passed |
+| `bash tools/shellcheck.sh .` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 54 shim cases (17 for the installer and the user `PATH`) |
+| `--shared` (unit discovery) | 473 tests, 69 skipped; only the 14 `AF_UNIX path too long` environment failures, as before this change |
+| `--setup` | Passed: 81 tests, including `--manifest` |
+| `--setup-runtime` | Passed: 2 tests in 116 s |
+| `--qualification` | Passed: 31 tests in 98 s, 1 skipped |
+
+**Windows, round 8 (task 6.2, in progress).** `tools/windows-validate.ps1
+-Install` on Windows PowerShell 5.1.26100.9818 and PowerShell 7.7.0, with the
+antivirus disabled after it had quarantined, during extraction with `tar`,
+`sandbox-container.sh` (as in round 4) and the test helper
+`mark-downloaded.ps1`, which writes `Zone.Identifier`: 46 passed, 0 failed,
+1 skipped in each edition. The install from the checkout completed. The user
+`PATH` kept its existing `String` kind with the other entries unchanged. A
+child that read the new `PATH` from the registry ran `sandbox-container`. The
+installed copy refused to install itself, and the uninstall restored the
+`PATH` exactly.
+
+The uninstall then left the folder, because it still held files that the
+installer had not created. Setup runs `python3 -I setup/setup.py` from the
+installed copy, and Python caches bytecode in `__pycache__` there. The script
+had counted that refusal as a folder in use. The uninstall now also removes
+`__pycache__` folders that hold only `.pyc` files, and the script reports a
+remaining foreign file as a failure.
+
+With that fix, the operator reran `tools/windows-validate.ps1 -Install` in
+both editions: 47 passed, 0 failed, 1 skipped (stopped machine) in each. The new
+check "Machine running" passed. The uninstall removed the install folder
+(status 0) and restored the user `PATH` exactly.
+
+By hand, in Windows PowerShell 5.1:
+
+- `.\sandbox-container.ps1 --container-install` copied 45 files, announced the
+  `PATH` change, ran setup from the installed copy (`Sandbox: ready`) and
+  printed the next step.
+- From `C:\Work\test-project`, `sandbox-container --container-uninstall`
+  removed the `PATH` entry and the folder, and named the machine installation
+  that stays.
+- Every file of a copy was marked with the Mark of the Web (`ZoneId=3`, 450
+  files). `powershell -ExecutionPolicy Bypass -File .\sandbox-container.ps1
+  --container-install` installed it. Afterwards `sandbox-container -c 'printf
+  ok'` printed `ok` from `C:\Work\test-project` without a policy override, so
+  the installed files carry no mark. The uninstall then removed it again.
+
+The antivirus was active during these installs and launches and did not
+intervene. New Windows Terminal tabs found the command without a Terminal
+restart; the tab that had run the install did not find it at first. The
+installer's message and the README now say to open a new window or tab. With
+this PC's execution policy, the operator saw no block when starting the marked
+copy without `-ExecutionPolicy Bypass`; the effective policy was not
+recorded, so the `RemoteSigned` refusal is not reproduced here.
+
+**After the second code review (task 8.4, round 9).** With the antivirus
+active during the installs, `tools/windows-validate.ps1 -Install` gave
+46 passed, 1 failed, 1 skipped on Windows PowerShell 5.1.26100.9818, then
+47 passed, 0 failed, 1 skipped on PowerShell 7.7.0. The failure: the user
+`PATH` ended with `;`, so the install appended the folder after it, and the
+uninstall removed the entry but not the restored trailing `;`. The other
+entries were unchanged. The 7.7 run, made afterwards on a `PATH` without the
+trailing `;`, restored it exactly. The install now keeps a trailing `;`
+trailing, and a shim case checks that removing the entry restores every tested
+value byte for byte. The string rule does not depend on Windows.
+
+Setup run from the installed copy still prints its Linux guidance
+(`export PATH=...`, `~/.bashrc`) before the entry's own next step, and every
+setup adds a `setup-*` tag to the runtime image (twelve in this round, all on
+the same image). Both are left for a later change.
+
 ## Windows Podman machine support (pending tag)
 
 Change: `openspec/changes/archive/2026-11-20-support-windows-podman-machine/`. Operator runs on
