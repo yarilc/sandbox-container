@@ -223,6 +223,10 @@ Rerunning setup SHALL review saved choices and reuse valid artifacts. Activation
 - **THEN** unchanged suitable artifacts need no rebuild and the last activated launcher remains usable
 - **AND** any created images or enabled user socket remaining after interruption are reported without deleting shared resources
 
+#### Scenario: Abandoned candidate tags
+- **WHEN** setup fails, is cancelled or is interrupted after it tagged images `setup-<release>` for its candidate release
+- **THEN** it removes those tags before exiting, keeps every other tag of the same images and the tags of retained releases and other installation roots, and reports an image left without a name with the command that removes it
+
 #### Scenario: Competing activation
 - **WHEN** another setup already holds the target installation's update lock
 - **THEN** setup exits with an actionable busy message without modifying that installation
@@ -454,3 +458,14 @@ Before copying installation inputs into a new release, setup SHALL refuse any in
 #### Scenario: LF checkout
 - **WHEN** every installation input has LF line endings
 - **THEN** setup copies the inputs as before
+
+### Requirement: Setup started by the Windows entry
+When the Windows entry starts setup, setup SHALL omit the shell `PATH` guidance and the managed-command lines for launching and reviewing setup from its plan and summary, and SHALL state that the Windows entry starts sessions. Setup started from a Linux shell SHALL keep that guidance.
+
+#### Scenario: Setup from the Windows entry
+- **WHEN** the user runs `<name>.ps1 --container-setup`, or `--container-install` runs setup from the installed copy
+- **THEN** the setup output contains no `export PATH=` line, no shell startup file and no distribution path of the managed command, and the entry then prints how to start sessions
+
+#### Scenario: Setup from a Linux shell
+- **WHEN** setup runs from a Linux shell whose `PATH` lacks the managed command directory
+- **THEN** it prints the `export PATH=` guidance and the managed-command lines as before

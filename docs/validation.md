@@ -2,7 +2,7 @@
 
 ## Setup output and candidate tags (pending tag)
 
-Change: `openspec/changes/clean-up-setup-output-and-tags/`.
+Change: `openspec/changes/archive/2026-11-21-clean-up-setup-output-and-tags/`.
 
 **Integration checks (task 4.2).** Same runner and images as the sections
 below, on top of commit `1b2d932`:
