@@ -288,6 +288,7 @@ try {
         Assert-Equal $project $call.Env['WRAPPER_WINDOWS_CWD'] 'working directory'
         Assert-Equal $script:Checkout $call.Env['WRAPPER_WINDOWS_ENTRY'] 'entry directory'
         Assert-Equal @('-c', 'true') (Get-Argument $r) 'arguments'
+        Assert-True (-not $call.WslEnv.Contains('WRAPPER_WINDOWS_SETUP')) 'no setup marker for a launch'
     }
     Test-Case 'Machine distribution and user selection / Default machine (older WSL writes UTF-16)' {
         $env:FAKE_WSL_UTF16 = '1'
@@ -527,7 +528,9 @@ try {
         Assert-Equal 0 $r.Code 'status'
         Assert-Equal 3 $r.Calls.Count 'running list, runtime probe, setup'
         Assert-Equal @('-d', 'podman-machine-default', '-u', 'user', '--cd', $WinEntry, '--exec', '/bin/bash', $agentProfile.wrapper, '--container-setup') $r.Calls[2].Arguments.ToArray() 'setup call'
-        Assert-Equal '' $r.Calls[2].WslEnv 'no forwarded variables'
+        Assert-Equal 'WRAPPER_WINDOWS_SETUP/u' $r.Calls[2].WslEnv 'only the Windows setup marker'
+        Assert-Equal '1' $r.Calls[2].Env['WRAPPER_WINDOWS_SETUP'] 'marker value'
+        Assert-True (-not (Test-Path -LiteralPath 'Env:WRAPPER_WINDOWS_SETUP')) 'marker removed from the session'
         Assert-Text ('start sessions with .\' + $Name + '.ps1 from a project directory') $r.Out 'next step'
         Assert-Equal 'USERPROFILE/p' $env:WSLENV 'WSLENV restored'
     }
@@ -594,6 +597,7 @@ try {
         Assert-Text ('installed in ' + $target) $r.Out 'next step'
         $setup = $r.Calls[$r.Calls.Count - 1]
         Assert-Equal @('-d', 'podman-machine-default', '-u', 'user', '--cd', $target, '--exec', '/bin/bash', $agentProfile.wrapper, '--container-setup') $setup.Arguments.ToArray() 'setup from the installed copy'
+        Assert-Equal '1' $setup.Env['WRAPPER_WINDOWS_SETUP'] 'Windows setup marker'
         Assert-True (-not [IO.File]::Exists($target + '.lock')) 'lock released'
     }
     Test-Case 'Self-contained installed copy / Source deleted after install; Setup from the installed copy' {

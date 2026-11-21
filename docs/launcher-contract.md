@@ -766,7 +766,9 @@ unset. The shim then handles the call in this order:
    registered and running, and that the user's runtime directory
    `/run/user/<uid>` is a writable directory there
    (`sh -c 'test -d /run/user/$(id -u) -a -w /run/user/$(id -u)'`). It then runs
-   `wsl.exe -d <distro> -u <user> --cd <entry directory> --exec /bin/bash <entry>.sh --container-setup`.
+   `wsl.exe -d <distro> -u <user> --cd <entry directory> --exec /bin/bash <entry>.sh --container-setup`,
+   with only `WRAPPER_WINDOWS_SETUP=1` in `WSLENV`, so that setup leaves out
+   its Linux shell guidance.
    The entry directory must be a folder on a Windows drive.
 4. A launch refuses a location outside the FileSystem provider, encodes the
    arguments, checks that the distribution is registered and running, and runs

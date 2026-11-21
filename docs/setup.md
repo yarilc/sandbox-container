@@ -308,9 +308,23 @@ The previous release is retained. For rollback, stop setup updates, take the
 same installation lock, inspect the previous release and its `setup.json`, then
 atomically replace `current` with a symlink to that release. Alternatively run
 the prior manual wrapper with its explicit environment. Never delete state to
-roll back. Automatic pruning is not provided. New image tags and enabled user
-sockets can remain after failure; setup reports persistent effects and does not
-remove shared engine resources or undo service enablement automatically.
+roll back. Automatic pruning is not provided. A setup that does not activate
+its candidate, because it failed, was cancelled or was interrupted, removes the
+`setup-<release>` tags it created for that candidate (runtime, toolchain,
+proxy). It keeps every other name of those images, and reports an image left
+without a name with `podman image rm <id>`. Enabled user sockets and other
+persistent effects remain and are reported; setup does not remove shared
+engine resources or undo service enablement automatically.
+
+Tags of earlier runs that ended before this rule, or that were killed, can
+remain. Several installation roots share one image repository, so setup does
+not remove them on its own. To remove them by hand:
+
+```bash
+podman images --format '{{.Repository}}:{{.Tag}}' | grep ':setup-'
+cat <installation>/releases/*/setup.json | grep '"image"'   # for every installation root
+podman untag <tag> <tag>   # only for a tag that no setup.json names
+```
 If rolling back across a command-path or dispatcher-protocol change, restore
 the matching command/configuration as well; changing only `current` does not
 recreate a retired command or adapt an older launch helper's interface.
@@ -342,7 +356,10 @@ The entry first checks these things, and stops with status 1 when one fails:
 It then runs `bash sandbox-container.sh --container-setup` inside that
 distribution as its user (`user`, or `SANDBOX_CONTAINER_WSL_USER`), starting in
 the checkout's drive mount, for example `/mnt/c/Work/sandbox-container`. No
-Windows variable is forwarded to setup.
+Windows variable is forwarded to setup, except `WRAPPER_WINDOWS_SETUP=1`. That
+marker makes setup leave out the Linux `PATH` guidance and the managed-command
+lines, and print that the Windows entry starts sessions; the entry then prints
+the exact command.
 
 `.\sandbox-container.ps1 --container-install` runs the same checks, copies
 the checkout's setup inputs and Windows scripts into

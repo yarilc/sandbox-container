@@ -667,10 +667,14 @@ def activate(root, release, command):
         command_backup.unlink(missing_ok=True)
 
 
-def prepare_artifacts(value, previous, release, env, images, refresh, changes):
+def prepare_artifacts(value, previous, release, env, images, refresh, changes, owned_tags=None):
+    # owned_tags collects the tags named after this candidate release, which only
+    # this run creates; setup removes them when the candidate is not activated.
+    owned = owned_tags if owned_tags is not None else []
     maintenance = env | {PROFILE.env('MAINTENANCE'): '1'}
     candidate_tag = PROFILE.image('agent', 'setup-' + release.name)
     runtime = '' if refresh else images['runtime']
+    owned.append(candidate_tag)
     if runtime:
         run(['podman', 'tag', runtime, candidate_tag], maintenance)
     else:
@@ -696,6 +700,7 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes):
         toolchain = '' if refresh else images['toolchain']
         if not toolchain:
             changes.append('Toolchain build requested: ' + PROFILE.image('toolchain', 'setup-' + release.name))
+            owned.append(PROFILE.image('toolchain', 'setup-' + release.name))
             toolchain = build_image(release, 'network/guard-build.Containerfile',
                                     PROFILE.image('toolchain', 'setup-' + release.name), maintenance,
                                     value['ca_bundle'] if value['trust_ca'] else '')
@@ -708,6 +713,7 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes):
         proxy = '' if refresh else images['proxy']
         if not proxy:
             changes.append('Proxy build requested: ' + PROFILE.image('proxy', 'setup-' + release.name))
+            owned.append(PROFILE.image('proxy', 'setup-' + release.name))
             proxy = build_image(release, 'network/Containerfile',
                                 PROFILE.image('proxy', 'setup-' + release.name), maintenance)
         value['proxy_image'] = proxy
@@ -848,7 +854,32 @@ def authenticate(value, release):
     return status
 
 
+def release_owned_tags(tags, env, changes):
+    """Remove the tags an abandoned candidate created; keep every other name and all images."""
+    for tag in tags:
+        try:
+            identity = image_identity(tag, env)
+            if not identity:
+                continue
+            run(['podman', 'untag', tag, tag], env)
+            # The effects listed for this tag no longer apply.
+            changes[:] = [change for change in changes if not change.endswith(tag)]
+            changes.append('Removed the tag of the abandoned candidate: ' + tag)
+            if record(['podman', 'image', 'inspect', '--format', '{{len .RepoTags}}', identity], env) == '0':
+                changes.append('Image ' + identity + ' has no name left; remove it with podman image rm ' + identity)
+        except SetupError as error:
+            changes.append('Could not remove the tag of the abandoned candidate ' + tag + ': ' + str(error))
+
+
+def windows_entry():
+    # The Windows entry (launcher/windows/core.ps1) starts setup with this exact
+    # value and prints the next step itself.
+    return os.environ.get('WRAPPER_WINDOWS_SETUP') == '1'
+
+
 def path_guidance(command):
+    if windows_entry():
+        return
     directory = str(Path(command).parent)
     if directory not in os.environ.get('PATH', '').split(os.pathsep):
         print('The managed command directory is not on PATH. Use the absolute command or run:')
@@ -856,10 +887,21 @@ def path_guidance(command):
         print('For future terminals, add that export line to your shell startup file (for example ~/.bashrc for Bash). Setup does not edit it.')
 
 
+def next_steps(command):
+    if windows_entry():
+        print('Start sessions with the Windows entry from a project directory on a Windows drive.')
+        return
+    print('Launch from a workspace: ' + shlex.quote(command))
+    print('Review/change setup: ' + shlex.quote(command) + ' --container-setup')
+    path_guidance(command)
+
+
 def main():
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise SetupError('--container-setup requires an interactive terminal.')
     changes = []
+    owned_tags = []
+    env = None
     candidate = None
     activated = False
     try:
@@ -929,7 +971,7 @@ def main():
                                + ' state directory: ' + str(path))
             if value['network'] == 'provider':
                 private(value['runtime_dir'], create=True)
-            prepare_artifacts(value, previous, candidate, env, images, refresh, changes)
+            prepare_artifacts(value, previous, candidate, env, images, refresh, changes, owned_tags)
             validate(value)
             save(candidate / 'setup.json', value)
             print('Checking the installed sandbox with no credentials or model request...')
@@ -943,13 +985,12 @@ def main():
         print('Sandbox: ready')
         status = authenticate(value, candidate)
         print('Authentication: ' + status)
-        print('Launch from a workspace: ' + shlex.quote(value['command']))
-        print('Review/change setup: ' + shlex.quote(value['command']) + ' --container-setup')
-        path_guidance(value['command'])
+        next_steps(value['command'])
         print('No authenticated model request was performed.')
     finally:
         if candidate is not None and not activated:
             shutil.rmtree(candidate)
+            release_owned_tags(owned_tags, env, changes)
         if changes:
             print('Persistent preparation effects (shared images/state and user services are not removed automatically):')
             for change in changes:

@@ -449,6 +449,8 @@ cd C:\Work\sandbox-container
 
 Setup runs the guided setup inside the machine distribution. The release,
 preferences and images are installed there, in `~/.local/lib/sandbox-container`.
+Its output leaves out the Linux shell guidance; the entry prints how to start
+sessions.
 The machine has no launch service, so setup offers only unrestricted
 networking. Rerun setup after updating the checkout, and after the machine is
 recreated. To run the sandbox as a command without keeping the checkout,

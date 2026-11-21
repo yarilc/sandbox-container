@@ -543,6 +543,8 @@ Shared cases added for Windows support, with the requirement each one covers.
 | `tests/test_windows_bootstrap.py` | `test_missing_transport_or_installation_parts_stop_before_the_command` | Installation location and missing installation |
 | `tests/test_windows_bootstrap.py` | `test_distribution_started_without_the_machine_stops_before_the_command` | Machine started by Podman (distribution started by WSL alone) |
 | `tests/test_windows_bootstrap.py` | `test_saved_restricted_preferences_stop_before_the_command` | Saved preferences limited to unrestricted networking |
+| `tests/test_setup.py` | `test_windows_entry_marker_replaces_linux_guidance` | Setup started by the Windows entry |
+| `tests/test_setup.py` | `test_candidate_tags_are_recorded`, `test_abandoned_candidate_tags_are_removed_and_others_kept`, `test_main_removes_only_the_tags_of_a_candidate_it_did_not_activate` | Repeatable setup with owned recovery (abandoned candidate tags) |
 | `tests/test_setup.py` | `test_manifest_mode_prints_the_installation_inputs` | Self-contained installed copy (payload list from setup's manifest) |
 | `tests/test_setup.py` | `test_unreadable_socket_candidate_is_not_a_service`, `test_saved_delegation_without_a_service_is_announced` | Setup without a launch service offers only unrestricted networking (probe errors, saved delegation) |
 | `tests/test_setup.py` | `test_manifest_copies_complete_native_inputs_without_credentials` (bootstrap in the release) | Ordinary launches run the managed installation in the machine distribution |

@@ -1,6 +1,7 @@
 """Synthetic setup tests: native disposable state, fake engines, no credentials."""
 import importlib.util
 import io
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -113,8 +114,9 @@ if 'info' in args:
 elif args[0]=='version': print('4.9.3')
 elif args[:2]==['image','exists']:
     sys.exit(125 if os.environ.get('SETUP_TEST_FAIL')=='inspect' else 1 if os.environ.get('SETUP_TEST_MISSING')=='1' else 0)
-elif args[:2]==['image','inspect']: print('sha256:'+'a'*64)
-elif args[0] in ('build','pull','tag'):
+elif args[:2]==['image','inspect']:
+    print(os.environ.get('SETUP_TEST_TAG_COUNT','1') if 'RepoTags' in args[-2] else 'sha256:'+'a'*64)
+elif args[0] in ('build','pull','tag','untag'):
     if os.environ.get('SETUP_TEST_FAIL')==args[0]: sys.exit(125)
 elif args[0]=='run' and '--cidfile' in args:
     with open(args[args.index('--cidfile')+1], 'w') as output: output.write('d'*64+'\n')
@@ -834,6 +836,22 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
             setup.path_guidance(str(directory / COMMAND))
             output.assert_not_called()
 
+    def test_windows_entry_marker_replaces_linux_guidance(self):
+        # container-setup: Setup started by the Windows entry.
+        directory = self.base / 'bin-outside-path'
+        command = str(directory / COMMAND)
+        for marker, windows in ((None, False), ('0', False), ('yes', False), ('1', True)):
+            env = self.env | ({'WRAPPER_WINDOWS_SETUP': marker} if marker is not None else {})
+            with self.subTest(marker=marker), patch.dict(os.environ, env, clear=True), \
+                    patch('builtins.print') as output:
+                setup.path_guidance(command)
+                setup.next_steps(command)
+            text = '\n'.join(str(call.args[0]) for call in output.call_args_list)
+            self.assertEqual('export PATH=' in text, not windows)
+            self.assertEqual('~/.bashrc' in text, not windows)
+            self.assertEqual(command in text, not windows)
+            self.assertEqual('Start sessions with the Windows entry' in text, windows)
+
     def test_activation_preserves_flat_install_and_supports_atomic_rerun(self):
         root, first = self.release()
         manual = root / WRAPPER
@@ -981,6 +999,67 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
                 patch.object(setup, 'build_image', return_value='b' * 64) as build:
             setup.prepare_artifacts(value, None, third, self.env, {'runtime': ''}, True, [])
         self.assertEqual({call.args[4] if len(call.args) > 4 else '' for call in build.call_args_list}, {''})
+
+    def test_candidate_tags_are_recorded(self):
+        _, release = self.release()
+        for runtime in ('a' * 64, ''):
+            with self.subTest(reused=bool(runtime)), patch.object(setup, 'run'), \
+                    patch.object(setup, 'build_runtime', return_value='b' * 64):
+                owned = []
+                setup.prepare_artifacts(self.value.copy(), None, release, self.env, {'runtime': runtime}, False, [],
+                                        owned)
+                self.assertEqual(owned, [PROFILE.image('agent', 'setup-' + release.name)])
+
+    def test_abandoned_candidate_tags_are_removed_and_others_kept(self):
+        # container-setup: Repeatable setup with owned recovery / Abandoned candidate tags.
+        tag = PROFILE.image('agent', 'setup-' + 'c' * 32)
+        cases = (({}, True, None), ({'SETUP_TEST_TAG_COUNT': '0'}, True, 'podman image rm sha256:'),
+                 ({'SETUP_TEST_MISSING': '1'}, False, None), ({'SETUP_TEST_FAIL': 'untag'}, True, 'Could not remove'))
+        for extra, untagged, note in cases:
+            with self.subTest(extra=extra):
+                self.log.unlink(missing_ok=True)
+                changes = ['Prepared runtime image tag: ' + tag, 'Prepared or reused shared state directory: x']
+                setup.release_owned_tags([tag], self.env | extra, changes)
+                calls = [call['args'] for call in self.calls()]
+                self.assertEqual([c for c in calls if c[0] in ('untag', 'rm', 'rmi')],
+                                 [['untag', tag, tag]] if untagged else [])
+                self.assertFalse(any(c[:2] == ['image', 'rm'] for c in calls))
+                self.assertIn('Prepared or reused shared state directory: x', changes)
+                if note:
+                    self.assertTrue(any(note in change for change in changes), changes)
+
+    def test_main_removes_only_the_tags_of_a_candidate_it_did_not_activate(self):
+        root = Path(self.value['installation'])
+        value = self.value.copy()
+
+        def artifacts(value, previous, release, env, images, refresh, changes, owned_tags):
+            owned_tags.append(PROFILE.image('agent', 'setup-' + release.name))
+            value['image'], value['image_id'] = owned_tags[-1], 'a' * 64
+
+        patches = dict(check_prerequisites=None, questionnaire=(value, None), planned_paths=root, owned_command=None,
+                       prepare_service=self.env, image_identity='', engine_delegation=([], 'systemd', '6.6'),
+                       yes=True, prepare_state=[], validate=None, activate=None, authenticate='none')
+        for smoke_fails in (True, False):
+            with self.subTest(smoke_fails=smoke_fails), contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(setup.sys.stdin, 'isatty', return_value=True))
+                stack.enter_context(patch.object(setup.sys.stdout, 'isatty', return_value=True))
+                for attribute, result in patches.items():
+                    stack.enter_context(patch.object(setup, attribute, return_value=result))
+                stack.enter_context(patch.object(setup, 'prepare_artifacts', side_effect=artifacts))
+                stack.enter_context(patch.object(setup, 'smoke',
+                                                 side_effect=common.SetupError('smoke failed') if smoke_fails else None))
+                release = stack.enter_context(patch.object(setup, 'release_owned_tags'))
+                stack.enter_context(patch('builtins.print'))
+                root.mkdir(parents=True, exist_ok=True)
+                if smoke_fails:
+                    with self.assertRaises(common.SetupError):
+                        setup.main()
+                    tags = release.call_args.args[0]
+                    self.assertEqual(len(tags), 1)
+                    self.assertRegex(tags[0], ':setup-[0-9a-f]{32}$')
+                else:
+                    setup.main()
+                    release.assert_not_called()
 
     def test_mode_specific_artifacts_and_scoped_maintenance(self):
         _, release = self.release()

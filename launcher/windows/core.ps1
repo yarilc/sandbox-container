@@ -400,10 +400,11 @@ function Assert-MachineReady {
 }
 
 # Runs setup from a folder as a statement, so that it keeps the terminal, and
-# leaves its status in $script:SessionCode.
+# leaves its status in $script:SessionCode. WRAPPER_WINDOWS_SETUP=1 tells setup
+# that this entry prints the next step, so it leaves out Linux shell guidance.
 function Invoke-Setup([string]$Directory) {
-    Invoke-WslSession @{ WSLENV = $null } @('-d', $distro, '-u', $user, '--cd', $Directory, '--exec',
-        '/bin/bash', $wrapperFile, '--container-setup')
+    Invoke-WslSession @{ WSLENV = 'WRAPPER_WINDOWS_SETUP/u'; WRAPPER_WINDOWS_SETUP = '1' } @('-d', $distro,
+        '-u', $user, '--cd', $Directory, '--exec', '/bin/bash', $wrapperFile, '--container-setup')
     if (($script:SessionCode -eq -1 -or $script:SessionCode -eq 255) -and -not (Test-User)) { Exit-MissingUser }
 }
 

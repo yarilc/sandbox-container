@@ -1,5 +1,36 @@
 # Validation record
 
+## Setup output and candidate tags (pending tag)
+
+Change: `openspec/changes/clean-up-setup-output-and-tags/`.
+
+**Integration checks (task 4.2).** Same runner and images as the sections
+below, on top of commit `1b2d932`:
+
+| Check | Result |
+| --- | --- |
+| `git diff --check`, `bash tools/shellcheck.sh .` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 59 shim cases |
+| `--shared` (unit discovery) | 477 tests, 69 skipped; only the 14 `AF_UNIX path too long` environment failures |
+| `--setup` | Passed: 85 tests |
+| `--setup-runtime` | Passed: 2 tests in 149 s |
+
+**Windows (task 4.1, round 10).** Windows PowerShell 5.1, the machine started
+by Podman:
+
+- `.\sandbox-container.ps1 --container-setup` and the setup that
+  `--container-install` runs from the installed copy printed no
+  `export PATH=` line, no shell startup file and no managed-command line. Both
+  printed `Start sessions with the Windows entry from a project directory on a
+  Windows drive.`, followed by the entry's own next step. The only
+  distribution path left is the default value of the "Managed launch command
+  path" question.
+- `sandbox-container --container-uninstall` behaved as before.
+- A setup interrupted with Ctrl+C during the smoke check reported `Removed the
+  tag of the abandoned candidate: localhost/sandbox-container:setup-e7c7e224...`.
+  The 18 local `sandbox-container` tags listed before the run were listed
+  unchanged after it, and the candidate tag was gone.
+
 ## Windows installer (pending tag)
 
 Change: `openspec/changes/archive/2026-11-21-add-windows-installer/`.
