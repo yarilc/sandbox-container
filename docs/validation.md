@@ -2,7 +2,7 @@
 
 ## Windows restricted networking (pending tag)
 
-Change: `openspec/changes/support-machine-restricted-networking/`. The operator
+Change: `openspec/changes/archive/2026-11-21-support-machine-restricted-networking/`. The operator
 ran four rounds of throwaway spike scripts, not committed, on 2026-11-21:
 
 - Windows with WSL kernel `6.6.87.2-microsoft-standard-WSL2`;
