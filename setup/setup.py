@@ -104,6 +104,55 @@ def choose_network(default):
         print('Provider mode not acknowledged; choose the network mode again.')
 
 
+def user_manager(env):
+    """Whether a usable systemd user manager could start podman.socket."""
+    if not shutil.which('systemctl'):
+        return False
+    try:
+        run(['systemctl', '--user', 'show-environment'], env, capture=True)
+        return True
+    except SetupError:
+        return False
+
+
+def launch_service(previous):
+    """Read-only: a same-host Unix service answers, or a user manager could start one."""
+    env = os.environ.copy()
+    env.pop('CONTAINER_CONNECTION', None)
+    urls = []
+    for endpoint in (os.environ.get('CONTAINER_HOST', ''), previous['endpoint'], 'default'):
+        try:
+            url = endpoint_url(endpoint) if endpoint else ''
+        except SetupError:
+            continue
+        if url and url not in urls:
+            urls.append(url)
+    for url in urls:
+        try:
+            verify_socket(url, env)
+            return True
+        except SetupError:
+            pass
+    return user_manager(env)
+
+
+def confirm_unrestricted(saved, delegation=False):
+    """Explain why only unrestricted networking can be prepared and require explicit consent."""
+    restricted = 'Offline and provider networking need' if PROFILE.auth else 'Offline networking needs'
+    print('No same-host Podman launch service answers at CONTAINER_HOST, the saved endpoint or the default endpoint, '
+          'and no usable systemd user manager can start one, as in a Podman machine distribution on WSL.')
+    print(restricted + ' such a service, so only unrestricted networking can be prepared here: '
+          'ordinary network access, without Podman delegation.')
+    if saved and saved != 'unrestricted':
+        print('The saved network mode ' + saved + ' cannot be kept without a launch service.')
+    if delegation:
+        print('The saved Podman delegation cannot be kept without a launch service; it will be disabled.')
+    if not yes('Continue with unrestricted networking?'):
+        raise SetupError('Unrestricted networking not confirmed; nothing was changed. ' + restricted
+                         + ' a same-host Podman service: start one, or set CONTAINER_HOST to its unix:// endpoint, '
+                         'then rerun setup (see docs/setup.md).')
+
+
 def questionnaire():
     print(NAME + ' sandbox setup — no host packages will be installed. Ctrl+C cancels.')
     print('Podman must already be installed. Setup uses host Python 3 and GNU coreutils.')
@@ -120,12 +169,19 @@ def questionnaire():
     previous = load(old / 'setup.json') if old else defaults(root)
     value = previous.copy()
     value['installation'] = str(root)
-    if PROFILE.auth:
+    # Restricted modes and delegation need a same-host service; without one that
+    # answers or can be started, only unrestricted networking can be prepared.
+    service = launch_service(previous)
+    if not service:
+        confirm_unrestricted(previous['network'] if old else '', bool(old and previous['podman']))
+        value['network'] = 'unrestricted'
+    elif PROFILE.auth:
         print('offline: no external network; provider: approved CONNECT hosts with initial and retried TLS SNI binding; unrestricted: ordinary network access.')
         print('Provider mode rejects ECH/GREASE and unverifiable TLS names; encrypted Host/shared-service routing is not filtered.')
     else:
         print('offline: no external network; unrestricted: ordinary network access. The profile declares no authentication method, so provider mode is unavailable.')
-    value['network'] = choose_network(value['network'])
+    if service:
+        value['network'] = choose_network(value['network'])
     default_auth = next(iter(PROFILE.auth), 'none')
     value['auth'] = 'none'
     if value['network'] != 'offline' and PROFILE.auth:
@@ -143,8 +199,11 @@ def questionnaire():
     else:
         selected = path_question('Shared ' + NAME + ' configuration directory', previous['config_dir'] or str(Path.home() / PROFILE.config_home))
         value['config_dir'] = selected
-    print('Podman delegation gives the application host container/mount authority beyond this workspace.')
-    value['podman'] = yes('Delegate the host Podman API to the application?', value['podman'])
+    if service:
+        print('Podman delegation gives the application host container/mount authority beyond this workspace.')
+        value['podman'] = yes('Delegate the host Podman API to the application?', value['podman'])
+    else:
+        value['podman'] = False
     while value['podman'] and value['network'] != 'unrestricted':
         print('Delegation is incompatible with restricted networking. It cannot be enabled without an explicit network choice.')
         choice = ask('Resolve conflict', 'disable-delegation', ('disable-delegation', 'change-network'))
@@ -182,8 +241,15 @@ def questionnaire():
     value['command'] = path_question('Managed launch command path', value['command'])
     needs_service = value['network'] != 'unrestricted' or value['podman']
     default_endpoint = value['endpoint'] if old else os.environ.get('CONTAINER_HOST') or ('default' if needs_service else 'local')
-    print('The launch engine must be on this Linux host. Use default for the user socket, local for a local engine, or unix:///absolute/socket.')
-    while True:
+    # A saved local engine cannot serve a restricted mode or delegation, for
+    # example after an unrestricted setup without a launch service.
+    if needs_service and default_endpoint == 'local':
+        default_endpoint = 'default'
+    if not service:
+        value['endpoint'] = 'local'
+    else:
+        print('The launch engine must be on this Linux host. Use default for the user socket, local for a local engine, or unix:///absolute/socket.')
+    while service:
         value['endpoint'] = ask('Podman launch endpoint', default_endpoint)
         try:
             endpoint_url(value['endpoint'])
@@ -340,7 +406,13 @@ def verify_engine(env, restricted):
 
 def verify_socket(url, env):
     path = Path(url[7:])
-    if not path.is_socket() or not os.access(path, os.R_OK | os.W_OK):
+    try:
+        # Python before 3.12 raises instead of returning False, for example for a
+        # socket in another user's runtime directory.
+        usable = path.is_socket() and os.access(path, os.R_OK | os.W_OK)
+    except OSError:
+        usable = False
+    if not usable:
         raise SetupError('The selected Podman Unix socket is not accessible.')
     output = record(['podman', '--remote', '--url', url, 'info', '--format', '{{.Host.Security.Rootless}} {{.Host.RemoteSocket.Path}}'], env)
     rootless, separator, host_path = output.partition(' ')
@@ -372,13 +444,7 @@ def prepare_service(value, changes):
             verify_socket(url, env)
         except SetupError:
             default_url = endpoint_url('default')
-            manager = False
-            if url == default_url and shutil.which('systemctl'):
-                try:
-                    run(['systemctl', '--user', 'show-environment'], env, capture=True)
-                    manager = True
-                except SetupError:
-                    pass
+            manager = url == default_url and user_manager(env)
             if manager and yes('Enable and start persistent systemd user podman.socket (no application delegation is implied)?'):
                 # Track the attempted persistent change even if systemctl partly succeeds.
                 changes.append('User podman.socket enable/start was requested; inspect systemctl --user status podman.socket.')
@@ -426,7 +492,17 @@ def planned_paths(value):
         path = SOURCE / name
         if path.is_symlink() or not path.is_file():
             raise SetupError('Installation input missing or symlinked: ' + name)
+        refuse_carriage_return(name, path.read_bytes())
     return root
+
+
+def refuse_carriage_return(name, data):
+    # A checkout converted to CRLF (Git for Windows with core.autocrlf=true)
+    # would install scripts that Bash cannot run.
+    if b'\r' in data:
+        raise SetupError('Installation input has CRLF line endings: ' + name + '. Release files must use LF, '
+                         'as the repository .gitattributes requires. In a checkout without local changes run '
+                         'git rm -r -q --cached . && git reset --hard, or clone the repository again.')
 
 
 def image_identity(name, env):
@@ -478,9 +554,12 @@ def build_runtime(release, tag, env, ca_bundle=''):
 
 def copy_inputs(release):
     for name in MANIFEST:
+        # Checked again on the copied bytes: the checkout may change after planned_paths.
+        data = (SOURCE / name).read_bytes()
+        refuse_carriage_return(name, data)
         target = release / name
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        shutil.copyfile(SOURCE / name, target)
+        target.write_bytes(data)
         target.chmod(0o700 if name.endswith('.sh') else 0o600 if name.endswith('default.json') else 0o644)
 
 
@@ -592,10 +671,14 @@ def activate(root, release, command):
         command_backup.unlink(missing_ok=True)
 
 
-def prepare_artifacts(value, previous, release, env, images, refresh, changes):
+def prepare_artifacts(value, previous, release, env, images, refresh, changes, owned_tags=None):
+    # owned_tags collects the tags named after this candidate release, which only
+    # this run creates; setup removes them when the candidate is not activated.
+    owned = owned_tags if owned_tags is not None else []
     maintenance = env | {PROFILE.env('MAINTENANCE'): '1'}
     candidate_tag = PROFILE.image('agent', 'setup-' + release.name)
     runtime = '' if refresh else images['runtime']
+    owned.append(candidate_tag)
     if runtime:
         run(['podman', 'tag', runtime, candidate_tag], maintenance)
     else:
@@ -621,6 +704,7 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes):
         toolchain = '' if refresh else images['toolchain']
         if not toolchain:
             changes.append('Toolchain build requested: ' + PROFILE.image('toolchain', 'setup-' + release.name))
+            owned.append(PROFILE.image('toolchain', 'setup-' + release.name))
             toolchain = build_image(release, 'network/guard-build.Containerfile',
                                     PROFILE.image('toolchain', 'setup-' + release.name), maintenance,
                                     value['ca_bundle'] if value['trust_ca'] else '')
@@ -633,6 +717,7 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes):
         proxy = '' if refresh else images['proxy']
         if not proxy:
             changes.append('Proxy build requested: ' + PROFILE.image('proxy', 'setup-' + release.name))
+            owned.append(PROFILE.image('proxy', 'setup-' + release.name))
             proxy = build_image(release, 'network/Containerfile',
                                 PROFILE.image('proxy', 'setup-' + release.name), maintenance)
         value['proxy_image'] = proxy
@@ -773,7 +858,32 @@ def authenticate(value, release):
     return status
 
 
+def release_owned_tags(tags, env, changes):
+    """Remove the tags an abandoned candidate created; keep every other name and all images."""
+    for tag in tags:
+        try:
+            identity = image_identity(tag, env)
+            if not identity:
+                continue
+            run(['podman', 'untag', tag, tag], env)
+            # The effects listed for this tag no longer apply.
+            changes[:] = [change for change in changes if not change.endswith(tag)]
+            changes.append('Removed the tag of the abandoned candidate: ' + tag)
+            if record(['podman', 'image', 'inspect', '--format', '{{len .RepoTags}}', identity], env) == '0':
+                changes.append('Image ' + identity + ' has no name left; remove it with podman image rm ' + identity)
+        except SetupError as error:
+            changes.append('Could not remove the tag of the abandoned candidate ' + tag + ': ' + str(error))
+
+
+def windows_entry():
+    # The Windows entry (launcher/windows/core.ps1) starts setup with this exact
+    # value and prints the next step itself.
+    return os.environ.get('WRAPPER_WINDOWS_SETUP') == '1'
+
+
 def path_guidance(command):
+    if windows_entry():
+        return
     directory = str(Path(command).parent)
     if directory not in os.environ.get('PATH', '').split(os.pathsep):
         print('The managed command directory is not on PATH. Use the absolute command or run:')
@@ -781,10 +891,21 @@ def path_guidance(command):
         print('For future terminals, add that export line to your shell startup file (for example ~/.bashrc for Bash). Setup does not edit it.')
 
 
+def next_steps(command):
+    if windows_entry():
+        print('Start sessions with the Windows entry from a project directory on a Windows drive.')
+        return
+    print('Launch from a workspace: ' + shlex.quote(command))
+    print('Review/change setup: ' + shlex.quote(command) + ' --container-setup')
+    path_guidance(command)
+
+
 def main():
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise SetupError('--container-setup requires an interactive terminal.')
     changes = []
+    owned_tags = []
+    env = None
     candidate = None
     activated = False
     try:
@@ -854,7 +975,7 @@ def main():
                                + ' state directory: ' + str(path))
             if value['network'] == 'provider':
                 private(value['runtime_dir'], create=True)
-            prepare_artifacts(value, previous, candidate, env, images, refresh, changes)
+            prepare_artifacts(value, previous, candidate, env, images, refresh, changes, owned_tags)
             validate(value)
             save(candidate / 'setup.json', value)
             print('Checking the installed sandbox with no credentials or model request...')
@@ -868,13 +989,12 @@ def main():
         print('Sandbox: ready')
         status = authenticate(value, candidate)
         print('Authentication: ' + status)
-        print('Launch from a workspace: ' + shlex.quote(value['command']))
-        print('Review/change setup: ' + shlex.quote(value['command']) + ' --container-setup')
-        path_guidance(value['command'])
+        next_steps(value['command'])
         print('No authenticated model request was performed.')
     finally:
         if candidate is not None and not activated:
             shutil.rmtree(candidate)
+            release_owned_tags(owned_tags, env, changes)
         if changes:
             print('Persistent preparation effects (shared images/state and user services are not removed automatically):')
             for change in changes:

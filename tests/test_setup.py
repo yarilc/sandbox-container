@@ -1,6 +1,7 @@
 """Synthetic setup tests: native disposable state, fake engines, no credentials."""
 import importlib.util
 import io
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -113,8 +114,9 @@ if 'info' in args:
 elif args[0]=='version': print('4.9.3')
 elif args[:2]==['image','exists']:
     sys.exit(125 if os.environ.get('SETUP_TEST_FAIL')=='inspect' else 1 if os.environ.get('SETUP_TEST_MISSING')=='1' else 0)
-elif args[:2]==['image','inspect']: print('sha256:'+'a'*64)
-elif args[0] in ('build','pull','tag'):
+elif args[:2]==['image','inspect']:
+    print(os.environ.get('SETUP_TEST_TAG_COUNT','1') if 'RepoTags' in args[-2] else 'sha256:'+'a'*64)
+elif args[0] in ('build','pull','tag','untag'):
     if os.environ.get('SETUP_TEST_FAIL')==args[0]: sys.exit(125)
 elif args[0]=='run' and '--cidfile' in args:
     with open(args[args.index('--cidfile')+1], 'w') as output: output.write('d'*64+'\n')
@@ -123,6 +125,15 @@ elif args[0]=='rm': sys.exit(0)
 else: sys.exit(125)
 '''
 FAKE_PODMAN = FAKE_PODMAN_TEMPLATE.replace('@MAINTENANCE@', MAINTENANCE)
+# A usable systemd user manager: setup then offers every network mode, as on
+# hosts where it could start the user podman.socket.
+FAKE_SYSTEMCTL = '#!/bin/sh\n[ "$1 $2" = "--user show-environment" ] && exit 0\nexit 1\n'
+
+
+def install_fake_systemctl(directory):
+    path = Path(directory) / 'systemctl'
+    path.write_text(FAKE_SYSTEMCTL)
+    path.chmod(0o700)
 
 
 class SetupTests(unittest.TestCase):
@@ -145,6 +156,7 @@ class SetupTests(unittest.TestCase):
         fake = self.bin / 'podman'
         fake.write_text(FAKE_PODMAN)
         fake.chmod(0o700)
+        install_fake_systemctl(self.bin)
         self.value = common.defaults(self.base / 'installed')
         self.value.update(network='unrestricted', auth=PROVIDER_METHOD, endpoint='local',
                           command=str(self.bin / COMMAND))
@@ -258,6 +270,140 @@ class SetupTests(unittest.TestCase):
             str(self.bin / COMMAND), ''])
         self.assertEqual(value['network'], 'unrestricted')
         self.assertNotIn('Residual exfiltration', output)
+
+    def test_launch_service_checks_endpoints_then_the_user_manager(self):
+        runtime = str(self.base / 'runtime')
+        default = 'unix://' + runtime + '/podman/podman.sock'
+        saved = self.value | {'endpoint': 'unix:///saved/podman.sock'}
+        env = self.env | {'CONTAINER_HOST': 'unix:///explicit/podman.sock', 'XDG_RUNTIME_DIR': runtime}
+        absent = common.SetupError('absent')
+        with patch.dict(os.environ, env, clear=True):
+            with patch.object(setup, 'verify_socket', side_effect=absent) as verify, \
+                    patch.object(setup, 'user_manager', return_value=False) as manager:
+                self.assertFalse(setup.launch_service(saved))
+            self.assertEqual([call.args[0] for call in verify.call_args_list],
+                             ['unix:///explicit/podman.sock', 'unix:///saved/podman.sock', default])
+            manager.assert_called_once()
+            # The first answering endpoint settles it; the manager is not consulted.
+            with patch.object(setup, 'verify_socket', side_effect=[absent, None]) as verify, \
+                    patch.object(setup, 'user_manager') as manager:
+                self.assertTrue(setup.launch_service(saved))
+            self.assertEqual(verify.call_count, 2)
+            manager.assert_not_called()
+            # No endpoint answers, but a user manager could start the user socket.
+            with patch.object(setup, 'verify_socket', side_effect=absent), \
+                    patch.object(setup, 'user_manager', return_value=True):
+                self.assertTrue(setup.launch_service(saved))
+        # A saved local engine and no CONTAINER_HOST leave only the default endpoint.
+        with patch.dict(os.environ, self.env | {'XDG_RUNTIME_DIR': runtime}, clear=True), \
+                patch.object(setup, 'verify_socket', side_effect=absent) as verify, \
+                patch.object(setup, 'user_manager', return_value=False):
+            self.assertFalse(setup.launch_service(self.value))
+        self.assertEqual([call.args[0] for call in verify.call_args_list], [default])
+        self.assertFalse(self.calls())
+
+    def test_user_manager_needs_a_working_systemctl_user_session(self):
+        failing = self.base / 'failing-bin'
+        failing.mkdir()
+        (failing / 'systemctl').write_text('#!/bin/sh\nexit 1\n')
+        (failing / 'systemctl').chmod(0o700)
+        empty = self.base / 'empty-bin'
+        empty.mkdir()
+        for path, expected in ((str(self.bin), True), (str(failing), False), (str(empty), False)):
+            with self.subTest(path=path), patch.dict(os.environ, self.env | {'PATH': path}, clear=True):
+                self.assertEqual(setup.user_manager(os.environ.copy()), expected)
+
+    def no_service_questionnaire(self, inputs, **env):
+        answers, printed = iter(inputs), []
+        with patch.dict(os.environ, self.env | env, clear=True), patch.object(setup, 'SOURCE', ROOT), \
+                patch.object(setup, 'launch_service', return_value=False), \
+                patch('builtins.input', side_effect=lambda prompt: (printed.append(prompt), next(answers))[1]), \
+                patch('builtins.print', side_effect=lambda *a, **k: printed.append(' '.join(map(str, a)))):
+            try:
+                value, _ = setup.questionnaire()
+            except common.SetupError as error:
+                value = error
+        self.assertRaises(StopIteration, next, answers)
+        return value, '\n'.join(printed)
+
+    def test_restricted_mode_proposes_a_service_endpoint_over_a_saved_local_engine(self):
+        # container-setup: Restricted modes propose a service endpoint.
+        self.value.update(network='unrestricted', auth='none', endpoint='local')
+        root, release = self.release()
+        (root / 'current').symlink_to(release.relative_to(root))
+        for network, expected in (('offline', 'default'), ('', 'local')):
+            with self.subTest(network=network or 'saved unrestricted'):
+                printed = []
+
+                def answer(prompt):
+                    if prompt.startswith('Podman launch endpoint') and any(
+                            item.startswith('Podman launch endpoint') for item in printed):
+                        raise AssertionError('the proposed endpoint was refused')
+                    printed.append(prompt)
+                    if prompt.startswith('Protected native installation directory'):
+                        return str(root)
+                    return network if prompt.startswith('Network mode') else ''
+                with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'SOURCE', ROOT), \
+                        patch.object(setup, 'launch_service', return_value=True), \
+                        patch('builtins.input', side_effect=answer), \
+                        patch('builtins.print', side_effect=lambda *a, **k: printed.append(' '.join(map(str, a)))):
+                    value, _ = setup.questionnaire()
+                output = '\n'.join(printed)
+                self.assertEqual(value['endpoint'], expected)
+                self.assertIn('Podman launch endpoint [' + expected + ']', output)
+                self.assertNotIn('This mode requires a same-host Unix service.', output)
+
+    def test_without_a_launch_service_only_unrestricted_networking_is_offered(self):
+        runtime = '/mnt/wslg/runtime-dir'
+        value, output = self.no_service_questionnaire([
+            str(self.base / 'installed'), 'yes', '', 'shared', '', 'no', 'no', '', '', '', '', 'no',
+            str(self.bin / COMMAND)], XDG_RUNTIME_DIR=runtime)
+        self.assertEqual((value['network'], value['podman'], value['endpoint'], value['delegation_socket']),
+                         ('unrestricted', False, 'local', ''))
+        self.assertIn('No same-host Podman launch service answers', output)
+        self.assertIn('only unrestricted networking can be prepared', output)
+        self.assertIn('Continue with unrestricted networking? (yes/no) [no]', output)
+        for absent in ('Network mode [', 'Delegate the host Podman API', 'Podman launch endpoint', runtime,
+                       'podman.sock', 'cannot be kept'):
+            self.assertNotIn(absent, output)
+
+    def test_declined_unrestricted_networking_without_a_service_changes_nothing(self):
+        error, output = self.no_service_questionnaire([str(self.base / 'installed'), 'no'])
+        self.assertIsInstance(error, common.SetupError)
+        for text in ('Unrestricted networking not confirmed', 'nothing was changed', 'start one',
+                     'CONTAINER_HOST', 'rerun setup', 'docs/setup.md'):
+            self.assertIn(text, str(error))
+        self.assertFalse(Path(self.value['installation']).exists())
+        self.assertFalse(self.calls())
+
+    def test_saved_offline_mode_without_a_service_needs_explicit_confirmation(self):
+        self.value.update(network='offline', auth='none', endpoint='default')
+        root, release = self.release()
+        (root / 'current').symlink_to(release.relative_to(root))
+        value, output = self.no_service_questionnaire([
+            str(root), 'yes', '', 'shared', '', 'no', 'no', '', '', '', '', 'no', str(self.bin / COMMAND)])
+        self.assertEqual((value['network'], value['endpoint']), ('unrestricted', 'local'))
+        self.assertIn('The saved network mode offline cannot be kept without a launch service.', output)
+        self.assertNotIn('Network mode [', output)
+        error, output = self.no_service_questionnaire([str(root), 'no'])
+        self.assertIsInstance(error, common.SetupError)
+        self.assertEqual(json.loads((release / 'setup.json').read_text())['network'], 'offline')
+
+    def test_saved_delegation_without_a_service_is_announced(self):
+        self.value.update(network='unrestricted', podman=True, endpoint='default')
+        root, release = self.release()
+        (root / 'current').symlink_to(release.relative_to(root))
+        value, output = self.no_service_questionnaire([
+            str(root), 'yes', '', 'shared', '', 'no', 'no', '', '', '', '', 'no', str(self.bin / COMMAND)])
+        self.assertEqual((value['network'], value['podman'], value['endpoint']), ('unrestricted', False, 'local'))
+        self.assertIn('The saved Podman delegation cannot be kept without a launch service; it will be disabled.',
+                      output)
+
+    def test_unreadable_socket_candidate_is_not_a_service(self):
+        # Python before 3.12 raises from is_socket() for a socket in another user's runtime directory.
+        with patch.object(setup.Path, 'is_socket', side_effect=PermissionError(13, 'Permission denied')):
+            with self.assertRaisesRegex(common.SetupError, 'not accessible'):
+                setup.verify_socket('unix:///run/user/0/podman/podman.sock', {})
 
     def test_budget_questions_defaults_retries_and_saved_values(self):
         value, output = self.questionnaire_output([
@@ -408,6 +554,11 @@ class SetupTests(unittest.TestCase):
         self.assertEqual((release / 'network/relay.py').stat().st_mode & 0o777, 0o644)
         self.assertEqual((release / 'network/tls_client_hello.py').read_bytes(), (ROOT / 'network/tls_client_hello.py').read_bytes())
         self.assertEqual((release / WRAPPER).stat().st_mode & 0o777, 0o700)
+        # Windows launches start the release's own bootstrap and namespace
+        # helper, never a checkout copy.
+        for name in ('launcher/windows/bootstrap.sh', 'launcher/windows/enter.sh'):
+            self.assertEqual((release / name).stat().st_mode & 0o777, 0o700)
+            self.assertEqual((release / name).read_bytes(), (ROOT / name).read_bytes())
         self.assertEqual((release / 'agent/policies/default.json').stat().st_mode & 0o777, 0o600)
         with patch.dict(os.environ, self.env, clear=True):
             common.protect_mounts(self.value, common.runtime_environment(self.value, release, overrides=False))
@@ -500,6 +651,54 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
             with self.assertRaisesRegex(common.SetupError, 'overlaps'):
                 common.protect_mounts(value, self.env)
 
+    def test_writable_mounts_must_not_reach_the_windows_entry(self):
+        projects = self.base / 'projects'
+        entry, app = projects / 'checkout', projects / 'app'
+        (entry / 'launcher').mkdir(parents=True)
+        app.mkdir()
+        state = self.base / 'state'
+        refused = {
+            'workspace contains the entry': (projects, False, {}),
+            'workspace inside the entry': (entry / 'launcher', False, {}),
+            'saved worktree parent contains the entry': (app, True, {}),
+            'state inside the entry': (app, False, {name('STATE_DIR'): str(entry / 'state')}),
+        }
+        for case, (workspace, worktree, extra) in refused.items():
+            with self.subTest(case=case):
+                env = self.env | extra | {common.WINDOWS_ENTRY: str(entry)}
+                with self.assertRaises(common.EntryOverlap) as raised:
+                    common.protect_mounts(self.value | {'worktree': worktree}, env, workspace=workspace)
+                self.assertIn('The Windows entry directory ' + str(entry), str(raised.exception))
+        # A sibling project without worktree scope, and launches without the variable, are unaffected.
+        unrestricted = self.env | {name('NETWORK'): 'unrestricted'}
+        env = unrestricted | {common.WINDOWS_ENTRY: str(entry), name('STATE_DIR'): str(state)}
+        common.protect_mounts(self.value, env, workspace=app)
+        common.protect_mounts(self.value | {'worktree': True}, unrestricted, workspace=app)
+        with self.assertRaisesRegex(common.SetupError, 'must be an absolute path'):
+            common.protect_mounts(self.value, unrestricted | {common.WINDOWS_ENTRY: 'C:\\checkout'}, workspace=app)
+
+    def test_windows_entry_comparison_ignores_case_only_on_drive_mounts(self):
+        mounts = [Path('/mnt/c/WORK/Wrapper-Checkout')]
+        with self.assertRaises(common.EntryOverlap):
+            common.protect_windows_entry('/mnt/c/Work/wrapper-checkout', mounts)
+        with self.assertRaises(common.EntryOverlap):
+            common.protect_windows_entry('/mnt/C/work/wrapper-checkout/sub', [Path('/mnt/c/Work')])
+        common.protect_windows_entry('/mnt/c/Work/wrapper-checkout', [Path('/mnt/c/Work/wrapper-checkout-2')])
+        common.protect_windows_entry('/srv/Checkout', [Path('/srv/checkout')])
+
+    def test_managed_launch_names_the_overlapping_windows_entry(self):
+        root, release = self.release()
+        command = Path(self.value['command'])
+        setup.activate(root, release, command)
+        entry = self.workspace / 'checkout'
+        entry.mkdir()
+        result = subprocess.run([str(command), '--version'], cwd=self.workspace,
+                                env=self.env | {common.WINDOWS_ENTRY: str(entry)},
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('The Windows entry directory ' + str(entry) + ' overlaps the writable mount', result.stderr)
+        self.assertFalse(self.calls())
+
     def test_isolated_state_must_not_overlap_the_workspace(self):
         project = self.workspace / 'project'
         (project / 'sub').mkdir(parents=True)
@@ -568,6 +767,46 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
         with self.assertRaisesRegex(common.SetupError, 'outside'):
             setup.current_release(root)
 
+    def test_manifest_mode_prints_the_installation_inputs(self):
+        # The Windows installer reads this list (launcher/windows/install.ps1).
+        result = subprocess.run([sys.executable, '-I', 'setup/common.py', '--manifest'], cwd=ROOT,
+                                capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, b'')
+        self.assertEqual(result.stdout, b''.join(name.encode() + b'\0' for name in common.MANIFEST))
+        refused = subprocess.run([sys.executable, '-I', 'setup/common.py'], cwd=ROOT, capture_output=True, timeout=30)
+        self.assertEqual((refused.returncode, refused.stdout), (2, b''))
+
+    def test_crlf_installation_input_is_refused_before_a_release_exists(self):
+        root, release = self.release()
+        (root / 'current').symlink_to(release.relative_to(root))
+        source = self.base / 'source'
+        for name in common.MANIFEST:
+            (source / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, source / name)
+        core = source / 'launcher/core.sh'
+        core.write_bytes(core.read_bytes().replace(b'\n', b'\r\n', 1))
+        with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'SOURCE', source):
+            with self.assertRaises(common.SetupError) as raised:
+                setup.planned_paths(self.value)
+        message = str(raised.exception)
+        for text in ('launcher/core.sh', 'CRLF', 'LF', '.gitattributes', 'git rm -r -q --cached . && git reset --hard'):
+            self.assertIn(text, message)
+        self.assertEqual([release], sorted((root / 'releases').iterdir()))
+        self.assertEqual(os.readlink(root / 'current'), str(release.relative_to(root)))
+        # The copy into the candidate release checks the bytes it copies again,
+        # because the checkout may change after the first check.
+        candidate = self.base / 'candidate'
+        candidate.mkdir()
+        with patch.object(setup, 'SOURCE', source):
+            with self.assertRaisesRegex(common.SetupError, 'CRLF line endings: launcher/core.sh'):
+                setup.copy_inputs(candidate)
+        self.assertFalse((candidate / 'launcher/core.sh').exists())
+        # The same checkout with LF line endings passes the input check.
+        core.write_bytes(core.read_bytes().replace(b'\r\n', b'\n'))
+        with patch.dict(os.environ, self.env, clear=True), patch.object(setup, 'SOURCE', source):
+            setup.planned_paths(self.value)
+
     def test_lock_contention_and_owned_cleanup(self):
         root = Path(self.value['installation'])
         with setup.installation_lock(root):
@@ -624,6 +863,22 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
         with patch.dict(os.environ, self.env | {'PATH': str(directory)}, clear=True), patch('builtins.print') as output:
             setup.path_guidance(str(directory / COMMAND))
             output.assert_not_called()
+
+    def test_windows_entry_marker_replaces_linux_guidance(self):
+        # container-setup: Setup started by the Windows entry.
+        directory = self.base / 'bin-outside-path'
+        command = str(directory / COMMAND)
+        for marker, windows in ((None, False), ('0', False), ('yes', False), ('1', True)):
+            env = self.env | ({'WRAPPER_WINDOWS_SETUP': marker} if marker is not None else {})
+            with self.subTest(marker=marker), patch.dict(os.environ, env, clear=True), \
+                    patch('builtins.print') as output:
+                setup.path_guidance(command)
+                setup.next_steps(command)
+            text = '\n'.join(str(call.args[0]) for call in output.call_args_list)
+            self.assertEqual('export PATH=' in text, not windows)
+            self.assertEqual('~/.bashrc' in text, not windows)
+            self.assertEqual(command in text, not windows)
+            self.assertEqual('Start sessions with the Windows entry' in text, windows)
 
     def test_activation_preserves_flat_install_and_supports_atomic_rerun(self):
         root, first = self.release()
@@ -773,6 +1028,67 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
             setup.prepare_artifacts(value, None, third, self.env, {'runtime': ''}, True, [])
         self.assertEqual({call.args[4] if len(call.args) > 4 else '' for call in build.call_args_list}, {''})
 
+    def test_candidate_tags_are_recorded(self):
+        _, release = self.release()
+        for runtime in ('a' * 64, ''):
+            with self.subTest(reused=bool(runtime)), patch.object(setup, 'run'), \
+                    patch.object(setup, 'build_runtime', return_value='b' * 64):
+                owned = []
+                setup.prepare_artifacts(self.value.copy(), None, release, self.env, {'runtime': runtime}, False, [],
+                                        owned)
+                self.assertEqual(owned, [PROFILE.image('agent', 'setup-' + release.name)])
+
+    def test_abandoned_candidate_tags_are_removed_and_others_kept(self):
+        # container-setup: Repeatable setup with owned recovery / Abandoned candidate tags.
+        tag = PROFILE.image('agent', 'setup-' + 'c' * 32)
+        cases = (({}, True, None), ({'SETUP_TEST_TAG_COUNT': '0'}, True, 'podman image rm sha256:'),
+                 ({'SETUP_TEST_MISSING': '1'}, False, None), ({'SETUP_TEST_FAIL': 'untag'}, True, 'Could not remove'))
+        for extra, untagged, note in cases:
+            with self.subTest(extra=extra):
+                self.log.unlink(missing_ok=True)
+                changes = ['Prepared runtime image tag: ' + tag, 'Prepared or reused shared state directory: x']
+                setup.release_owned_tags([tag], self.env | extra, changes)
+                calls = [call['args'] for call in self.calls()]
+                self.assertEqual([c for c in calls if c[0] in ('untag', 'rm', 'rmi')],
+                                 [['untag', tag, tag]] if untagged else [])
+                self.assertFalse(any(c[:2] == ['image', 'rm'] for c in calls))
+                self.assertIn('Prepared or reused shared state directory: x', changes)
+                if note:
+                    self.assertTrue(any(note in change for change in changes), changes)
+
+    def test_main_removes_only_the_tags_of_a_candidate_it_did_not_activate(self):
+        root = Path(self.value['installation'])
+        value = self.value.copy()
+
+        def artifacts(value, previous, release, env, images, refresh, changes, owned_tags):
+            owned_tags.append(PROFILE.image('agent', 'setup-' + release.name))
+            value['image'], value['image_id'] = owned_tags[-1], 'a' * 64
+
+        patches = dict(check_prerequisites=None, questionnaire=(value, None), planned_paths=root, owned_command=None,
+                       prepare_service=self.env, image_identity='', engine_delegation=([], 'systemd', '6.6'),
+                       yes=True, prepare_state=[], validate=None, activate=None, authenticate='none')
+        for smoke_fails in (True, False):
+            with self.subTest(smoke_fails=smoke_fails), contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(setup.sys.stdin, 'isatty', return_value=True))
+                stack.enter_context(patch.object(setup.sys.stdout, 'isatty', return_value=True))
+                for attribute, result in patches.items():
+                    stack.enter_context(patch.object(setup, attribute, return_value=result))
+                stack.enter_context(patch.object(setup, 'prepare_artifacts', side_effect=artifacts))
+                stack.enter_context(patch.object(setup, 'smoke',
+                                                 side_effect=common.SetupError('smoke failed') if smoke_fails else None))
+                release = stack.enter_context(patch.object(setup, 'release_owned_tags'))
+                stack.enter_context(patch('builtins.print'))
+                root.mkdir(parents=True, exist_ok=True)
+                if smoke_fails:
+                    with self.assertRaises(common.SetupError):
+                        setup.main()
+                    tags = release.call_args.args[0]
+                    self.assertEqual(len(tags), 1)
+                    self.assertRegex(tags[0], ':setup-[0-9a-f]{32}$')
+                else:
+                    setup.main()
+                    release.assert_not_called()
+
     def test_mode_specific_artifacts_and_scoped_maintenance(self):
         _, release = self.release()
         value = self.value.copy()
@@ -884,6 +1200,16 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
         self.assertEqual((env[name('MEMORY_LIMIT')], env[name('CPU_LIMIT')]), ('8g', '1.5'))
         self.assertEqual((env[name('PIDS_LIMIT')], env[name('RUN_TIMEOUT')]), ('2048', ''))
         self.assertEqual((stripped[name('PIDS_LIMIT')], stripped[name('RUN_TIMEOUT')]), ('1024', '60'))
+
+    def test_local_endpoint_leaves_container_host_unset(self):
+        # Podman treats a set CONTAINER_HOST as a remote context even when it is empty.
+        value = self.value | {'endpoint': 'local'}
+        with patch.dict(os.environ, self.env, clear=True):
+            self.assertNotIn('CONTAINER_HOST', common.runtime_environment(value, self.base, overrides=False))
+            self.assertNotIn('CONTAINER_HOST', common.runtime_environment(value, self.base))
+        with patch.dict(os.environ, self.env | {'CONTAINER_HOST': 'unix:///caller/podman.sock'}, clear=True):
+            self.assertNotIn('CONTAINER_HOST', common.runtime_environment(value, self.base, overrides=False))
+            self.assertEqual(common.runtime_environment(value, self.base)['CONTAINER_HOST'], 'unix:///caller/podman.sock')
 
     def test_runtime_defaults_respect_present_empty_overrides_and_dynamic_socket(self):
         value = self.value | {'network': 'provider', 'auth': PROVIDER_METHOD, 'endpoint': 'default',
@@ -1526,8 +1852,11 @@ class ProfileWithoutMethodsSetupTests(unittest.TestCase):
         request = {'installation': str(self.root / 'installed'), 'answers': answers,
                    'invalid': {'provider': {'network': 'provider'}, 'yolo': {'yolo': True},
                                'method': {'network': 'unrestricted', 'auth': 'api'}}}
+        tools = self.root / 'test-bin'
+        tools.mkdir(exist_ok=True)
+        install_fake_systemctl(tools)
         result = subprocess.run([sys.executable, '-I', '-c', SHELL_HARNESS, str(self.root), json.dumps(request)],
-                                env={'PATH': os.environ['PATH'], 'HOME': str(self.home)},
+                                env={'PATH': str(tools) + ':' + os.environ['PATH'], 'HOME': str(self.home)},
                                 capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)

@@ -12,6 +12,13 @@ Antigravity wrappers:
   agent part `agent/launcher.sh` (profile values and hooks). The core owns
   argument parsing, mounts, user mapping, Podman checks and the session
   lifecycle; `docs/launcher-contract.md` is its contract.
+- `sandbox-container.ps1` is the thin Windows entry, identical in every
+  wrapper: it runs the shared shim `launcher/windows/core.ps1`, which starts
+  the managed installation inside a Podman machine's WSL distribution through
+  `launcher/windows/bootstrap.sh`, and runs sessions and setup in the machine's
+  systemd namespaces through `launcher/windows/enter.sh`. Windows supports
+  every network mode that setup prepared, without Podman delegation; see the
+  README's Windows section.
 - `Containerfile` defines the shell image on the same pinned base and package
   baseline as the agent wrappers, with the pinned OpenSpec CLI and no agent CLI,
   including `nano` with `EDITOR` and `VISUAL` set to it. The image disables
@@ -52,7 +59,9 @@ to in-container helpers. In-container paths are neutral: `/opt/sandbox-egress`,
 `/run/sandbox-egress`, `/tmp/sandbox-runtime` and `sandbox-egress-guard`.
 
 These files are per wrapper:
-- `agent/`, `sandbox-container.sh`, `Containerfile` and `.containerignore`;
+- `agent/`, `sandbox-container.sh`, `sandbox-container.ps1` (the same text in
+  every wrapper, under the wrapper's name), `Containerfile` and
+  `.containerignore`;
 - the end-to-end tests: `test_wrapper.py` (reference shell checks only; the
   launcher is tested by the shared `test_launcher.py`), `test_setup_wrapper.py` (setup
   checks that launch this wrapper), `test_runtime.py`,
@@ -85,6 +94,7 @@ SANDBOX_CONTAINER_NETWORK=unrestricted ./sandbox-container.sh
 SANDBOX_CONTAINER_NETWORK=unrestricted ./sandbox-container.sh -c 'git status'
 bash -n sandbox-container.sh             # Validate Bash syntax
 bash tools/shellcheck.sh .               # ShellCheck at warning level (also for a wrapper checkout)
+bash tools/powershell.sh .               # PSScriptAnalyzer and shim tests (pinned PowerShell 7 image)
 git diff --check                         # Detect whitespace errors
 ```
 
@@ -94,6 +104,12 @@ suppression is narrow and carries its reason: the core reads variables that
 `capture_response` assigns with `printf -v` under a `SC2154` directive naming
 it, and an agent part (`agent/launcher.sh`, the fixtures) starts with
 `# shellcheck shell=bash disable=SC2034,SC2154`.
+
+Every tracked `*.ps1` file passes `tools/powershell.sh` (pinned
+PSScriptAnalyzer, warning level), which also runs the shared shim tests
+`tests/windows/shim_tests.ps1` against a fake `wsl.exe`. The thin entry and the
+shim stay ASCII and run on Windows PowerShell 5.1 and PowerShell 7; Windows
+PowerShell 5.1 itself is validated on a Windows host.
 
 Configured launches require host Podman and its launch engine must verify as
 Linux and rootless. Unrestricted local use requires no API socket with delegation off; explicit same-host

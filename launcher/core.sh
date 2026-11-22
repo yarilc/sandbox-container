@@ -176,6 +176,9 @@ Budgets and tmpfs sizes do not limit workspace or state storage growth.
 The workspace mount (the parent in worktree mode) must not be /, your home,
 /home, /root, /etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt, /srv,
 /mnt, /media, /proc, /sys, /dev, /run, /tmp or a WSL drive root such as /mnt/c.
+On a drive mount it must not be Users, a profile Users/<name>, its Documents,
+OneDrive or OneDrive/Documents, anything in its AppData, Windows, Program Files,
+Program Files (x86) or ProgramData, in any letter case.
 A reached lifetime limit is reported; the exit status is preserved.
 Qualification is credential-free, uses disposable fixed controls and never grants
 image maintenance or forwards a command. ABI queries alone do not qualify an
@@ -312,15 +315,21 @@ core_settings() {
     # Host tools are diagnosed later, so a missing readlink leaves the path empty here.
     script_path=$WRAPPER_PATH
     script_dir=${script_path%/*}
-    setup_wrapper=$WRAPPER_INVOKED
-    [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
-    printf -v setup_command 'bash %q --container-setup' "$setup_wrapper"
+    # A launch from the Windows entry (WRAPPER_WINDOWS_ENTRY, set by the
+    # bootstrap) prepares the machine with setup from Windows.
+    if [[ -n "${WRAPPER_WINDOWS_ENTRY:-}" ]]; then
+        setup_step="run $AGENT_NAME.ps1 --container-setup from Windows"
+    else
+        setup_wrapper=$WRAPPER_INVOKED
+        [[ "$setup_wrapper" == /* ]] || setup_wrapper="$PWD/$setup_wrapper"
+        printf -v setup_step 'run bash %q --container-setup and use the managed launcher' "$setup_wrapper"
+    fi
     # A restricted session needs a protected installation with the built guard and
     # its manifest. Without one, give setup guidance before any engine or state
     # operation; session.py prepare still validates the installation fully.
     if ((restricted)) \
         && { [[ -z "$script_path" ]] || ! compgen -G "$script_dir/network/bin/*.sha256" >/dev/null; }; then
-        die "setup required: $network_mode sessions need a protected installation; run $setup_command and use the managed launcher, or set ${P}_NETWORK=unrestricted for a direct session"
+        die "setup required: $network_mode sessions need a protected installation; $setup_step, or set ${P}_NETWORK=unrestricted for a direct session"
     fi
     # Provider mode needs the settings setup saves; a default provider launch
     # without them is a missing setup, an explicit one a configuration error.
@@ -328,7 +337,7 @@ core_settings() {
     if [[ "$network_mode" == provider ]]; then
         if [[ -z "${cfg_NETWORK:-}" ]] && [[ -z "${cfg_NETWORK_PROFILE:-}" || -z "${cfg_NETWORK_POLICY:-}" \
             || -z "${cfg_NETWORK_RUNTIME_DIR:-}" || -z "${cfg_EGRESS_IMAGE:-}" ]]; then
-            die "setup required: provider sessions, the default for $AGENT_DISPLAY_NAME, need the settings setup saves; run $setup_command and use the managed launcher"
+            die "setup required: provider sessions, the default for $AGENT_DISPLAY_NAME, need the settings setup saves; $setup_step"
         fi
         [[ -n "${cfg_NETWORK_PROFILE:-}" && -n "${cfg_NETWORK_POLICY:-}" ]] \
             || die "provider mode requires ${P}_NETWORK_PROFILE and ${P}_NETWORK_POLICY"
@@ -448,6 +457,13 @@ core_workspace_refusal() {
             unsafe_workspace=1 ;;
     esac
     [[ "$workspace_mount" != "$physical_home" && ! "$workspace_mount" =~ ^/mnt/[A-Za-z]$ ]] || unsafe_workspace=1
+    # Windows system and profile folders on a WSL drive mount, compared without
+    # case like drvfs does. Projects below them stay accepted.
+    # Documents and OneDrive hold the PowerShell profile and modules, and AppData
+    # the startup folder: code written there runs on Windows outside the sandbox.
+    windows_roots='^/mnt/[a-z](/users(/[^/]+(/documents|/onedrive( - [^/]+)?(/documents)?|/appdata(/.*)?)?)?'
+    windows_roots+='|/windows|/program files( \(x86\))?|/programdata)$'
+    [[ ! "${workspace_mount,,}" =~ $windows_roots ]] || unsafe_workspace=1
     if ((unsafe_workspace)); then
         [[ "${cfg_ALLOW_UNSAFE_WORKSPACE:-}" == 1 ]] \
             || die "refusing sensitive workspace $workspace_mount; launch from a project subdirectory or set exact ${P}_ALLOW_UNSAFE_WORKSPACE=1"
@@ -458,7 +474,12 @@ core_workspace_refusal() {
 # Phase 4: launch engine, cgroup controllers, restricted queries, delegation socket.
 core_engine() {
     # Unix service access also supports running this wrapper inside another container
-    # on the same host. TCP/SSH transports and Podman Machine are not supported.
+    # on the same host. TCP/SSH transports and the Podman machine's remote connection
+    # are not supported; inside the machine's own distribution the local engine is.
+    # Empty means the local engine here, but Podman treats a set CONTAINER_HOST
+    # or CONTAINER_CONNECTION as a remote context even when it is empty.
+    [[ -n "${CONTAINER_HOST:-}" ]] || unset CONTAINER_HOST
+    [[ -n "${CONTAINER_CONNECTION:-}" ]] || unset CONTAINER_CONNECTION
     [[ -z "${CONTAINER_CONNECTION:-}" ]] || die 'named remote connections are not supported; use local Podman or a local Unix CONTAINER_HOST'
     case "${CONTAINER_HOST:-}" in
         '') ;;

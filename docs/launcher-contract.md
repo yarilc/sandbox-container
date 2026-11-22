@@ -148,6 +148,8 @@ and `test_gitconfig_deprecated_alias` (P).
   wrapper exists to use its provider's API. The reference shell, with no
   method, defaults to `offline`. Without the provider settings, a default
   launch stops with setup guidance before any engine or state operation.
+  From the Windows entry the guidance names the Windows setup step
+  ("Bootstrap" under "Windows entry" below).
 - **U2.** Legacy names are removed without compatibility hooks: the project
   has no release yet, so backward compatibility is not a goal.
 - **U3.** `--container-build` alone builds the image and exits in every
@@ -162,6 +164,7 @@ differs.
 | Behavior | S | C | X | A | O | P | Core decision | Hook |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Sensitive workspace list, home and `/mnt/<letter>` refused, exact `1` override | yes | yes | yes | yes | yes | yes | same | - |
+| Windows folders on a drive mount (`Users`, every profile, its `Documents`, `OneDrive` and `OneDrive/Documents`, everything in its `AppData`, `Windows`, `Program Files`, `Program Files (x86)`, `ProgramData`) refused case-insensitively | no | no | no | no | no | no | added for Windows support: exact roots only, same override | - |
 | Host tool checks | podman, GNU timeout, GNU readlink | as S | podman; timeout checked later, no GNU check | podman, timeout without GNU check | podman (exit 127), GNU timeout | podman, timeout, stat, readlink, sha256sum in one loop | union: one early check of every host tool the core uses (podman, GNU timeout, GNU readlink, stat, sha256sum when building) | - |
 | `CONTAINER_CONNECTION` refused; `CONTAINER_HOST` only absolute `unix://` beyond `/` | yes | yes | yes | yes | yes | yes | same | - |
 | Engine response capture | `capture_response`: keeps final LF, one record | as S | `capture_engine_info`: one LF stripped, CR refused | as X, also refuses several records | `capture_response` plus CR and record checks | as X, every query bounded by `timeout 10s` | union: one capture function that strips one final LF, refuses CR and extra records, and bounds every query with a timeout (P) | - |
@@ -182,7 +185,8 @@ differs.
 | Workspace-derived container name prefix | phase 6 | phase 6 | sanitized basename here | phase 6 | `sanitize_name` here | phase 6 | see phase 6 | - |
 | Pi build-only exit before the cgroup checks | n/a | n/a | n/a | n/a | n/a | yes | follows U3: the build-only path needs only the engine check | - |
 
-Covering tests: `test_sensitive_workspaces_refused_before_engine`, `test_state_*`,
+Covering tests: `test_sensitive_workspaces_refused_before_engine`,
+`test_windows_system_and_profile_folders_refused_before_engine`, `test_state_*`,
 `test_*isolated*`, `test_timeout_prerequisite_*`, `test_response_validation*`,
 `test_*socket*`, `test_*delegation*`, `test_default_state_and_help_with_invalid_state` (X),
 `test_common_names_and_deprecated_aliases` (P).
@@ -719,3 +723,306 @@ found 7 high, 14 medium and 13 low findings. The user decided:
 | M13 profile field types and policy credentials | profile data paragraph |
 | M14 `CONFIG_DIR` check scope | phase 1-2 row; Visible changes |
 | Low findings | visible-change rows added; S cells (CA parent, `HISTFILE`) corrected; fallback name `AGENT_NAME`; U9 slicing stated; agent mount sources resolved; `ALL_PROXY` (U18); messages (`exit 127`, proxy ID, `HOME`, `PI_DEBUG`); O toolchain filter dropped; P `IMAGE` default tag follows the profile image with `:latest` |
+
+## Windows entry
+
+Windows users start the sandbox from PowerShell. The shared shim runs the
+managed installation inside the Podman machine's WSL distribution through the
+release's bootstrap, and sessions and setup run in the machine's systemd
+namespaces through the namespace helper. The OpenSpec changes
+`support-windows-podman-machine` and `support-machine-restricted-networking`
+specify the details. This section lists the rules that the shared launcher
+files enforce.
+
+### Thin entry and shim
+
+`<name>.ps1` is the thin PowerShell entry. Its text is the same in every
+wrapper, and `tests/test_alignment.py` holds it. It runs
+`launcher/windows/core.ps1` with its own directory, `$args` and
+`$MyInvocation.ExpectingInput`, and exits with the shim's status. Both files are
+ASCII, because Windows PowerShell 5.1 reads files without a byte order mark as
+ANSI.
+
+The shim reads its checkout's `agent/profile.json`: the name, the Bash entry,
+the variable prefix and the configuration-directory and approval-bypass
+variables. Values come from the environment, and an empty value counts as
+unset. The shim then handles the call in this order:
+
+1. `--container-help`, anywhere in the arguments, takes precedence. The shim
+   prints the Windows part, then runs the checkout's wrapper help in the
+   distribution. Without a registered and running distribution or an
+   existing user it prints the machine guidance instead and exits 0.
+2. It refuses with status 1, before running `wsl.exe`:
+   - pipeline input. Windows PowerShell 5.1 also reports standard input that
+     `cmd.exe` redirects to `powershell -File <name>.ps1` as pipeline input;
+     the shim accepts it when standard input is redirected and the process
+     runs the entry itself with `-File`, which no PowerShell pipeline can feed;
+   - an argument that is a PowerShell list, from an unquoted comma, or that
+     contains NUL;
+   - an invalid `<P>_WSL_DISTRO`, `<P>_WSL_USER` (letters, digits, `.`, `_`
+     and `-`) or `<P>_WSL_INSTALLATION` (an absolute path of the same
+     characters and `/`);
+   - `--container-setup` with other arguments;
+   - `<P>_PODMAN=1`: Podman delegation is unsupported on Podman machine.
+     `<P>_NETWORK` and `--container-qualify` reach the launcher, which checks
+     them as on Linux.
+3. `--container-setup` checks the LF line endings of the Bash entry,
+   `launcher/core.sh`, `agent/launcher.sh` and `launcher/windows/enter.sh`,
+   that the distribution is registered and running, and that the user's
+   runtime directory `/run/user/<uid>` is a writable directory there
+   (`sh -c 'test -d /run/user/$(id -u) -a -w /run/user/$(id -u)'`). It then runs
+   `wsl.exe -d <distro> -u <user> --cd <entry directory> --exec /bin/bash launcher/windows/enter.sh <name> /bin/bash <entry>.sh --container-setup`,
+   with only `WRAPPER_WINDOWS_SETUP=1` in `WSLENV`, so that setup leaves out
+   its Linux shell guidance. Help runs the wrapper directly, because it
+   queries no engine.
+   The entry directory must be a folder on a Windows drive.
+4. A launch refuses a location outside the FileSystem provider, encodes the
+   arguments, checks that the distribution is registered and running, and runs
+   `wsl.exe -d <distro> -u <user> --exec /bin/sh -c 'cd && exec /bin/bash <bootstrap>'`.
+   The bootstrap path is `.local/lib/<name>/current/launcher/windows/bootstrap.sh`
+   relative to the user's home, or `<P>_WSL_INSTALLATION/current/...`.
+5. After a failure, exit code -1 or 255 leads to a user probe
+   (`--exec /bin/true`). A missing user stops with status 1, and so does -1
+   from `wsl.exe` itself; a 255 from the session is returned. Exit code 127
+   leads to an installation probe (`sh -c 'cd && test -f <bootstrap>'`). A
+   missing installation stops with status 1 and asks to rerun
+   `<name>.ps1 --container-setup`; otherwise 127 is returned. Every other code
+   is returned unchanged.
+
+A launch forwards these names, each with `/u` in `WSLENV` and only with a
+nonempty value:
+
+- `<P>_*` names of letters, digits and `_`, except `<P>_WSL_*`; another
+  name gets a notice, because `:` or `/` would split `WSLENV`;
+- the profile's configuration-directory variable, only with a distribution
+  path (starting with `/`); a Windows path gets a notice;
+- the profile's approval-bypass variable;
+- the key variables of the profile's authentication methods (`credential_env`,
+  such as `ANTHROPIC_API_KEY`), as on Linux, where they are in the launcher's
+  environment; the core still passes only the selected method's key to a
+  provider session;
+- the valid names listed in `<P>_ENV_VARS`.
+
+It never forwards `WSLENV`, `WRAPPER_WINDOWS_*`, `BASH_ENV`, `ENV`,
+`SHELLOPTS`, `BASHOPTS`, `CDPATH`, `GLOBIGNORE`, `IFS`, `PS4`, `LD_*`,
+`PYTHON*`, `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `PWD`, `OLDPWD`,
+`TMPDIR`, `XDG_*`, `WSL_*`, `CONTAINER_*` or `CONTAINERS_*`. It prints one
+notice for each such name listed in `<P>_ENV_VARS`, and for a key variable with
+such a name that is set. The help's Windows part names the key variables.
+
+The shim never starts a stopped distribution: `wsl.exe -l --running -q`, then
+`wsl.exe -l -q` tell a running, stopped or missing distribution apart without
+starting it. A stopped one is refused with `podman machine start`, because a
+distribution that `wsl.exe` starts lacks `/run/user/<uid>`, and no `podman`
+command works there. The bootstrap refuses that state for every ordinary
+launch, before any Podman command, and asks to run `wsl --terminate <distro>`
+and then start the machine with Podman.
+
+The encoded arguments and `WSLENV` are limited to 32766 characters each. The
+shim sets the `WRAPPER_WINDOWS_*` variables and `WSLENV` for the child only.
+When `wsl.exe` returns, it restores the previous values and removes the
+variables that were absent. The user's `WSLENV` is replaced, not extended.
+Setup, help and the probes run without `WSLENV`.
+
+Covering tests: `tests/windows/shim_tests.ps1`, run by `tools/powershell.sh`
+with a fake `wsl.exe`; `test_powershell_entry_is_the_fixed_thin_entry` and
+`test_powershell_files_are_ascii` in `tests/test_alignment.py`.
+
+### Installer
+
+`--container-install` and `--container-uninstall` must each be the only
+argument. Uninstall works from the installed copy and from a checkout, before
+the mode checks. An install runs the setup checks first: drive path, line
+endings, a running machine started by Podman. It then reads the payload list:
+setup's own `MANIFEST`, from
+`wsl.exe ... --cd <checkout> --exec python3 -I -B setup/common.py --manifest`
+(NUL-terminated names on standard output only; `wsl.exe` warnings on standard
+error are ignored, and `-B` writes no bytecode into the source), plus the entry
+and the `launcher/windows/*.ps1` files with a plain lowercase name. With
+that list it calls `launcher/windows/install.ps1`, then runs setup from the
+installed copy.
+
+| Path | Content |
+| --- | --- |
+| `%LOCALAPPDATA%\Programs\<name>\` | the payload, at its relative paths |
+| `...\<name>\install.json` | `state` (`incomplete` or `complete`), `files`, `source`, `time` |
+| `%LOCALAPPDATA%\Programs\<name>.lock` | held exclusively while an install or uninstall runs |
+
+`install.ps1` refuses a source inside the target and a target that is a
+reparse point, takes the lock, then refuses before writing:
+
+- a parent of the target that is a reparse point;
+- on Windows, a target owned by an account other than the user or
+  `BUILTIN\Administrators` (an elevated session of the same user);
+- an existing non-empty target without `install.json`;
+- an invalid name;
+- a missing or non-regular input;
+- an input with a carriage return;
+- a user `PATH` that would exceed 32766 characters.
+
+Names read back from `install.json` must pass the same name rule as the
+inputs, so a damaged list cannot point outside the folder. File names are
+compared case-insensitively on Windows. It writes `install.json` as
+`incomplete` with the union of the old and new lists. It writes each file through `<file>.new`, replaces it (`File.Replace`
+or `File.Move`) and checks its SHA-256. It removes the files that are no
+longer listed and their empty folders, and writes `install.json` as
+`complete`. It then reads the user `PATH` again and adds the folder through
+`launcher/windows/user-path.ps1`, which keeps the registry value kind and
+broadcasts `WM_SETTINGCHANGE`. The installed files are new local files, without
+the Mark of the Web.
+
+The shim refuses launches and setup from a folder whose `install.json` is not
+`complete`. It refuses an install from the installed copy itself.
+
+Uninstall removes the `PATH` entry first, then the listed files, the
+`__pycache__` folders beside them that hold only `.pyc` files (setup runs
+Python from the installed copy) and the empty folders. `install.json` goes
+last, with the folder, so that a second uninstall still knows what to remove;
+an empty folder without it is removed too. An unexpected error ends either
+action with the wrapper's prefix and status 1.
+
+The lock covers installs and uninstalls only. A setup or a launch that starts
+from the installed copy while an update replaces its files can read a mix of
+old and new files: run updates when no setup runs from the installed copy. It names the machine installation that stays. It reports
+anything that remains, with `wsl --shutdown` as the way to release a folder in
+use, and then exits with status 1. A target without `install.json` is never
+deleted.
+
+Covering tests: `tests/windows/shim_tests.ps1` (installer cases, with
+`LOCALAPPDATA` in a temporary folder and a file instead of the registry) and
+`tests/test_setup.py` (`--manifest`).
+
+### Bootstrap
+
+`launcher/windows/bootstrap.sh` is installed in every release, like the core.
+The shim starts it from the release with `/bin/bash`, as the selected user of
+the machine distribution, never from a checkout. It needs Bash 4.4 or later,
+`base64`, `od`, `tail`, `wslpath`, `python3`, `readlink` and `id`, and it
+stops naming a missing one.
+
+Inputs, all in the environment:
+
+| Variable | Content |
+| --- | --- |
+| `WRAPPER_WINDOWS_ARGS` | base64 of the UTF-8 arguments, each followed by NUL; unset or empty when there are none |
+| `WRAPPER_WINDOWS_CWD` | raw Windows path of the PowerShell location |
+| `WRAPPER_WINDOWS_ENTRY` | raw Windows path of the entry's directory |
+
+The bootstrap reads two values from its own release: the profile name, used
+as the prefix of its messages, and the managed command, from `setup.json`. It
+then runs these steps, and stops with status 1, before running anything else,
+at the first one that fails:
+
+1. A release whose `setup.json` or profile cannot be read stops with
+   `the installation in <release> is incomplete; rerun setup from Windows with --container-setup`.
+2. A release whose `setup.json` saved Podman delegation stops and asks to
+   rerun setup from Windows. The shim refuses only the Windows variable, and
+   saved preferences apply to every launch without one. Saved network modes
+   are the launcher's to check.
+3. A missing or read-only `/run/user/<uid>` stops with
+   `the WSL distribution <distro> runs without the Podman machine: ...`, which
+   asks to run `wsl --terminate <distro>` and then start the machine with
+   Podman Desktop or `podman machine start`.
+4. A missing `WRAPPER_WINDOWS_CWD` or `WRAPPER_WINDOWS_ENTRY` stops with
+   `start sessions with the Windows entry`.
+5. The arguments are validated and decoded. Data that is not base64, or whose
+   last record has no NUL terminator, stops with
+   `malformed argument transport`. NUL termination is what tells no arguments
+   apart from one empty argument.
+6. Both paths are classified, case-insensitively, before translation. A refused
+   path stops with the message for its kind:
+
+   | Raw path | Result |
+   | --- | --- |
+   | `\\wsl$\...`, `\\wsl.localhost\...` | `... is inside a WSL distribution` |
+   | `\\?\...`, `\\.\...`, other `\\...` | `... is a network or device path` |
+   | `X:\...` or `X:/...` | translated with `wslpath -a -u`; `... is on drive X:, which this distribution does not mount, or does not exist` when the result is not a directory |
+   | anything else, such as `HKCU:\Software` | `... is not a Windows file system path` |
+
+7. The bootstrap changes to the translated working directory and exports the
+   translated `WRAPPER_WINDOWS_ENTRY`. It unsets `WRAPPER_WINDOWS_ARGS`,
+   `WRAPPER_WINDOWS_CWD` and `WSLENV`, then runs the managed command with the
+   decoded arguments through the release's namespace helper:
+   `/bin/bash <release>/launcher/windows/enter.sh <name> <command> <arguments>`.
+
+From that point the managed launch applies its usual checks, including the
+rule below and the core's sensitive-workspace rules.
+
+The core's setup guidance follows the entry. When `WRAPPER_WINDOWS_ENTRY` is
+not empty, both "setup required" refusals (a restricted mode without a
+protected installation, and a default provider launch without its saved
+settings) name `run <AGENT_NAME>.ps1 --container-setup from Windows`;
+otherwise they name `run bash <invoked wrapper> --container-setup and use the
+managed launcher`. The variable is internal to the Windows path: a Linux
+launch that exports it gets the Windows step, and nothing else changes.
+Covering tests: `test_setup_guidance_from_the_windows_entry_names_the_windows_step`
+and `test_provider_setup_guidance_from_the_windows_entry` in
+`tests/test_launcher.py`.
+
+Covering tests: `tests/test_windows_bootstrap.py`.
+
+### Namespace helper
+
+The Podman machine starts systemd in PID and mount namespaces of its own
+(`unshare --pid --mount`). The user's systemd manager, `podman.socket`, the
+Podman service and Podman's own connections run there, and the machine's
+login shells enter with `/usr/local/bin/enterns`. A `wsl.exe --exec` session
+stays outside: its podman would start a second rootless user namespace on the
+same storage, which cannot run commands in the service's containers.
+`launcher/windows/enter.sh`, installed in every release like the bootstrap, runs
+`bash enter.sh <prefix> <command> [args...]` as the calling user inside
+systemd's namespaces:
+
+1. When PID 1 is `systemd`, it runs the command directly, with
+   `XDG_RUNTIME_DIR=/run/user/<uid>`.
+2. Otherwise the target is the lowest root process named `systemd` whose
+   `NSpid` is `<pid> 1`. Without one it stops with status 1 and the machine
+   guidance (`wsl --terminate <distro>`, then `podman machine start`).
+3. It needs `sudo` and `nsenter`, and stops naming a missing one.
+   `sudo -n true` must succeed; otherwise it stops with status 1, because the
+   machine's user needs `sudo` without a password.
+4. It writes the environment (`env -0`) to a new mode-0600 file
+   `env.<pid>.<random>` in the private directory
+   `/run/user/<uid>/windows-entry`. `<pid>` is its own process, which `exec`
+   hands to `sudo`; a file whose process no longer runs was left by a failed
+   start and is removed first.
+5. It runs `sudo -n -- nsenter --target <pid> --mount --pid --wd=<directory> -- sudo -n -u <user> -- /bin/bash <helper> --inner <prefix> <file> <command> [args...]`.
+6. The inner part accepts only a regular file of that directory that it owns.
+   It reads the file, removes it, and runs
+   `env -i -- <saved variables> XDG_RUNTIME_DIR=/run/user/<uid> <command> [args...]`.
+
+The arguments stay an argument vector at every step, and the environment
+never reaches root's command line. The working directory, the standard
+streams, the terminal (`sudo` relays a new pseudo-terminal) and the exit status
+stay the same.
+
+Covering tests: `tests/test_windows_enter.py`, with a synthetic `/proc` and
+fake `sudo` and `nsenter`.
+
+### Writable mounts never reach the Windows entry
+
+The bootstrap exports `WRAPPER_WINDOWS_ENTRY`: the directory of the Windows
+entry, translated into the distribution, for example
+`/mnt/c/Work/wrapper-checkout`. The shim runs from that directory on every
+launch, so the session must never be able to write it.
+
+`protect_mounts` in `setup/common.py` therefore refuses a managed launch, with
+status 1 and before any engine query, when that directory and any writable
+mount overlap in either direction. The writable mounts are:
+
+- the workspace;
+- the worktree parent, whether it comes from the argument or from the saved
+  preference;
+- the state directory or the configuration and shared directories.
+
+Paths on WSL drive mounts (`/mnt/<letter>/...`) are compared without regard to
+letter case, as drvfs does. Other paths are compared exactly.
+
+The directory gets no ownership check, because drvfs cannot pass one. A value
+that is not absolute is refused. `setup/launch.py` prints the overlap message
+as is, so the user sees which mount reaches the entry. Every other managed
+configuration error keeps the generic message.
+
+Covering tests: `test_writable_mounts_must_not_reach_the_windows_entry`,
+`test_windows_entry_comparison_ignores_case_only_on_drive_mounts`,
+`test_managed_launch_names_the_overlapping_windows_entry`.

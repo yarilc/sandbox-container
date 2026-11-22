@@ -104,9 +104,21 @@ The static single-threaded bootstrap validates terminal/pipe/file stdio (rejecti
 namespace/process/anonymous-inode handles and O_PATH capabilities) and closes
 all unrelated descriptors, queries ABI, validates private tmpfs roots, sets/checks
 no_new_privs, installs MAKE_SOCK/REFER filesystem rules and an additional native
-x86_64 seccomp filter, then execs the absolute application. It does not load shell,
-interpreter, NSS or dynamic library hooks before confinement. Failure exits 78;
-usage errors exit 64. Diagnostics go to stderr and arguments/stdin remain intact.
+x86_64 seccomp filter, then runs the absolute application as its child. It does
+not load shell, interpreter, NSS or dynamic library hooks before confinement.
+Failure exits 78; usage errors exit 64. Diagnostics go to stderr and
+arguments/stdin remain intact.
+
+Restricted containers have no engine init: the guard rejects the engine's init
+mount below `/run`, and a PID 1 without a handler would ignore the terminal's
+Ctrl+C and the launcher's TERM. The confined guard therefore stays as PID 1:
+the application runs in its own process group, which becomes the terminal's
+foreground group (so one Ctrl+C reaches it once); the guard closes standard
+input, standard output and the provider's FD 3, forwards HUP, INT, QUIT, TERM,
+USR1, USR2 and WINCH sent to it, reaps orphans, and exits with the
+application's status, or 128 plus the signal number. The kernel then ends the
+rest of the PID namespace. The waiting guard keeps the same Landlock, seccomp
+and no_new_privs restrictions as the application.
 
 `guard_landlock.h` contains minimal Linux v6.6 UAPI declarations (MAKE_SOCK is bit
 9; bit 7 is MAKE_DIR). REFER is granted at the root to retain ordinary file
@@ -126,7 +138,8 @@ Provider preparation verifies a private caller-owned read-only transport mount
 and socket inode, connects once through a held directory FD, rechecks identity,
 and retains that nonblocking connected data channel as FD 3. Offline retains no
 external channel. No unconnected Unix socket, namespace handle, ring or unconfined
-agent supervisor survives. The confined relay must close FD 3 in its application
+agent supervisor survives; the waiting guard is confined and holds no FD 3. The
+confined relay must close FD 3 in its application
 exec branch. The proxy never transfers descriptors and exposes no administration.
 Handshake, policy/session readiness and relay integration remain separately tested.
 

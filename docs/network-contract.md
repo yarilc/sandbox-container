@@ -108,7 +108,11 @@ Provider mode retains exactly one bootstrap-verified preconnected data channel
 to its protected session proxy; offline retains none. A versioned bounded
 multiplex protocol supports repeated/concurrent independently authorized tunnels.
 The relay is confined, no unfiltered supervisor remains, and neither proxy nor
-protocol sends host descriptors or exposes administration. Channel death fails
+protocol sends host descriptors or exposes administration. The guard stays as
+the container's confined init: it runs the application as a child in the
+terminal's foreground process group, forwards the signals sent to it, reaps
+orphans, exits with the application's status, and holds neither the data FD
+nor standard input and output. Channel death fails
 closed and requires a new session; no finite one-shot socket pool or reconnect
 exception is permitted. Close the data FD before executing the application branch.
 An established channel does not expire merely because no frames arrive: an idle
@@ -260,7 +264,7 @@ tag and `tools/propagate.py`; see [propagation](propagation.md).
 
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
-| Sandbox (reference) | Reference (`sandbox-ref-26`, shared launcher core) | Guard, qualification and guided setup integrated; no provider mode (no authentication method); provider mechanics covered by the fixture profile and the fixture agent part | WSL ABI 3: all runner modes passed (2026-11-17) | Not applicable |
+| Sandbox (reference) | Reference (`sandbox-ref-27`, shared launcher core) | Guard, qualification and guided setup integrated; Windows entry on a Podman machine (WSL provider) with installer, offline and unrestricted modes, no delegation; no provider mode (no authentication method); provider mechanics covered by the fixture profile and the fixture agent part | WSL ABI 3: all runner modes passed (2026-11-22); Podman machine on Windows: validation script passed on both PowerShell editions (2026-11-21) | Not applicable |
 | Claude | Adopted `sandbox-ref-25`: shared launcher core | Shared launcher core, mandatory bootstrap, multiplexed proxy and guided setup integrated | WSL ABI 3: all runner modes passed (2026-11-17, shared launcher core); wrapper, setup and runtime runs passed on `sandbox-ref-25` (2026-11-18) | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
 | Codex | Adopted `sandbox-ref-25`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated | WSL ABI 3: all runtime modes passed (2026-11-17, shared launcher core); wrapper, setup and runtime runs passed on `sandbox-ref-25` (2026-11-18) | Operator session with tool use passed (2026-11-11, `openai-account`); refresh and API-key checks pending; synthetic Responses API streaming and tool call passed |
 | Antigravity | Adopted `sandbox-ref-25`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; keyring removed | WSL ABI 3: all runtime modes passed (2026-11-17, shared launcher core); wrapper, setup and runtime runs passed on `sandbox-ref-25` (2026-11-18) | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`); refresh and Gemini API-key checks pending; synthetic Gemini streaming and tool call passed |

@@ -216,6 +216,21 @@ class LauncherTests(unittest.TestCase):
                 self.assertFalse(self.state.exists())
                 self.assertFalse(Path(env['HOME']).exists())
 
+    def test_setup_guidance_from_the_windows_entry_names_the_windows_step(self):
+        # A launch from the Windows entry prepares the machine from Windows.
+        result = self.run_wrapper(FIXTURE_SHELL_NETWORK='offline', WRAPPER_WINDOWS_ENTRY='/mnt/c/Work')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('setup required: offline sessions need a protected installation; '
+                      'run fixture-shell.ps1 --container-setup from Windows, '
+                      'or set FIXTURE_SHELL_NETWORK=unrestricted for a direct session', result.stderr)
+        self.assertNotIn('bash ', result.stderr)
+        self.assertNotIn(str(WRAPPER), result.stderr)
+        self.assertNotIn('managed launcher', result.stderr)
+        self.assertFalse(self.calls())
+        result = self.run_wrapper(FIXTURE_SHELL_NETWORK='offline', WRAPPER_WINDOWS_ENTRY='')
+        self.assertIn('; run bash ', result.stderr)
+        self.assertIn('--container-setup and use the managed launcher', result.stderr)
+
     def test_missing_mode_precedes_options_prerequisites_and_other_configuration(self):
         (self.project / 'setup.json').write_text('{"network":"unrestricted"}')
         (self.project / 'qualification').mkdir()
@@ -925,6 +940,53 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('refusing sensitive workspace ' + str(drives[0]), result.stderr)
         self.assertFalse(self.calls())
 
+    def run_with_windows_drive(self, cwd, *args, **env):
+        """Run the entry in a user and mount namespace whose /mnt is a fresh tmpfs."""
+        if str(self.base).startswith('/mnt/'):
+            self.skipTest('the test directory is under /mnt')
+        if subprocess.run(['unshare', '-rm', 'true'], capture_output=True).returncode:
+            self.skipTest('unprivileged user and mount namespaces are unavailable')
+        script = ('mount -t tmpfs tmpfs /mnt || exit 97\n'
+                  'printf "%s\\n" "$TEST_WINDOWS_DIRS" | while IFS= read -r d; do mkdir -p -- "$d"; done\n'
+                  'cd -- "$1" || exit 98\nshift\nexec "$@"\n')
+        command = ['unshare', '-rm', 'sh', '-c', script, 'sh', str(cwd), str(getattr(self, 'wrapper', WRAPPER)), *args]
+        # Unmapped owners make host ancestors look unsafe to the toolchain check, which is not under test.
+        env = {'FIXTURE_SHELL_TOOLCHAINS': '0'} | env | {'TEST_WINDOWS_DIRS': str(cwd)}
+        return subprocess.run(command, env=self.env | env,
+                              input='input payload', text=True, capture_output=True, timeout=25)
+
+    def test_windows_system_and_profile_folders_refused_before_engine(self):
+        refused = ['/mnt/c/Users', '/mnt/c/Users/me', '/mnt/c/Users/me/AppData', '/mnt/c/Windows',
+                   '/mnt/c/Program Files', '/mnt/c/Program Files (x86)', '/mnt/c/ProgramData', '/mnt/d/Users/Public',
+                   '/mnt/c/Users/me/Documents', '/mnt/c/Users/me/OneDrive', '/mnt/c/Users/me/OneDrive/Documents',
+                   '/mnt/c/Users/me/OneDrive - Example/Documents', '/mnt/c/Users/me/AppData/Local/project',
+                   '/mnt/c/Users/me/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup']
+        cases = [(path, ()) for path in refused] + [(path.upper().replace('/MNT/', '/mnt/'), ()) for path in refused]
+        cases += [('/mnt/c/users/YARI', ()), ('/mnt/C/PROGRAM FILES', ()),
+                  ('/mnt/c/Users/me/app', ('--container-git-worktree',))]
+        for cwd, flags in cases:
+            with self.subTest(cwd=cwd, flags=flags):
+                self.log.unlink(missing_ok=True)
+                result = self.run_with_windows_drive(cwd, *flags)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                expected = str(Path(cwd).parent) if flags else cwd
+                self.assertIn('refusing sensitive workspace ' + expected, result.stderr)
+                self.assertFalse(self.calls())
+                self.assertFalse(self.state.exists())
+        self.log.unlink(missing_ok=True)
+        result = self.run_with_windows_drive('/mnt/c/Users/me', FIXTURE_SHELL_ALLOW_UNSAFE_WORKSPACE='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('WARNING: sensitive workspace explicitly exposed read/write: /mnt/c/Users/me', result.stderr)
+        self.assertIn('/mnt/c/Users/me:/mnt/c/Users/me:rw', self.create())
+        for cwd in ('/mnt/c/Users/me/projects/app', '/mnt/c/Users/me/Documents/GitHub/app',
+                    '/mnt/c/Users/me/OneDrive/Projects/app', '/mnt/c/Users/me/AppDataFiles', '/mnt/c/WindowsApps'):
+            with self.subTest(accepted=cwd):
+                self.log.unlink(missing_ok=True)
+                result = self.run_with_windows_drive(cwd)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('WARNING', result.stderr)
+                self.assertIn(f'{cwd}:{cwd}:rw', self.create())
+
     def test_insecure_existing_state_rejected(self):
         self.state.mkdir(mode=0o777)
         self.state.chmod(0o777)
@@ -973,6 +1035,16 @@ class LauncherTests(unittest.TestCase):
         for env in cases:
             self.assertNotEqual(self.run_wrapper(**env).returncode, 0)
         self.assertEqual(self.run_wrapper(FAKE_INFO='true linux true', CONTAINER_HOST='unix:///run/podman/podman.sock').returncode, 0)
+
+    def test_empty_engine_context_reaches_podman_unset(self):
+        # Podman treats a set but empty CONTAINER_HOST or CONTAINER_CONNECTION as remote.
+        probe = self.bin / 'podman'
+        probe.write_text(FAKE.replace("args = sys.argv[1:]",
+                         "assert 'CONTAINER_HOST' not in os.environ and 'CONTAINER_CONNECTION' not in os.environ\n"
+                         "args = sys.argv[1:]"))
+        result = self.run_wrapper('-c', 'true', CONTAINER_HOST='', CONTAINER_CONNECTION='')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('create', [c[0] for c in self.calls()])
 
     def test_build_location_refresh_and_missing_image(self):
         self.assertEqual(self.run_wrapper('--container-build').returncode, 0)
@@ -1896,6 +1968,32 @@ class AgentProfileSettingsTests(unittest.TestCase):
                 self.assertIn('setup required: provider sessions', result.stderr)
                 self.assertIn('--container-setup', result.stderr)
                 self.assertEqual(self.engine_calls(), [])
+
+    def test_provider_setup_guidance_from_the_windows_entry(self):
+        # Both refusals name the Windows step: without an installation, and with
+        # one but without the provider settings setup saves.
+        install = self.base / 'install'
+        shutil.copytree(AGENT_ROOT, install)
+        (install / 'network/bin').mkdir(exist_ok=True)
+        (install / 'network/bin/guard.sha256').write_text('0' * 64 + '  guard\n')
+        step = 'run ' + AGENT_PROFILE.name + '.ps1 --container-setup from Windows'
+        cases = (
+            (AGENT_WRAPPER, 'provider sessions need a protected installation; ' + step +
+                ', or set ' + AGENT_PROFILE.env_prefix + '_NETWORK=unrestricted'),
+            (install / AGENT_PROFILE.wrapper, 'provider sessions, the default for ' + AGENT_PROFILE.display_name +
+                ', need the settings setup saves; ' + step + '\n'),
+        )
+        for wrapper, message in cases:
+            with self.subTest(wrapper=wrapper):
+                result = self.run_agent(wrapper=wrapper, WRAPPER_WINDOWS_ENTRY='/mnt/c/Work')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('setup required: ' + message, result.stderr)
+                self.assertNotIn(str(wrapper), result.stderr)
+                self.assertNotIn('managed launcher', result.stderr)
+                result = self.run_agent(wrapper=wrapper)
+                self.assertIn('--container-setup and use the managed launcher', result.stderr)
+                self.assertNotIn('.ps1', result.stderr)
+        self.assertEqual(self.engine_calls(), [])
 
     def test_shell_profile_defaults_to_offline(self):
         result = self.run_agent(wrapper=WRAPPER)

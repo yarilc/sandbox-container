@@ -1,5 +1,761 @@
 # Validation record
 
+## Reference tag `sandbox-ref-27`: 2026-11-22
+
+Windows support on a Podman machine (WSL provider). The tag holds these
+changes, recorded in the sections below:
+- `support-windows-podman-machine`;
+- `add-windows-installer`;
+- `clean-up-setup-output-and-tags`;
+- `support-machine-restricted-networking`;
+- `validate-windows-remaining-cases`;
+- `close-windows-pre-tag-gaps`.
+
+Shared files changed since `sandbox-ref-26`:
+- `launcher/core.sh` and the new `launcher/windows/` files;
+- `network/guard.c` and `network/README.md`;
+- `setup/common.py`, `setup/launch.py` and `setup/setup.py`;
+- the shared tests `test_alignment.py`, `test_guard.py`, `test_launcher.py`,
+  `test_setup.py`, `test_windows_bootstrap.py` and `test_windows_enter.py`,
+  and `tests/windows/shim_tests.ps1`.
+
+**Runner modes on the final tree.** Every mode that `docs/propagation.md`
+requires for these files ran on 2026-11-21 and 2026-11-22. `--qualification`
+is required because `launcher/core.sh` is in `SHARED_CODE`. The runner was
+WSL2 x86_64 `6.18.58.1-microsoft-standard-WSL2`, with Podman client 4.3.1,
+server 4.9.3, the `systemd` cgroup manager and controllers `[cpu memory pids]`.
+The runtime image was `localhost/sandbox-container:setup-c496ace9b5e94548b7f86f4a0bcbd8bc`,
+passed as `SANDBOX_CONTAINER_IMAGE`: its `build-inputs-hash` `b50c3422...`
+matches the current inputs, and the engine had no `latest` tag left.
+
+| Mode | Result |
+| --- | --- |
+| `--shared` (unit discovery, with `test_agent_profile.py` and `test_alignment.py`) | 495 tests, 74 skipped; only the 14 `AF_UNIX path too long` environment failures (13 in `test_session.py`, 1 in `test_launcher.py`) |
+| `--setup` | Passed: 86 tests |
+| `--setup-runtime` | Passed: 2 tests in 151 s |
+| `--qualification` | Passed: 31 tests in 164 s, 1 skipped (no authentication method in the checkout profile) |
+| `--guard` | Passed: 25 tests in 123 s, 1 skipped (`--guard-idle`) |
+| `--network` | Passed: 16 tests in 312 s, 1 skipped (toolchain examples) |
+| `bash tools/shellcheck.sh .`, `bash tools/powershell.sh .`, `git diff --check` | Passed: no finding, 62 shim cases |
+
+**On Windows** (Podman machine `podman-machine-default`, WSL 3.0.5.0, kernel
+6.18.58.1-1, Landlock ABI 7), `tools/windows-validate.ps1` passed in Windows
+PowerShell 5.1 and PowerShell 7, including `-Install` and `-StopMachine`. It
+passed in offline and unrestricted modes, with the `default` and `local`
+endpoints. The sections below record each run and the restricted runner modes
+in the machine.
+
+## Windows pre-tag gaps (`sandbox-ref-27`): 2026-11-21
+
+Change: `openspec/changes/archive/2026-11-21-close-windows-pre-tag-gaps/`.
+
+**Antivirus (operator report, 2026-11-21).** The problem appears only with
+Bitdefender (Advanced Threat Control, `Atc4.Detection`). It affects only the
+validation scripts (`tools/windows-validate.ps1` and the throwaway operator
+scripts) and the extraction of validation bundles with `tar`. Setup and the
+installer do not trigger it. On another Windows system with other antivirus
+products the operator saw no problem. It is documented in the README's
+Windows limits and in the header of `tools/windows-validate.ps1`; nothing in
+the code works around it.
+
+**Checks on this runner (task 3.1), 2026-11-21.** Same runner as below:
+
+| Check | Result |
+| --- | --- |
+| `git diff --check`, `bash tools/shellcheck.sh .` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 62 shim cases, including the new credential-variable case (forwarded when set, not when unset or empty, none for a profile without methods, named in the help) |
+| `--shared` (unit discovery), with `tests/test_alignment.py` | 495 tests, 74 skipped; only the 14 `AF_UNIX path too long` environment failures (13 in `test_session.py`, 1 in `test_launcher.py`) |
+
+**Operator run on Windows (task 4.2), 2026-11-21.** Snapshot of the branch
+tree with this change. Windows WSL 3.0.5.0, kernel 6.18.58.1-1, Windows
+PowerShell 5.1.26100.9711; the machine `podman-machine-default` with Ubuntu
+running. The steps of design D2:
+
+| Step | Result |
+| --- | --- |
+| 1. Setup from Windows, unrestricted, endpoint answered `local`; then `windows-validate.ps1` | 41 passed, 0 failed, 3 skipped. "One engine for sessions and the machine" passed: the service ran a command in the session's container and removed it. The unprepared restricted mode named `sandbox-container.ps1 --container-setup from Windows` |
+| 2. Setup in a shell opened with `wsl -d podman-machine-default`; then `windows-validate.ps1` | The shell entered the machine's systemd namespaces (the machine's notice "You will be automatically entered into a nested process namespace", `/proc/1/comm` `systemd`, `XDG_RUNTIME_DIR=/run/user/1000`). Run from the home directory, setup stopped with `Managed installation/command overlaps a writable workspace or state mount`, because the home contains `~/.local/lib/sandbox-container`; Linux behaves the same. Run again from `/mnt/c/Work/sandbox-container`, with the proposed answers (unrestricted, endpoint `local`, host CA trust with `/etc/ssl/certs/ca-certificates.crt`), it ended with `Sandbox: ready`. The validation then gave 41 passed, 0 failed, 3 skipped, with "One engine" passing |
+| 3. Setup from Windows, offline | The endpoint question proposed `[default]` over the saved `local`. `sandbox-container.ps1 -c 'echo ok'` from a project folder printed `ok`, with `network mode=offline`, `status=locally-qualified`, Landlock ABI 7 and `sandbox-egress-guard: enforced revision=abi3-seccomp-mux-v1 abi=7` |
+
+Every step passed, so nothing changes (design D2). The `local` endpoint works
+from Windows, and a shell of the machine runs setup inside its systemd
+namespaces. The "One engine" failure of the earlier run stays tied to the
+release that run started from, whose settings are not known.
+
+
+## Windows remaining cases (`sandbox-ref-27`): 2026-11-21
+
+Change: `openspec/changes/archive/2026-11-21-validate-windows-remaining-cases/`. From the Windows
+entry, the launcher's "setup required" refusals now name
+`<name>.ps1 --container-setup from Windows`.
+
+**Host CA trust with the Podman machine (operator report, 2026-11-21).** On a
+network with TLS inspection, the operator verified setup with host CA trust on
+`podman-machine-default`, keeping the default bundle that setup proposed. The
+machine trusts the Windows CAs only after `podman machine set
+--import-native-ca`, which fails while the machine runs; without it, the
+sandbox's configuration does not get the interception CA. `README.md` and
+`docs/setup.md` now give the steps (task 1.4).
+
+**Checks on this runner (task 2.1), 2026-11-21.** Same runner as the guard
+init checks below:
+
+| Check | Result |
+| --- | --- |
+| `git diff --check`, `bash tools/shellcheck.sh .` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 61 shim cases |
+| `tools/windows-validate.ps1` dry run with a fake `wsl.exe` (PowerShell 7) | Completed; the unprepared restricted-mode case now expects the Windows step |
+| `--shared` (unit discovery) | 495 tests, 74 skipped. The 14 `AF_UNIX path too long` environment failures as before (13 in `test_session.py`, 1 in `test_launcher.py`). `test_fixture_identifiers_stay_in_the_fixtures` found the fixture name in the new provider case, which now reads it from the profile; the alignment suite and the case pass. `test_ignored_signals_force_owned_removal` (`INT`) ended in 2.9 s instead of more than 3.5 s; on the branch head it failed in 2 of 4 runs, so it is a timing flake of this runner, not a new failure |
+| New cases | `test_setup_guidance_from_the_windows_entry_names_the_windows_step` and `test_provider_setup_guidance_from_the_windows_entry` pass, with the 5 existing setup-guidance cases |
+
+**Operator run on Windows (task 3.2), 2026-11-21.** Snapshot of the branch
+tree with this change. Windows WSL 3.0.5.0, kernel 6.18.58.1-1 (WSL and the
+kernel were updated since the previous runs); the Podman Desktop machine
+`podman-machine-default`, user `user`, with Ubuntu running. The summary files
+were copied after each run.
+
+| Run | Release in the machine | Summary |
+| --- | --- | --- |
+| `windows-validate.ps1 -Install -StopMachine`, Windows PowerShell 5.1.26100.9711 | The release of a setup run earlier from a Linux shell in the machine, saved with unrestricted networking (its endpoint is not known); the installer's setup replaced it with offline networking | 51 passed, 2 failed, 1 skipped |
+| `windows-validate.ps1 -Install -StopMachine`, PowerShell 7.7.0 | This change, offline | 54 passed, 0 failed, 1 skipped |
+| Setup with unrestricted networking and the `default` endpoint, then `windows-validate.ps1`, 5.1 | This change, unrestricted | 41 passed, 0 failed, 3 skipped |
+| Setup with offline networking, then `windows-validate.ps1` as a control run, 5.1 | This change, offline | 42 passed, 0 failed, 3 skipped |
+
+- Installer, both editions: install from the checkout and setup from the
+  installed copy through the namespace helper, the user `PATH` in the registry
+  and in a new window, the refusal of an install from the installed copy, and
+  the uninstall of the `PATH` entry and of the folder passed.
+- Stopped machine, both editions: the launch refusal, the help, the machine
+  staying stopped, the launch and setup refusals of a distribution that
+  `wsl.exe` alone started, and the restart with `podman machine start` passed.
+- Unprepared restricted mode, with this change's release: `setup required:
+  offline sessions need a protected installation; run sandbox-container.ps1
+  --container-setup from Windows, or set SANDBOX_CONTAINER_NETWORK=unrestricted
+  for a direct session`.
+- The two failures of the first 5.1 run came from the earlier release, because
+  the matrix runs before the installer's setup:
+  - the unprepared restricted mode printed the Linux step of the earlier
+    launcher (`run bash /home/user/.local/lib/sandbox-container/releases/<id>/sandbox-container.sh
+    --container-setup and use the managed launcher`);
+  - "One engine for sessions and the machine": the service listed the
+    session's container, but `exec` failed with `crun: container ... does
+    not exist: open /run/user/1000/crun/<id>/status`, and the session did not
+    end within 60 s. The helper was the same in both releases. That release
+    came from a setup in a Linux shell of the machine, whose way into the
+    machine and endpoint are not known. With this change's release the case
+    passed in offline mode on both editions and in unrestricted mode on 5.1.
+- The final offline setup proposed the `default` endpoint, which the
+  unrestricted setup had saved. The replacement of a saved `local` endpoint
+  did not run on Windows; `test_restricted_mode_proposes_a_service_endpoint_over_a_saved_local_engine`
+  covers it.
+- After the final offline setup, `sandbox-container.ps1 -c 'echo ok'` from a
+  project folder printed `ok`.
+
+## Windows restricted networking (`sandbox-ref-27`): 2026-11-21
+
+Change: `openspec/changes/archive/2026-11-21-support-machine-restricted-networking/`. The operator
+ran four rounds of throwaway spike scripts, not committed, on 2026-11-21:
+
+- Windows with WSL kernel `6.6.87.2-microsoft-standard-WSL2`;
+- the Podman Desktop machine `podman-machine-default`: Podman 6.1.4, Fedora
+  Linux 44, user `user` (uid 1000), the `cgroupfs` manager;
+- `podman machine inspect`: `Rootful: false`, `UserModeNetworking: false`.
+
+The scripts ran from a `C:\Work` folder, and the suites ran from a snapshot
+of the branch tree copied to the distribution's ext4 file system.
+
+**Machine structure (rounds 2 and 3).**
+
+- PID 1 of a `wsl.exe --exec` session is WSL's `/init`. Podman started
+  `unshare --kill-child --fork --pid --mount --mount-proc --propagation shared
+  /lib/systemd/systemd`, so systemd is PID 1 of child PID and mount
+  namespaces (`NSpid: 21 1`).
+- The user's `systemd --user`, `dbus-broker`, `podman.socket` and the
+  service's `catatonit` run there.
+- `/etc/profile.d/enterns.sh` and `/usr/local/bin/enterns` take login shells
+  in with `sudo nsenter -m -p -t <systemd>` and `sudo -u $USER`. `user` has
+  passwordless `sudo` (`(ALL) NOPASSWD: ALL`).
+- `/usr/share/containers/containers.conf.d/999-podman-machine-wsl-cgroupfs.conf`
+  sets `cgroup_manager="cgroupfs"`.
+
+**Inventory from a `wsl.exe --exec` session (rounds 1 and 2).** Round 1 mixed
+Podman's warnings into the values it parsed, and its restart check compared
+the kernel boot id, which WSL distributions share. Round 2 is the reference.
+
+| Check | Result |
+| --- | --- |
+| A1 `/run/user/1000` | `drwx------ user:user`; `bus` socket present; linger `yes` |
+| A1 `systemctl --user show-environment` | Failed: `Transport endpoint is not connected` |
+| A1 `/run/user/1000/podman/podman.sock` | Socket, `srw-rw---- user:user`; API answers: `true linux true`, server 6.1.4, Netavark, `cgroupfs v2 [cpu io memory pids]`, crun |
+| A1 setup probe (`launch_service`) with `XDG_RUNTIME_DIR=/run/user/1000` | `True`: the default endpoint answers; user manager `False` |
+| A1 setup probe with `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir` | `False`: no socket there, no user manager |
+| A1 after `wsl --terminate` and `podman machine start` | Socket and API present again; the init's start time changed |
+| A2 binds through the service | Passed for `/mnt/c/Work/...`, `/home/user` and `/run/user/1000`: the container read the host's file and the host read the container's |
+| A2 container started by the service, used by the session's podman | Inspect and removal worked. Exec failed (`crun: the container ... is not running`), after `Failed to join existing conmon namespace, creating a new rootless podman user namespace` |
+| A2 `pause.pid` | Each side replaced the other's on every command: `pause.pid file refers to PID 272 which is not a pause process`. The service's `catatonit` runs in another PID, mount and user namespace |
+| A3 `platform_check` | Eligible: `{"arch": "x86_64", "backend": "netavark", "kernel": "6.6.87.2-microsoft-standard-WSL2", "seccomp": true, "selinux": false, "apparmor": false, "server": "6.1.4"}` |
+| A3 Landlock | ABI 3 (`landlock_create_ruleset` version query) |
+| A6 | Service rootless; no `/run/podman/podman.sock` |
+
+**Way into systemd's namespaces (round 3).** A prototype helper ran a command
+as the user in systemd's PID and mount namespaces, in two variants:
+
+- `nsenter`: `sudo -n nsenter --target <pid> --mount --pid --wd=<cwd>
+  --setuid 1000 --setgid 1000`;
+- `sudo`: the same `nsenter`, then `sudo -n -u user`, as `enterns`.
+
+The environment went through a mode-0600 file under `/run/user/1000`, which
+the inner part read and removed.
+
+| Check | `nsenter` | `sudo` |
+| --- | --- | --- |
+| PID 1 inside; identity | `systemd`; uid and gid 1000, groups `user` only | `systemd`; uid and gid 1000, groups `user wheel` |
+| `HOME`, `USER`, `LOGNAME`, `PATH`, `TERM`, `LANG`; directory | Kept | Kept |
+| A 40000-character `WSLENV` variable with quotes, `\`, `è` and `€` | Same bytes | Same bytes |
+| `XDG_RUNTIME_DIR` | `/run/user/1000` | `/run/user/1000` |
+| Exit status 37, piped stdin, separate stderr | Passed | Passed |
+| Terminal | A new pseudo-terminal (`use_pty`) | A new pseudo-terminal |
+| Time per command | 223 ms | 327 ms |
+| One rootless user namespace: `pause.pid` stable (`catatonit`), no warning | Passed | Passed |
+| `systemctl --user show-environment` | Works | Works |
+| Session's podman runs a command in, and removes, the service's container | Passed | Passed |
+| Environment files left | None | None |
+| Ctrl+C during `sandbox-container -c 'sleep 60'` (installed, unrestricted) | Status 2; container `test-prk-0` left in `Created` | Status 130; nothing left |
+| Window closed during the same session | A `conmon` process left, without a container | Nothing left |
+
+Inside the namespaces through the `nsenter` way, the round 2 inventory passed
+completely, before and after a restart:
+
+- user manager `running`;
+- setup probe `True` with the user manager `True`;
+- one `pause.pid`;
+- the session's podman ran a command in the service's container and removed
+  it.
+
+The `sudo` way became the design (D2).
+
+**Runner modes inside the namespaces (rounds 3 and 4).** These used the
+`sudo` way in round 4, the toolchain built in the machine (`7ea67bad7f58`),
+the runtime image `a5048f924d32` and the pinned Python base of the proxy
+image, which round 3 lacked.
+
+| Mode | Result |
+| --- | --- |
+| `--setup-runtime` | Passed: 2 tests in 78 s (fresh offline setup, unrestricted setup and shell) |
+| `--qualification` | Passed: 31 tests in 65 s, 1 skipped (no authentication method in the profile) |
+| `--guard` | 20 tests in 126 s, 1 skipped (`--guard-idle`). 1 failure, `test_existing_late_sockets_and_aliases_across_bind_roots`, in its unguarded control: `socket(AF_VSOCK)` gives `Operation not permitted` |
+| `--network` | 16 tests in 216 s, 1 skipped (toolchain examples). Offline and provider sessions, TLS binding, readiness, tampered bootstrap, proxy death, the Windows workspace and toolchain cases passed. The failures are listed below |
+
+The `--network` failures:
+
+- `test_agent_budgets_are_effective_and_lifetime_is_enforced`, both subtests:
+  - the launch notices stated that the memory and CPU budgets are not
+    enforced under `cgroupfs`, and the process budget uses the process
+    rlimit;
+  - the test then read `memory.max`, which is `max` there.
+- `test_proxy_budgets_at_maximum_streams_and_slow_inspection` read
+  `memory.max` too.
+- `test_proxy_resource_exhaustion_is_bounded_and_fails_closed`:
+  - the `pids` case reached the rlimit (`pids-budget-enforced`), then read
+    `pids.events`, which counts 0 without the controller;
+  - the `memory` case grew until the 15 s timeout, because the memory budget
+    is not enforced.
+
+The AF_VSOCK control (round 4) points at the machine's seccomp profile, not at
+the kernel:
+
+| Probe | Result |
+| --- | --- |
+| Rootless container, default profile | `PermissionError: [Errno 1] Operation not permitted` |
+| The same, `--security-opt seccomp=unconfined` | Created |
+| The distribution itself | Created |
+| `/usr/share/containers/seccomp.json` | One rule on socket family 40 |
+
+These failures are the engine limits recorded since `sandbox-ref-26` and in
+the phase 1 section below. The tests assume delegated cgroup controllers and an
+unguarded AF_VSOCK. The launcher's notices and qualification identity state
+the `cgroupfs` mechanisms; nothing was weakened, and the tests are unchanged.
+
+**Integration checks (task 5.3).** On the runner of the sections below
+(Podman client 4.3.1, server 4.9.3, `systemd` manager), on top of commit
+`fa520b7`, with the runtime image `localhost/sandbox-container:setup-c496ace9…`:
+
+| Check | Result |
+| --- | --- |
+| `git diff --check`, `bash tools/shellcheck.sh .` | Passed |
+| ShellCheck 0.11.0 on the new `launcher/windows/enter.sh` (not tracked yet) and `launcher/windows/bootstrap.sh` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 61 shim cases |
+| `--shared` (unit discovery) | 487 tests, 69 skipped; only the 14 `AF_UNIX path too long` environment failures (13 in `test_session.py`, 1 in `test_launcher.py`) |
+| `--setup` | Passed: 85 tests |
+| `--setup-runtime` | Passed: 2 tests in 140 s |
+
+The unit discovery includes `tests/test_windows_enter.py` (9 tests) and
+`tests/test_windows_bootstrap.py` (9 tests). A dry run of
+`tools/windows-validate.ps1` in the PowerShell 7 image, against a fake
+`wsl.exe` that answers every probe with success and prints nothing, completed
+and wrote its summary.
+
+**Operator run with the namespace helper (task 7.1, first round).** Windows
+PowerShell 5.1.26100.9818 and PowerShell 7.7.0, WSL 2.5.10.0, the machine
+started by Podman, no other distribution running.
+
+- An offline setup from Windows ended with `Sandbox qualification:
+  locally-qualified` and `Sandbox: ready`. Setup proposed the saved endpoint
+  `local` after the choice of offline networking and refused it once; task 6.2
+  changes that default.
+- `tools/windows-validate.ps1` passed in both editions: 41 passed, 0 failed,
+  4 skipped (no other distribution, the unrestricted-only refusal case,
+  `-Install`, `-StopMachine`). The new cases passed: an offline session without
+  network access (`blocked`), qualification (`locally-qualified`), the
+  delegation refusal, and the machine's service running a command in, then
+  removing, a session's container.
+- By hand, in both editions: `-c 'stty size'` printed `28 110`, as
+  `$Host.UI.RawUI.WindowSize`; in an interactive offline shell
+  `curl https://example.com` failed to resolve; closing the window left no
+  container (`podman ps -a` on Windows). Ctrl+C during `-c 'sleep 60'` did not
+  end the command: it ended after 60 s with status 0. The bundle needed the
+  antivirus disabled for the validation script.
+
+The runner modes then ran in the machine through the snapshot's own
+`launcher/windows/enter.sh`, with the previous guard. The results matched the
+spike's round 4:
+
+- `--setup-runtime` passed (2 tests in 74 s), and so did `--qualification`
+  (31 tests in 66 s, 1 skipped);
+- `--guard` had only the AF_VSOCK control failure, with the same probe
+  results;
+- `--network` had only the `cgroupfs` budget failures listed in the section
+  above.
+
+The interrupt was not lost on the way: on this runner, with plain Podman,
+`bash -c 'echo started; sleep 20'` without `--init` ignored Ctrl+C on a
+terminal (status 0 after 20 s), and with `--init` ended in 0.3 s with status
+130. Restricted containers had no init in front of the application, which ran
+as PID 1; task 6.1 makes the confined guard that init.
+
+**Guard init and setup endpoint (task 6.4).** Same runner and image, with the
+guard of task 6.1 and the setup change of task 6.2:
+
+| Check | Result |
+| --- | --- |
+| `git diff --check`, `bash tools/shellcheck.sh .`, ShellCheck on `launcher/windows/enter.sh` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 61 shim cases |
+| `--shared` (unit discovery) | 493 tests, 74 skipped; only the 14 `AF_UNIX path too long` environment failures |
+| `--setup` | Passed: 86 tests, including `test_restricted_mode_proposes_a_service_endpoint_over_a_saved_local_engine`, which fails at once without the change |
+| `--setup-runtime` | Passed: 2 tests in 146 s |
+| `--guard` | Passed: 25 tests in 116 s, 1 skipped (`--guard-idle`) |
+| `--qualification` | Passed: 31 tests in 114 s, 1 skipped (no authentication method in the profile) |
+| `--network` | Passed: 16 tests in 300 s, 1 skipped (toolchain examples) |
+
+The new guard cases, through the production guard in a rootless container:
+
+- Ctrl+C on a terminal ends `sh -c 'echo ready; exec sleep 30'` with status
+  130 within 10 s;
+- an application with a SIGINT handler counts exactly one interrupt;
+- `podman kill --signal TERM` ends `sleep` with status 143 within 10 s;
+- `sh -c 'sleep 30 & exit 37'` returns 37 without waiting for `sleep`;
+- the waiting guard (PID 1) holds only fd 2 and has the application's
+  `NoNewPrivs` and seccomp filter count;
+- in provider mode it holds no FD 3.
+
+Compiled from the previous `guard.c`, the interrupt case failed (`0 != 130`),
+the TERM case timed out, and the waiting-guard case found fds 0 to 3. The
+interrupt-count and background cases also pass with the previous guard; they
+guard against double delivery and waiting.
+
+**Operator run with the final code (task 7.1).** Same Windows host, the
+machine started by Podman, Ubuntu running:
+
+- Setup from Windows proposed `offline` and the endpoint `default` from the
+  saved preferences. It recompiled the guard with the toolchain
+  `7ea67bad7f58`, and ended with `Sandbox qualification: locally-qualified`
+  and `Sandbox: ready`.
+- `tools/windows-validate.ps1` passed in both editions: 42 passed, 0 failed,
+  3 skipped (the unrestricted-only refusal case, `-Install`, `-StopMachine`).
+  This includes another distribution being active, the offline session
+  without network access, qualification, and the one-engine check.
+- By hand, in both editions, the operator reported every step as passed:
+  - Ctrl+C during `-c 'sleep 60'` ended at once with status 130;
+  - in an interactive offline shell, `sleep 60` with Ctrl+C returned at once to
+    the prompt, and `curl https://example.com` failed;
+  - `-c 'stty size'` matched the window;
+  - closing the window left no container (`podman ps -a` on Windows).
+- The runner modes ran in the machine through the snapshot's
+  `launcher/windows/enter.sh`, with the new guard:
+
+  | Mode | Result |
+  | --- | --- |
+  | `--setup-runtime` | Passed: 2 tests in 89 s |
+  | `--qualification` | Passed: 31 tests in 64 s, 1 skipped |
+  | `--guard` | 25 tests in 127 s, 1 skipped. The 5 new init cases and the provider descriptor case passed. The only failure is the AF_VSOCK control, with the same probe results as before |
+  | `--network` | 16 tests in 237 s, 1 skipped. The only failures are the `cgroupfs` budget cases of the spike: `memory.max` and `pids.events` reads, and the unbounded memory case |
+
+## Setup output and candidate tags (`sandbox-ref-27`): 2026-11-21
+
+Change: `openspec/changes/archive/2026-11-21-clean-up-setup-output-and-tags/`.
+
+**Integration checks (task 4.2).** Same runner and images as the sections
+below, on top of commit `1b2d932`:
+
+| Check | Result |
+| --- | --- |
+| `git diff --check`, `bash tools/shellcheck.sh .` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 59 shim cases |
+| `--shared` (unit discovery) | 477 tests, 69 skipped; only the 14 `AF_UNIX path too long` environment failures |
+| `--setup` | Passed: 85 tests |
+| `--setup-runtime` | Passed: 2 tests in 149 s |
+
+**Windows (task 4.1, round 10).** Windows PowerShell 5.1, the machine started
+by Podman:
+
+- `.\sandbox-container.ps1 --container-setup` and the setup that
+  `--container-install` runs from the installed copy printed no
+  `export PATH=` line, no shell startup file and no managed-command line. Both
+  printed `Start sessions with the Windows entry from a project directory on a
+  Windows drive.`, followed by the entry's own next step. The only
+  distribution path left is the default value of the "Managed launch command
+  path" question.
+- `sandbox-container --container-uninstall` behaved as before.
+- A setup interrupted with Ctrl+C during the smoke check reported `Removed the
+  tag of the abandoned candidate: localhost/sandbox-container:setup-e7c7e224...`.
+  The 18 local `sandbox-container` tags listed before the run were listed
+  unchanged after it, and the candidate tag was gone.
+
+## Windows installer (`sandbox-ref-27`): 2026-11-21
+
+Change: `openspec/changes/archive/2026-11-21-add-windows-installer/`.
+
+**Integration checks (task 7.1).** On the runner of task 9.2 in the section below
+(Podman client 4.3.1, server 4.9.3, `systemd` manager), on top of commit
+`bbbddbb`, with the same runtime image:
+
+| Check | Result |
+| --- | --- |
+| `git diff --check` | Passed |
+| `bash tools/shellcheck.sh .` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 54 shim cases (17 for the installer and the user `PATH`) |
+| `--shared` (unit discovery) | 473 tests, 69 skipped; only the 14 `AF_UNIX path too long` environment failures, as before this change |
+| `--setup` | Passed: 81 tests, including `--manifest` |
+| `--setup-runtime` | Passed: 2 tests in 116 s |
+| `--qualification` | Passed: 31 tests in 98 s, 1 skipped |
+
+**Windows, round 8 (task 6.2, in progress).** `tools/windows-validate.ps1
+-Install` on Windows PowerShell 5.1.26100.9818 and PowerShell 7.7.0, with the
+antivirus disabled after it had quarantined, during extraction with `tar`,
+`sandbox-container.sh` (as in round 4) and the test helper
+`mark-downloaded.ps1`, which writes `Zone.Identifier`: 46 passed, 0 failed,
+1 skipped in each edition. The install from the checkout completed. The user
+`PATH` kept its existing `String` kind with the other entries unchanged. A
+child that read the new `PATH` from the registry ran `sandbox-container`. The
+installed copy refused to install itself, and the uninstall restored the
+`PATH` exactly.
+
+The uninstall then left the folder, because it still held files that the
+installer had not created. Setup runs `python3 -I setup/setup.py` from the
+installed copy, and Python caches bytecode in `__pycache__` there. The script
+had counted that refusal as a folder in use. The uninstall now also removes
+`__pycache__` folders that hold only `.pyc` files, and the script reports a
+remaining foreign file as a failure.
+
+With that fix, the operator reran `tools/windows-validate.ps1 -Install` in
+both editions: 47 passed, 0 failed, 1 skipped (stopped machine) in each. The new
+check "Machine running" passed. The uninstall removed the install folder
+(status 0) and restored the user `PATH` exactly.
+
+By hand, in Windows PowerShell 5.1:
+
+- `.\sandbox-container.ps1 --container-install` copied 45 files, announced the
+  `PATH` change, ran setup from the installed copy (`Sandbox: ready`) and
+  printed the next step.
+- From `C:\Work\test-project`, `sandbox-container --container-uninstall`
+  removed the `PATH` entry and the folder, and named the machine installation
+  that stays.
+- Every file of a copy was marked with the Mark of the Web (`ZoneId=3`, 450
+  files). `powershell -ExecutionPolicy Bypass -File .\sandbox-container.ps1
+  --container-install` installed it. Afterwards `sandbox-container -c 'printf
+  ok'` printed `ok` from `C:\Work\test-project` without a policy override, so
+  the installed files carry no mark. The uninstall then removed it again.
+
+The antivirus was active during these installs and launches and did not
+intervene. New Windows Terminal tabs found the command without a Terminal
+restart; the tab that had run the install did not find it at first. The
+installer's message and the README now say to open a new window or tab. With
+this PC's execution policy, the operator saw no block when starting the marked
+copy without `-ExecutionPolicy Bypass`; the effective policy was not
+recorded, so the `RemoteSigned` refusal is not reproduced here.
+
+**After the second code review (task 8.4, round 9).** With the antivirus
+active during the installs, `tools/windows-validate.ps1 -Install` gave
+46 passed, 1 failed, 1 skipped on Windows PowerShell 5.1.26100.9818, then
+47 passed, 0 failed, 1 skipped on PowerShell 7.7.0. The failure: the user
+`PATH` ended with `;`, so the install appended the folder after it, and the
+uninstall removed the entry but not the restored trailing `;`. The other
+entries were unchanged. The 7.7 run, made afterwards on a `PATH` without the
+trailing `;`, restored it exactly. The install now keeps a trailing `;`
+trailing, and a shim case checks that removing the entry restores every tested
+value byte for byte. The string rule does not depend on Windows.
+
+Setup run from the installed copy still prints its Linux guidance
+(`export PATH=...`, `~/.bashrc`) before the entry's own next step, and every
+setup adds a `setup-*` tag to the runtime image (twelve in this round, all on
+the same image). Both are left for a later change.
+
+## Windows Podman machine support (`sandbox-ref-27`): 2026-11-20
+
+Change: `openspec/changes/archive/2026-11-20-support-windows-podman-machine/`. Operator runs on
+2026-11-19: Windows 10.0.26300.9974, WSL 2.5.10.0 (kernel 6.6.87.2-1,
+WSLg 1.0.66), the Podman Desktop machine `podman-machine-default` (Podman
+6.1.4, `cgroupfs`, user `user`), with an Ubuntu distribution running. The spike
+and repro scripts were throwaway operator scripts built from the branch working
+tree; they are not committed.
+
+**PowerShell and `wsl.exe` spike (task 1.2).** Windows PowerShell
+5.1.26100.9818 (Desktop) and PowerShell 7.7.0 (Core).
+
+| Check | Windows PowerShell 5.1 | PowerShell 7.7 |
+| --- | --- | --- |
+| `wsl.exe -l -q` | UTF-16 with NUL characters | the same |
+| `wsl.exe -l -q` with `WSL_UTF8=1` | no NUL; distribution found | the same |
+| `--cd ~ --exec /bin/bash <home-relative path>` | starts in `/home/user` | fails with 127: PowerShell replaces `~`, also in a splatted array |
+| `--exec /bin/sh -c 'cd && exec /bin/bash <home-relative path>'` | starts in `/home/user` | the same |
+| `--cd` with a drive path containing spaces | starts in the matching `/mnt/c/...` directory | the same |
+| Script `$args` binding | `''`, `"`, `a "b" c\`, `\`, `è` and an emoji kept; bare `--` consumed; `-x:y` split into `-x:` and `y`; `a,b` an `Object[]`; `5` an `Int32` | the same |
+| `$MyInvocation.ExpectingInput` | `True` with pipeline input, `False` otherwise | the same |
+| Arguments as base64 of NUL-terminated UTF-8 in one variable through `WSLENV` (`/u`) | 9 arguments, bytes unchanged | the same |
+| Variable size through `WSLENV` | 30000 and 32766 characters delivered | the same |
+| .NET `SetEnvironmentVariable` with 32767 and 32768 characters | both refused | both accepted |
+| `wslpath -a -u` in the distribution | `C:\` gives `/mnt/c/`; `Z:\...`, `\\server\share\x` and `\\wsl$\Ubuntu\home` fail with 1; `\\wsl.localhost\podman-machine-default\home` gives `/home` | the same |
+| Redirected native stderr under `$ErrorActionPreference = 'Stop'` | terminating `NativeCommandError` | no error |
+| `exit 7` in the distribution | `$LASTEXITCODE` 7 | the same |
+| Missing user; missing distribution | -1 with `Wsl/WSL_E_USER_NOT_FOUND`; -1 with `Wsl/Service/WSL_E_DISTRO_NOT_FOUND` | the same |
+| Missing script | 127 | the same |
+| Terminal | no TTY with captured stdout; TTY with inherited handles, `TERM=xterm-256color` | the same |
+| Stdin redirected by `cmd /c "... < file"` | bytes unchanged, NUL and CR included | the same |
+| Stdin piped by PowerShell (`a`, LF, `è`) | `EF BB BF 61 0A 3F 0D 0A`: byte order mark, `?`, CRLF | `61 0A C3 A8 0D 0A`: CRLF appended |
+| Ctrl+C | one SIGINT; `wsl.exe` returns 130; the script continues and `finally` runs | the same |
+| Absent variable restored by passing `$null` to `SetEnvironmentVariable` | removed | left defined and empty |
+| Window closed | `finally` does not run; the Linux process receives one SIGHUP and keeps running for the 12 s it was given | the same |
+
+**`podman rm` timeout (task 1.3).** Ten unrestricted sessions
+(`-c 'sleep 300'`) ran in the machine distribution from a checkout copy on
+ext4. Each was interrupted with SIGINT to its process group once its container
+ran, under shell job control so that the wrapper's INT trap ran as with Ctrl+C.
+Every session ended with status 130 about 2 s after the signal. One interval
+was negative because the distribution's clock was adjusted. No container
+remained and no log mentioned a timeout, so the timeout does not reproduce and
+no follow-up task was added. Each session announced that the memory and CPU
+budgets are not enforced under `cgroupfs` and that the process budget uses the
+process rlimit (512). An earlier attempt without job control left SIGINT
+ignored in the wrapper (status 1); it is not counted.
+
+**Consequences (task 1.4).** The specs and design were updated: the bootstrap
+starts through `sh -c 'cd && exec ...'` instead of `--cd ~`; the encoded
+arguments are limited to 32766 characters; empty variables count as unset on
+both versions; an absent variable is restored with `Remove-Item`; the probes
+capture stderr outside `Stop`; closing the window ends the session with the
+bounded shutdown; and pipeline input is refused on both versions.
+
+**Setup on the machine (task 8.2, first attempts).** Two failures came before
+a completed setup:
+
+- The distribution had been started by `wsl.exe` while Podman Desktop showed
+  the machine as stopped. `/run/user/1000` was missing, and every `podman` call
+  as `user` failed with status 125 (`creating events dirs: mkdir
+  /run/user/1000: permission denied`). The database keeps the run root
+  `/run/user/1000/containers`. After `wsl --terminate` and `podman machine
+  start`, `podman info` answered `true linux false` in about 2 s.
+- The engine checks then passed and the runtime image was built, but the smoke
+  check failed with status 125. It ran Podman with an empty `CONTAINER_HOST`,
+  which Podman 6.1.4 treats as a remote context. Task 4.5 leaves the variable
+  unset for the local endpoint.
+
+With task 4.5, setup completed in rounds 4 and 5 (`Sandbox: ready`, the smoke
+check passed, unrestricted, local endpoint), and the entry then printed
+`start sessions with .\sandbox-container.ps1 from a project directory`.
+
+**Antivirus.** While the round 4 snapshot was extracted with `tar` on Windows,
+the antivirus on the operator's PC quarantined
+`tests/fixtures/shell-agent/launcher.sh` as `Atc4.Detection`, a name used by
+Bitdefender's Advanced Threat Control. The file holds only variable
+assignments and only the Linux tests use it; setup and the Windows entry do
+not read it.
+
+**Runtime suite in the machine (task 8.3).** `bash tests/run-runtime.sh` ran
+twice, unrestricted, from a checkout copy on the distribution's ext4 file
+system, against a foreground API service that the operator script started at
+the socket path Podman reports (`/mnt/wslg/runtime-dir/podman/podman.sock`).
+Both runs gave the same result: 19 tests in about 140 s, 18 passed.
+`test_effective_hardening_and_budgets_in_every_unrestricted_variant` failed:
+
+- Its eight subtests read `/sys/fs/cgroup/memory.max`, which does not exist
+  under the `cgroupfs` manager. The launch notices stated, as expected since
+  `sandbox-ref-26`, that the memory and CPU budgets are not enforced and that
+  the process budget uses the process rlimit.
+- Its process-budget check with `PIDS_LIMIT=32` could not start the container
+  (`crun: clone: Resource temporarily unavailable`, status 125). Under the
+  rlimit fallback, 32 tasks of the session user leave no room for container
+  startup.
+
+The test assumes delegated cgroup controllers and does not yet cover an engine
+without them.
+
+**Validation script (task 8.2, round 4).** After setup completed, the operator
+ran `tools/windows-validate.ps1` from `C:\Work\sandbox-container`, with Ubuntu
+running and without `-StopMachine`:
+
+| Edition | Result |
+| --- | --- |
+| PowerShell 7.7.0 | 38 passed, 0 failed, 1 skipped (stopped machine) |
+| Windows PowerShell 5.1.26100.9818 | 37 passed, 1 failed, 1 skipped (stopped machine) |
+
+On Windows PowerShell 5.1, "Redirected input" failed. Started as
+`cmd /c "powershell -File <entry> -c od < input.bin"`, the entry saw
+`$MyInvocation.ExpectingInput` set and refused the input as pipeline input.
+PowerShell 7.7 passes the same case. The spike had checked `ExpectingInput`
+only for pipeline input. In the 5.1 summary every refusal showed
+`#< CLIXML` instead of its message: children started with `-EncodedCommand`
+write CLIXML progress records to stderr. The checks search the whole output,
+so the results stand, and the script now leaves that block out of the summary.
+
+By hand, from `C:\Users\yari\test`, in both editions, with
+`sandbox-container.ps1 -c 'sleep 60'`:
+
+- Ctrl+C: status 130;
+- closing the window: afterwards `podman ps -a` in the distribution listed no
+  container.
+
+**Redirected input on Windows PowerShell 5.1 (round 5).** `stdin-check.ps1`
+redirected `61 0a c3 a8 0d 0a 00 7a` through `cmd.exe` to a script that ran
+`wsl.exe ... od -An -tx1`:
+
+| Started as | `ExpectingInput` | `IsInputRedirected` | Bytes in the distribution |
+| --- | --- | --- | --- |
+| `powershell.exe -File` | True | True | unchanged |
+| `powershell.exe -Command "& <script>"` | False | True | unchanged |
+| `pwsh.exe -File` | False | True | unchanged |
+| `pwsh.exe -Command "& <script>"` | False | True | unchanged |
+
+Windows PowerShell 5.1 therefore reports the redirected input of a `-File`
+script as pipeline input but does not read it. The shim now accepts that case
+(design D3), and `tests/windows/shim_tests.ps1` covers it.
+
+**Validation script (task 8.2, round 5).** After a new setup:
+
+| Edition | Result |
+| --- | --- |
+| PowerShell 7.7.0, `-StopMachine` | 43 passed, 2 failed |
+| Windows PowerShell 5.1.26100.9818 | 37 passed, 1 failed (redirected input, fixed since), 1 skipped |
+
+With `-StopMachine`, every refusal passed: a stopped machine (status 1, the
+distribution stayed stopped), help with a stopped machine (status 0), and a
+distribution started by `wsl.exe` alone, for launch and for setup. The
+restart failed: `podman machine start`, run right after `wsl --terminate`,
+stopped with `the WSL bootstrap script failed ... exit status 0xffffffff`
+(status 125), and the launch after it found the machine stopped. The next
+`wsl.exe` call failed with `Wsl/Service/CreateInstance/HCS_E_CONNECTION_TIMEOUT`
+until `wsl --shutdown` and `podman machine start`. The script now waits until
+WSL no longer lists the distribution as running, plus 5 s, and retries the
+start once.
+
+**Validation script (task 8.2, round 6).** Windows PowerShell 5.1.26100.9818
+with `-StopMachine`, Ubuntu running: 44 passed, 0 failed, 0 skipped, read from
+the console. Redirected input passed (`610ac3a80d0a007a`), and so did every
+stopped-machine case and the restart with `podman machine start`. The final
+cleanup then failed, because a process kept a folder of the work directory as
+its current directory after the restart, so the summary file was not written.
+The script now reports such a folder and still writes the summary, and runs
+`podman machine start` from the profile directory.
+
+With that script, the operator reran both editions:
+
+| Edition | Result |
+| --- | --- |
+| Windows PowerShell 5.1.26100.9818, `-StopMachine` | 44 passed, 0 failed, 0 skipped |
+| PowerShell 7.7.0 | 38 passed, 0 failed, 1 skipped (stopped machine; its refusals passed on PowerShell 7.7 in round 5) |
+
+Both runs noted that the work directory could not be removed: its
+`project with spaces` folder, from which the first session after the restart
+ran, stayed in use while WSL ran. A WSL process probably keeps it as its
+current directory; `wsl --shutdown` releases it. The README states this limit.
+
+**Shared suites (task 9.1).** The branch working tree and a `git archive main`
+copy ran on the same runner (Python 3.11.2, `SANDBOX_TEST_TMPDIR` on native
+executable storage, whose long path makes `AF_UNIX` socket paths too long):
+
+| Suite | Branch | `main` |
+| --- | --- | --- |
+| `test_launcher.py` | 109 tests; 1 environment failure (`AF_UNIX path too long`, provider session) | 107 tests; the same failure |
+| `test_wrapper.py` | 6 passed | 6 passed |
+| `test_session.py` | 20 tests; 13 environment failures (`AF_UNIX path too long`) | the same 13 |
+| `test_setup.py` | 78 passed | 68 passed |
+| `test_setup_wrapper.py` | 9 passed | 8 passed |
+| `test_qualification.py` | 31 passed, 7 skipped | 1 error (`ProcessLookupError` in `test_bounded_subprocess_group_cleanup`, a cleanup race that passed on the branch) |
+| `test_agent_profile.py` | 21 passed, 3 skipped | 21 passed, 3 skipped |
+| `test_alignment.py` | 21 passed | 17 passed, 1 skipped |
+| `test_windows_bootstrap.py` | 7 passed | absent |
+
+`bash tools/shellcheck.sh` passed on both trees. `bash tools/powershell.sh .`
+reported no PSScriptAnalyzer finding and 35 shim cases passed, and
+`git diff --check` was clean. The branch adds no failure; the environment
+failures are the ones recorded for earlier tags.
+
+**Runner modes (task 9.2).** On the same runner and engine (Podman client
+4.3.1, server 4.9.3, `systemd` manager, controllers `[cpu memory pids]`),
+with the runtime image whose build-inputs hash `b50c3422…` matches this tree.
+The guard toolchain image `localhost/sandbox-container-guard-toolchain:development`
+came from the build cache (`101d7cad…`, the image the other wrappers' setups had
+built from the same recipe), so nothing was downloaded.
+
+| Mode | Result |
+| --- | --- |
+| `--shared` (unit discovery) | 469 tests, 69 skipped; the 14 `AF_UNIX path too long` environment failures of task 9.1 (13 in `test_session.py`, 1 in `test_launcher.py`), and the `test_bounded_subprocess_group_cleanup` cleanup race (`/proc/<pid>/stat` gone), which also failed once on `main` in task 9.1 and passed in the branch's own run |
+| `--setup` | Passed: 78 tests |
+| `--setup-runtime` | Passed: 2 tests in 125 s |
+| `--qualification` | Passed: 31 tests in 147 s, 1 skipped (no authentication method in the profile) |
+| `--guard` | Passed: 20 tests in 109 s, 1 skipped (`--guard-idle`) |
+| `--network` | Passed: 16 tests in 344 s, 1 skipped (toolchain examples) |
+
+**After the code review (task 10.5, local part).** Same runner, engine and
+images, after the fixes of tasks 10.1 to 10.4:
+
+| Check | Result |
+| --- | --- |
+| `bash tools/shellcheck.sh .` | Passed |
+| `bash tools/powershell.sh .` | Passed: no finding, 37 shim cases |
+| `--shared` (unit discovery) | 472 tests, 69 skipped; only the 14 `AF_UNIX path too long` environment failures |
+| `--setup` | Passed: 80 tests |
+| `--setup-runtime` | Passed: 2 tests in 132 s |
+| `--qualification` | Passed: 31 tests in 108 s, 1 skipped |
+| `--guard` | Passed: 20 tests in 112 s, 1 skipped |
+| `--network` | Passed: 16 tests in 304 s, 1 skipped |
+| `bash tests/run-runtime.sh` | Passed: 19 tests in 254 s |
+
+**After the code review (task 10.5, Windows round 7).** After a new setup, with
+Ubuntu running and the work folder next to the checkout
+(`C:\Work\sandbox-container-windows-validate`):
+
+| Edition | Result |
+| --- | --- |
+| Windows PowerShell 5.1.26100.9818, `-StopMachine` | 46 passed, 0 failed, 0 skipped |
+| PowerShell 7.7.0 | 40 passed, 0 failed, 1 skipped (stopped machine) |
+
+The new cases refused `Documents` (`/mnt/c/Users/yari/Documents`) and a
+folder inside `AppData` (`/mnt/c/Users/yari/AppData/Local`) in both editions.
+Redirected input passed in both, and so did every stopped-machine case and the
+restart with Podman on 5.1. As in round 6, the project folder of the first
+session after the restart stayed in use until WSL stopped, so both runs noted
+that the work folder was not removed.
+
+**Runtime budget test that follows the engine (task 8.4).** On this runner
+(Podman client 4.3.1, server 4.9.3, `systemd` manager, controllers
+`[cpu memory pids]`, kernel `6.18.58.1-microsoft-standard-WSL2`), with the
+installed runtime image whose build-inputs hash `b50c3422…` matches this tree,
+`bash tests/run-runtime.sh` passed: 19 tests in 229 s. The changed test
+takes the delegated branch there. In the machine distribution (round 5,
+`cgroupfs`, after a fresh setup), `run-runtime.ps1` ran the suite from an ext4
+checkout copy, once started from each PowerShell edition: 19 tests passed in
+149 s and in 145 s, so the `cgroupfs` branch with the process rlimit holds too.
+
 ## Terminal attach with an engine-forced read-only `/dev`: 2026-11-10
 
 Change: `openspec/changes/allow-terminal-on-read-only-dev/`.
