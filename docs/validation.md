@@ -24,6 +24,7 @@ offline session. `tools/` is never copied, so no tag is needed.
 | --- | --- |
 | Dry run with the fixture agent profile and a fake `wsl.exe` that reports provider networking | "Offline qualification" ran `--container-qualify` with `FIXTURE_AGENT_NETWORK=offline` before the offline session, which started with `--container-shell`. A fake `cmd.exe` recorded `... fixture-agent.ps1 --container-shell -c od -An -tx1 < ...` |
 | `bash tools/powershell.sh .` | Passed: no finding, 62 shim cases |
+| Operator rerun on Windows with `C:\Work\claude-container` (Claude saved provider networking) | 43 passed, 0 failed, 3 skipped on Windows PowerShell 5.1 and on PowerShell 7. "Offline qualification", "Offline session" and "Redirected input" passed |
 
 ## Windows guidance for agent wrappers (`sandbox-ref-28`): 2026-11-22
 
