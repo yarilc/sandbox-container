@@ -321,6 +321,11 @@ try {
     Test-Outcome 'Explicit unrestricted networking' (Invoke-Case ('$env:' + $P + '_NETWORK = ''unrestricted''; & $E @C -c ''printf ok''')) 0 'ok'
     if ($savedMode -eq 'offline' -or $savedMode -eq 'provider') {
         $connect = 'if (exec 3<>/dev/tcp/1.1.1.1/443) 2>/dev/null; then echo reached; else echo blocked; fi'
+        if ($savedMode -eq 'provider') {
+            # Qualification reports are per network mode, and setup qualified
+            # provider only: an offline session needs its own qualification.
+            Test-Outcome 'Offline qualification' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E --container-qualify')) 0 'status='
+        }
         Test-Outcome 'Offline session (no network access)' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E @C -c ' +
             (ConvertTo-Literal $connect))) 0 'blocked'
         Test-Outcome 'Qualification' (Invoke-Case '& $E --container-qualify') 0 'status='
@@ -379,8 +384,11 @@ try {
     if (Get-Command -Name 'cmd.exe' -CommandType Application -ErrorAction SilentlyContinue) {
         $inputFile = Join-Path $work 'input.bin'
         [IO.File]::WriteAllBytes($inputFile, [byte[]](0x61, 0x0a, 0xc3, 0xa8, 0x0d, 0x0a, 0x00, 0x7a))
+        # An agent wrapper needs --container-shell for -c to reach Bash, as $C does above.
+        $shellArgument = ''
+        if ($shellOption) { $shellArgument = $shellOption + ' ' }
         $r = Invoke-Process 'cmd.exe' ('/d /s /c ""' + $exe + '" -NoProfile -NonInteractive -File "' + $entry +
-            '" -c "od -An -tx1" < "' + $inputFile + '""') $project
+            '" ' + $shellArgument + '-c "od -An -tx1" < "' + $inputFile + '""') $project
         $hex = ($r.Out -replace '\s', '')
         if ($r.Code -eq 0 -and $hex.EndsWith('610ac3a80d0a007a')) { Add-Result 'PASS' 'Redirected input' $hex }
         else { Add-Result 'FAIL' 'Redirected input' ('status ' + $r.Code + ' got ' + $hex + '; err: ' + (Get-FirstLine $r.Err)) }

@@ -1,5 +1,30 @@
 # Validation record
 
+## `windows-validate.ps1` with an agent wrapper (no tag): 2026-11-22
+
+The Claude adoption of `sandbox-ref-28` ran `tools/windows-validate.ps1
+-Checkout C:\Work\claude-container` on Windows (`claude-container`,
+`docs/validation.md`). Two cases failed in both editions because of the
+script, not of the sandbox:
+
+- **Redirected input** runs the entry through `cmd.exe`, not through `& $E`,
+  so it lacked `--container-shell`. Its `-c` reached Claude, which answered the
+  input as a prompt.
+- **Offline session** assumed that an offline launch works after setup.
+  Qualification reports are stored per identity, which includes the network
+  mode. A setup that saved provider networking qualifies provider only, so the
+  launcher asked to rerun `--container-qualify`, as it does on Linux.
+
+The script now passes `--container-shell` in the `cmd.exe` case for an agent
+profile. When setup saved provider networking, it runs an "Offline
+qualification" case (`<P>_NETWORK=offline --container-qualify`) before the
+offline session. `tools/` is never copied, so no tag is needed.
+
+| Check | Result |
+| --- | --- |
+| Dry run with the fixture agent profile and a fake `wsl.exe` that reports provider networking | "Offline qualification" ran `--container-qualify` with `FIXTURE_AGENT_NETWORK=offline` before the offline session, which started with `--container-shell`. A fake `cmd.exe` recorded `... fixture-agent.ps1 --container-shell -c od -An -tx1 < ...` |
+| `bash tools/powershell.sh .` | Passed: no finding, 62 shim cases |
+
 ## Windows guidance for agent wrappers (`sandbox-ref-28`): 2026-11-22
 
 Change: `openspec/changes/archive/2026-11-22-fix-windows-agent-guidance/`. Planning the Claude
