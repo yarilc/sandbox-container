@@ -1,5 +1,38 @@
 # Validation record
 
+## Windows guidance for agent wrappers (`sandbox-ref-28`): 2026-11-22
+
+Change: `openspec/changes/fix-windows-agent-guidance/`. Planning the Claude
+adoption found three gaps that only an agent wrapper shows:
+
+- **Setup authentication steps.** Started by the Windows entry, setup now
+  names the steps for PowerShell. A postponed login is `<name>.ps1` with the
+  login arguments, quoted for PowerShell. The API method names
+  `$env:<KEY> = '...'` before `<name>.ps1`. Linux output is unchanged.
+- **`tools/windows-validate.ps1`.** For a profile whose command is not
+  `bash`, the command cases run with `--container-shell`. Before, `-c` would
+  have reached the agent.
+- **`tools/propagate.py`.** It recognizes a runner mode tested as
+  `== --mode ||`. Claude's `--guard` was missing from the dry run.
+
+Shared files changed since `sandbox-ref-27`: `setup/setup.py` and
+`tests/test_setup.py`. Neither is in `SHARED_CODE`, so `--qualification` is
+not required. Same runner as the `sandbox-ref-27` record below.
+
+| Check | Result |
+| --- | --- |
+| `--shared` (unit discovery) | 498 tests, 74 skipped. The 14 `AF_UNIX path too long` environment failures as before. `test_ignored_signals_force_owned_removal` (`INT`) failed again on timing, as recorded for `sandbox-ref-27`. `test_shared_components_contain_no_sibling_identifiers` found `--claudeai` in the new PowerShell quoting case; the case now uses a neutral value, and the alignment, setup and propagation suites pass (119 tests) |
+| `--setup` | Passed: 88 tests, including `test_windows_entry_names_the_powershell_authentication_steps` and `test_powershell_words_are_quoted_only_when_needed`, which fail without the change |
+| `--setup-runtime` | Passed: 2 tests in 155 s |
+| `tests/test_propagate.py` | Passed: 10 tests, including `test_runner_modes_in_if_conditions`, which fails without the change. With Claude's runner, the checklist for `network/guard.c`, `setup/setup.py` and `network/qualification_records.py` lists `--setup`, `--setup-runtime`, `--qualification`, `--guard` and `--network`. The full dry run to `claude-container` ran in that adoption's first task, after its change directory was committed |
+| `tools/windows-validate.ps1` dry run (fake `wsl.exe` that decodes the first argument) | With the fixture agent profile, all 12 launches start with `--container-shell`, and the by-hand line names `fixture-agent.ps1 --container-shell -c 'stty size'`. With the reference profile, none does. Same 13 passed, 17 failed, 9 skipped as before, the failures expected from the fake |
+| `bash tools/shellcheck.sh .`, `bash tools/powershell.sh .`, `git diff --check` | Passed: no finding, 62 shim cases |
+
+The runtime image was `localhost/sandbox-container:setup-c496ace9b5e94548b7f86f4a0bcbd8bc`,
+through `SANDBOX_CONTAINER_IMAGE`, as for `sandbox-ref-27`. The reference
+profile has no authentication method, so its Windows run cannot show the new
+steps. The Claude adoption checks them on Windows.
+
 ## Reference tag `sandbox-ref-27`: 2026-11-22
 
 Windows support on a Podman machine (WSL provider). The tag holds these

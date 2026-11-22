@@ -813,12 +813,24 @@ def smoke_in(value, release, workspace):
         raise SetupError('Installed sandbox smoke check did not confirm readiness.')
 
 
+def powershell_word(text):
+    # An argument as PowerShell passes it on: bare when that is safe, otherwise
+    # single-quoted with doubled quotes. ':' and ',' change PowerShell parsing.
+    if text != '--' and re.fullmatch(r'[A-Za-z0-9_./=@%+-]+', text):
+        return text
+    return "'" + text.replace("'", "''") + "'"
+
+
 def authenticate(value, release):
     # Offline sessions reach no provider, and a profile without methods has none.
     status = 'not applicable' if value['network'] == 'offline' or value['auth'] == 'none' else 'pending'
     if status == 'not applicable':
         return status
-    command = shlex.quote(value['command'])
+    # From the Windows entry, the next steps run in PowerShell with <name>.ps1,
+    # not with the managed command in the distribution.
+    windows = windows_entry()
+    entry = PROFILE.name + '.ps1'
+    command = entry if windows else shlex.quote(value['command'])
     method = value['auth']
     item = PROFILE.auth[method]
     if 'login_args' in item:
@@ -847,11 +859,16 @@ def authenticate(value, release):
                 print('Next authentication action: ' + command
                       + ' (sign in inside the interactive session, or reuse your selected existing account state).')
             else:
-                print('Next authentication action: ' + command + ' ' + ' '.join(map(shlex.quote, login))
+                quote = powershell_word if windows else shlex.quote
+                print('Next authentication action: ' + command + ' ' + ' '.join(map(quote, login))
                       + ' (or reuse your selected existing account state).')
     if 'credential_env' in item:
-        print('Authentication pending. Supply ' + item['credential_env']
-              + ' using the existing runtime environment mechanism; no key is stored by setup.')
+        if windows:
+            print('Authentication pending. Set $env:' + item['credential_env'] + " = '...' in PowerShell before "
+                  + entry + '; no key is stored by setup.')
+        else:
+            print('Authentication pending. Supply ' + item['credential_env']
+                  + ' using the existing runtime environment mechanism; no key is stored by setup.')
         if value['network'] == 'unrestricted':
             print('The current direct API-key forwarding mechanism is provider mode; select provider/' + method
                   + ' for environment-key forwarding, or configure ' + NAME + ' credentials explicitly.')

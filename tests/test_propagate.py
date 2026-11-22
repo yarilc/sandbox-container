@@ -228,6 +228,20 @@ class Propagation(unittest.TestCase):
         self.assertEqual(line, 'Run in the target: bash tests/run-runtime.sh --shared; bash tests/run-runtime.sh --setup; '
                                'bash tests/run-runtime.sh --guard; bash tests/run-runtime.sh --network')
 
+    def test_runner_modes_in_if_conditions(self):
+        # Claude's runner tests modes in [[ ... ]] conditions, two of them joined by ||.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('propagate_tool', TOOL)
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        runner = self.target / 'tests/run-runtime.sh'
+        runner.write_text('if [[ "${1:-}" == --wrapper ]]; then\n    pattern=w\n'
+                          'elif [[ "${1:-}" == --setup ]]; then\n    pattern=s\n'
+                          'elif [[ "${1:-}" == --guard || "${1:-}" == --guard-idle ]]; then\n    pattern=g\nfi\n')
+        self.assertEqual(tool.runner_modes(self.target), {'--wrapper', '--setup', '--guard', '--guard-idle'})
+        self.assertEqual(tool.checklist(self.target, ['network/guard.c']),
+                         ['python3 -m unittest tests.test_reference_copy tests.test_alignment', '--guard'])
+
     def test_preconditions_refuse_without_writing(self):
         cases = []
         (self.target / 'README.md').write_text('local edit\n')
