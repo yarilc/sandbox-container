@@ -1620,6 +1620,42 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
                 self.assertEqual(setup.authenticate(value, release), expected)
                 run.assert_not_called()
 
+    def test_powershell_words_are_quoted_only_when_needed(self):
+        for text, expected in (('login', 'login'), ('--provider-login', '--provider-login'), ('a b', "'a b'"), ("it's", "'it''s'"),
+                               ('a,b', "'a,b'"), ('-x:y', "'-x:y'"), ('--', "'--'"), ('', "''")):
+            self.assertEqual(setup.powershell_word(text), expected)
+
+    def test_windows_entry_names_the_powershell_authentication_steps(self):
+        # Setup started by the Windows entry: the pending steps name <name>.ps1 and
+        # PowerShell's $env:, never the managed command in the distribution.
+        _, release = self.release()
+        entry = PROFILE.name + '.ps1'
+        interactive = {'description': 'signs in interactively', 'policy_profile': 'interactive-test',
+                       'hosts': ['login.example.com'], 'login_args': []}
+        method = next(iter(PROFILE.auth))
+        cases = [(KEY_METHOD, {}, 'Authentication pending. Set $env:' + CREDENTIAL + " = '...' in PowerShell before "
+                  + entry + '; no key is stored by setup.'),
+                 (method, {method: interactive}, 'Next authentication action: ' + entry + ' (sign in inside the interactive session')]
+        if LOGIN_METHOD:
+            cases.append((LOGIN_METHOD, {}, 'Next authentication action: ' + entry + ' '
+                          + ' '.join(map(setup.powershell_word, LOGIN_ARGS)) + ' (or reuse'))
+        for auth, methods, expected in cases:
+            for windows in (True, False):
+                env = self.env | ({'WRAPPER_WINDOWS_SETUP': '1'} if windows else {})
+                value = self.value | {'network': 'provider', 'auth': auth}
+                with self.subTest(auth=auth, windows=windows), patch.dict(setup.PROFILE.auth, methods), \
+                        patch.dict(os.environ, env, clear=True), patch.object(setup, 'yes', return_value=False), \
+                        patch.object(setup, 'run') as run, patch('builtins.print') as output:
+                    self.assertEqual(setup.authenticate(value, release), 'pending')
+                    run.assert_not_called()
+                    printed = '\n'.join(' '.join(map(str, call.args)) for call in output.call_args_list)
+                    if windows:
+                        self.assertIn(expected, printed)
+                        self.assertNotIn(value['command'], printed)
+                    else:
+                        self.assertNotIn(entry, printed)
+                        self.assertNotIn('$env:', printed)
+
     def test_empty_login_arguments_start_the_interactive_agent(self):
         # A profile whose agent has no login command declares empty login_args:
         # setup offers a sign-in session through the installed wrapper itself.

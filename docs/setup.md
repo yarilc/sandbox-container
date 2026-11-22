@@ -382,7 +382,15 @@ and the service check and the user manager work as on Linux.
 No Windows variable is forwarded to setup, except `WRAPPER_WINDOWS_SETUP=1`.
 That marker makes setup leave out the Linux `PATH` guidance and the
 managed-command lines, and print that the Windows entry starts sessions; the
-entry then prints the exact command.
+entry then prints the exact command. In an agent wrapper, the pending
+authentication steps are for PowerShell too:
+
+- a login that the user postpones is `<name>.ps1` followed by the login
+  arguments, for example `claude-container.ps1 auth login --claudeai`, or
+  `<name>.ps1` alone for an interactive sign-in;
+- an API key method asks to set `$env:<KEY> = '...'` in PowerShell before
+  `<name>.ps1`, for example `$env:ANTHROPIC_API_KEY`. The entry forwards that
+  variable by name.
 
 `.\sandbox-container.ps1 --container-install` runs the same checks, copies
 the checkout's setup inputs and Windows scripts into

@@ -175,7 +175,8 @@ def runner_modes(target):
     text = path.read_text()
     labels = re.findall(r'^\s*(--[a-z][a-z-]*)(?:\|[^)]*)?\)', text, re.M)
     labels += re.findall(r'\|(--[a-z][a-z-]*)\)', text)
-    labels += re.findall(r'==\s*(--[a-z][a-z-]*)\s*\]\]', text)
+    # [[ "$1" == --mode ]], also when || joins a second test of the same argument.
+    labels += re.findall(r'==\s*(--[a-z][a-z-]*)\s*(?:\]\]|\|\|)', text)
     return set(labels)
 
 

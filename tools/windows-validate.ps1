@@ -39,6 +39,10 @@ $Checkout = (Resolve-Path -LiteralPath $Checkout).ProviderPath
 $wrapperProfile = [IO.File]::ReadAllText([IO.Path]::Combine($Checkout, 'agent', 'profile.json')) | ConvertFrom-Json
 $name = $wrapperProfile.name
 $P = $wrapperProfile.env_prefix
+# An agent wrapper passes every other argument to its agent, so -c reaches Bash
+# only after --container-shell. The cases splat $C before -c.
+$shellOption = ''
+if ($wrapperProfile.native.command -cne 'bash') { $shellOption = '--container-shell' }
 $entry = [IO.Path]::Combine($Checkout, $name + '.ps1')
 $exe = (Get-Process -Id $PID).Path
 $distro = [Environment]::GetEnvironmentVariable($P + '_WSL_DISTRO')
@@ -112,6 +116,7 @@ function Get-CaseArgument([string]$Body, [string]$Location) {
     $lines = @(
         '$ErrorActionPreference = ''Continue''',
         ('$E = ' + (ConvertTo-Literal $entry)),
+        ('$C = @(' + $(if ($shellOption) { ConvertTo-Literal $shellOption } else { '' }) + ')'),
         ('foreach ($k in @([Environment]::GetEnvironmentVariables().Keys)) { if (([string]$k).StartsWith(' +
             (ConvertTo-Literal ($P + '_')) + ') -and -not ([string]$k).StartsWith(' + (ConvertTo-Literal ($P + '_WSL_')) +
             ')) { Remove-Item -LiteralPath (''Env:'' + $k) } }'),
@@ -239,30 +244,30 @@ try {
     Add-Result 'PASS' 'Setup state' ('release bootstrap present: ' + $bootstrap)
     if ($others.Count -eq 0) { Add-Result 'SKIP' 'Another distribution is active' 'start another WSL distribution and rerun' }
 
-    $r = Invoke-Case '& $E -c ''printf ok'''
+    $r = Invoke-Case '& $E @C -c ''printf ok'''
     Test-Outcome 'Ordinary launch; Mode from setup' $r 0 'network mode='
     $savedMode = ''
     if (($r.Out + "`n" + $r.Err) -match 'network mode=([a-z]+)') { $savedMode = $Matches[1] }
     if ($others.Count -gt 0) { Test-Outcome ('Another distribution is active (' + ($others -join ', ') + ')') $r 0 'ok' }
 
-    Test-Outcome 'Exit status' (Invoke-Case '& $E -c ''exit 7''') 7 ''
+    Test-Outcome 'Exit status' (Invoke-Case '& $E @C -c ''exit 7''') 7 ''
 
     # Arguments, compared as hex so that console code pages do not matter.
     $nonAscii = [string][char]0x00E8 + [char]::ConvertFromUtf32(0x1F600)
-    $r = Invoke-Case ('& $E -c ''for a; do printf "[%s]\n" "$(printf %s "$a" | od -An -tx1 | tr -d " \n")"; done'' _ x '''' ''a "b" c\'' ''--'' ' +
+    $r = Invoke-Case ('& $E @C -c ''for a; do printf "[%s]\n" "$(printf %s "$a" | od -An -tx1 | tr -d " \n")"; done'' _ x '''' ''a "b" c\'' ''--'' ' +
         '([string][char]0x00E8 + [char]::ConvertFromUtf32(0x1F600))')
     $expected = (@('x', '', 'a "b" c\', '--', $nonAscii) | ForEach-Object { '[' + (ConvertTo-Hex $_) + ']' }) -join ','
     $got = (@($r.Out -split "`r?`n" | Where-Object { $_ -match '^\[' }) -join ',')
     if ($r.Code -eq 0 -and $got -eq $expected) { Add-Result 'PASS' 'Quotes and empty values; Non-ASCII argument' $got }
     else { Add-Result 'FAIL' 'Quotes and empty values; Non-ASCII argument' ('status ' + $r.Code + ' got ' + $got + ' expected ' + $expected + '; err: ' + (Get-FirstLine $r.Err)) }
-    Test-Outcome 'Unquoted comma' (Invoke-Case '& $E -c true a,b') 1 'is a list'
+    Test-Outcome 'Unquoted comma' (Invoke-Case '& $E @C -c true a,b') 1 'is a list'
     Test-Outcome 'Oversized arguments' (Invoke-Case '& $E (''a'' * 24573)') 1 '32766'
-    Test-Outcome 'Pipeline input' (Invoke-Case '''x'' | & $E -c cat') 1 'pipeline input is unsupported'
+    Test-Outcome 'Pipeline input' (Invoke-Case '''x'' | & $E @C -c cat') 1 'pipeline input is unsupported'
 
     # Environment: forwarded by name, reserved, unrelated and empty variables, restoration.
     $r = Invoke-Case (('$env:{0}_ENV_VARS = ''VALIDATE_LISTED VALIDATE_EMPTY PATH''; $env:VALIDATE_LISTED = ''listed value''; ' +
         '$env:VALIDATE_UNLISTED = ''x''; [Environment]::SetEnvironmentVariable(''VALIDATE_EMPTY'', ''''); ' +
-        '$env:WSLENV = ''USERPROFILE/p''; & $E -c ''printf "%s|%s|%s\n" "${{VALIDATE_LISTED-unset}}" "${{VALIDATE_UNLISTED-unset}}" "${{VALIDATE_EMPTY-unset}}"''; ' +
+        '$env:WSLENV = ''USERPROFILE/p''; & $E @C -c ''printf "%s|%s|%s\n" "${{VALIDATE_LISTED-unset}}" "${{VALIDATE_UNLISTED-unset}}" "${{VALIDATE_EMPTY-unset}}"''; ' +
         '$c = $LASTEXITCODE; ''WSLENV='' + $env:WSLENV; ''ABSENT='' + (Test-Path Env:WRAPPER_WINDOWS_ARGS) + (Test-Path Env:WRAPPER_WINDOWS_ENTRY); exit $c') -f $P)
     Test-Outcome 'Listed variable; Unrelated Windows variable; Empty value' $r 0 'listed value|unset|unset'
     Test-Outcome 'Name reserved by the distribution' $r 0 'PATH is not forwarded'
@@ -272,7 +277,7 @@ try {
     # Working directory.
     $drive = $project.Substring(0, 1).ToLowerInvariant()
     $mount = '/mnt/' + $drive + $project.Substring(2).Replace('\', '/')
-    Test-Outcome 'Drive path with spaces' (Invoke-Case '& $E -c pwd') 0 $mount
+    Test-Outcome 'Drive path with spaces' (Invoke-Case '& $E @C -c pwd') 0 $mount
     $inside = '\\wsl.localhost\' + $distro + '\tmp'
     if (Test-Path -LiteralPath $inside) {
         Test-Outcome 'Path inside a WSL distribution' (Invoke-Case '& $E' $inside) 1 'inside a WSL distribution'
@@ -313,17 +318,17 @@ try {
 
     # Modes: as setup prepared them; delegation stays refused.
     Test-Outcome 'Delegation requested' (Invoke-Case ('$env:' + $P + '_PODMAN = ''1''; & $E')) 1 ('Podman delegation (' + $P + '_PODMAN=1) is unsupported on Podman machine')
-    Test-Outcome 'Explicit unrestricted networking' (Invoke-Case ('$env:' + $P + '_NETWORK = ''unrestricted''; & $E -c ''printf ok''')) 0 'ok'
+    Test-Outcome 'Explicit unrestricted networking' (Invoke-Case ('$env:' + $P + '_NETWORK = ''unrestricted''; & $E @C -c ''printf ok''')) 0 'ok'
     if ($savedMode -eq 'offline' -or $savedMode -eq 'provider') {
         $connect = 'if (exec 3<>/dev/tcp/1.1.1.1/443) 2>/dev/null; then echo reached; else echo blocked; fi'
-        Test-Outcome 'Offline session (no network access)' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E -c ' +
+        Test-Outcome 'Offline session (no network access)' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E @C -c ' +
             (ConvertTo-Literal $connect))) 0 'blocked'
         Test-Outcome 'Qualification' (Invoke-Case '& $E --container-qualify') 0 'status='
         Add-Result 'SKIP' 'Restricted mode without a prepared installation' ('setup saved ' + $savedMode +
             ' networking; run the script again after an unrestricted setup')
     } else {
         # The launcher's guidance names the Windows step, not the wrapper path in the machine.
-        Test-Outcome 'Restricted mode without a prepared installation' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E -c true')) 1 ('setup required: offline sessions need a protected installation; run ' + $name + '.ps1 --container-setup from Windows')
+        Test-Outcome 'Restricted mode without a prepared installation' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E @C -c true')) 1 ('setup required: offline sessions need a protected installation; run ' + $name + '.ps1 --container-setup from Windows')
         Add-Result 'SKIP' 'Offline session; Qualification' ('setup saved ' + $savedMode + ' networking; run .\' + $name +
             '.ps1 --container-setup with offline networking, then the script again')
     }
@@ -331,7 +336,7 @@ try {
     # One engine: the machine's launch service runs a command in, and removes, a
     # running session's container. Other running sessions of this wrapper would
     # also match the label.
-    $background = Invoke-BackgroundCase '& $E -c ''sleep 60'''
+    $background = Invoke-BackgroundCase '& $E @C -c ''sleep 60'''
     $container = ''
     for ($i = 0; $i -lt 45 -and -not $container; $i++) {
         Start-Sleep -Seconds 2
@@ -359,14 +364,14 @@ try {
     if (-not $background.Process.HasExited) { $background.Process.Kill() }
 
     # Entry directory outside writable mounts.
-    Test-Outcome 'Launch from the checkout' (Invoke-Case '& $E -c true' $Checkout) 1 'overlaps the writable mount'
-    Test-Outcome 'Different letter case' (Invoke-Case '& $E -c true' $Checkout.ToUpperInvariant()) 1 'overlaps the writable mount'
+    Test-Outcome 'Launch from the checkout' (Invoke-Case '& $E @C -c true' $Checkout) 1 'overlaps the writable mount'
+    Test-Outcome 'Different letter case' (Invoke-Case '& $E @C -c true' $Checkout.ToUpperInvariant()) 1 'overlaps the writable mount'
     if (Test-Path -LiteralPath $sibling) {
         Add-Result 'SKIP' 'Sibling checks' ($sibling + ' already exists')
     } else {
         [void](New-Item -ItemType Directory -Path $sibling)
-        Test-Outcome 'Worktree scope with a sibling checkout' (Invoke-Case '& $E --container-git-worktree -c true' $sibling) 1 'overlaps the writable mount'
-        Test-Outcome 'Sibling without worktree scope' (Invoke-Case '& $E -c ''printf ok''' $sibling) 0 'ok'
+        Test-Outcome 'Worktree scope with a sibling checkout' (Invoke-Case '& $E @C --container-git-worktree -c true' $sibling) 1 'overlaps the writable mount'
+        Test-Outcome 'Sibling without worktree scope' (Invoke-Case '& $E @C -c ''printf ok''' $sibling) 0 'ok'
         Remove-Item -LiteralPath $sibling -Recurse -Force
     }
 
@@ -420,7 +425,7 @@ try {
             # A new window reads PATH from the registry; so does this child.
             $fresh = '$env:Path = [Environment]::GetEnvironmentVariable(''Path'', ''Machine'') + '';'' + ' +
                 '[Environment]::GetEnvironmentVariable(''Path'', ''User''); '
-            Test-Outcome 'Command on the user PATH (new window)' (Invoke-Case ($fresh + '& ' + $name + ' -c ''printf ok''')) 0 'ok'
+            Test-Outcome 'Command on the user PATH (new window)' (Invoke-Case ($fresh + '& ' + $name + ' @C -c ''printf ok''')) 0 'ok'
             Test-Outcome 'Install from the installed copy' (Invoke-Case ('& ' + (ConvertTo-Literal $installedEntry) +
                 ' --container-install')) 1 'this is the installed copy'
             $removed = Invoke-Case ('& ' + (ConvertTo-Literal $installedEntry) + ' --container-uninstall')
@@ -455,7 +460,7 @@ try {
 
     if ($StopMachine) {
         Invoke-DistributionStop
-        Test-Outcome 'Stopped machine' (Invoke-Case '& $E -c ''printf ok''') 1 'podman machine start'
+        Test-Outcome 'Stopped machine' (Invoke-Case '& $E @C -c ''printf ok''') 1 'podman machine start'
         Test-Outcome 'Help with a stopped machine' (Invoke-Case '& $E --container-help') 0 'The Podman machine is stopped'
         $running = Invoke-Probe @('-l', '--running', '-q')
         if (@($running.Output | ForEach-Object { $_.Trim() }) -contains $distro) {
@@ -463,7 +468,7 @@ try {
         } else { Add-Result 'PASS' 'Stopped machine stays stopped' ($distro + ' is not running') }
         # Started by wsl.exe alone: no /run/user/<uid>, so no podman command works.
         $null = Invoke-Probe @('-d', $distro, '-u', $user, '--exec', '/bin/true')
-        Test-Outcome 'Distribution started by WSL alone (launch)' (Invoke-Case '& $E -c ''printf ok''') 1 'wsl --terminate'
+        Test-Outcome 'Distribution started by WSL alone (launch)' (Invoke-Case '& $E @C -c ''printf ok''') 1 'wsl --terminate'
         Test-Outcome 'Distribution started by WSL alone (setup)' (Invoke-Case '& $E --container-setup') 1 'runs without the Podman machine'
         Invoke-DistributionStop
         $podman = Get-Command -Name 'podman.exe' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -479,7 +484,7 @@ try {
                 Add-Result 'FAIL' 'Machine restarted with Podman' ('podman machine start: status ' + $started.Code + '; ' +
                     (Get-FirstLine $started.Err) + '. Run wsl --shutdown, then podman machine start, before other checks')
             } else {
-                Test-Outcome 'Machine restarted with Podman' (Invoke-Case '& $E -c ''printf ok''') 0 'ok'
+                Test-Outcome 'Machine restarted with Podman' (Invoke-Case '& $E @C -c ''printf ok''') 0 'ok'
             }
         } else {
             Add-Result 'SKIP' 'Machine restarted with Podman' 'podman.exe not found; start the machine with Podman Desktop'
@@ -503,7 +508,7 @@ try {
     $skipped = @($results | Where-Object { $_.StartsWith('RESULT SKIP') }).Count
     $results.Add(('Summary: {0} passed, {1} failed, {2} skipped' -f $passed, $failed, $skipped))
     $results.Add('By hand: Ctrl+C in an interactive session (one interrupt), closing the window during a session, and')
-    $results.Add('  ' + $name + '.ps1 -c ''stty size'' printing the window''s rows and columns; after Ctrl+C and the closed')
+    $results.Add('  ' + (($name + '.ps1 ' + $shellOption).TrimEnd()) + ' -c ''stty size'' printing the window''s rows and columns; after Ctrl+C and the closed')
     $results.Add('  window, podman ps -a (podman.exe on Windows) must list no container of the session.')
     [IO.File]::WriteAllLines($summaryFile, $results.ToArray())
     foreach ($line in $results.GetRange($results.Count - 4, 4)) { [Console]::Out.WriteLine($line) }
