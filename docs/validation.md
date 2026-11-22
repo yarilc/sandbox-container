@@ -2,7 +2,7 @@
 
 ## Windows guidance for agent wrappers (`sandbox-ref-28`): 2026-11-22
 
-Change: `openspec/changes/fix-windows-agent-guidance/`. Planning the Claude
+Change: `openspec/changes/archive/2026-11-22-fix-windows-agent-guidance/`. Planning the Claude
 adoption found three gaps that only an agent wrapper shows:
 
 - **Setup authentication steps.** Started by the Windows entry, setup now

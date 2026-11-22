@@ -75,6 +75,10 @@ After a run, the tool SHALL print the target runner modes to execute (from those
 - **WHEN** the propagated files include `setup/setup.py`
 - **THEN** the checklist names the target's `--setup` mode, and `--setup-runtime` when the target offers it
 
+#### Scenario: Two modes in one runner condition
+- **WHEN** the target's `tests/run-runtime.sh` offers `--guard` as `[[ "${1:-}" == --guard || "${1:-}" == --guard-idle ]]` and the propagated files include `network/guard.c`
+- **THEN** the checklist names the target's `--guard` mode
+
 #### Scenario: No version-control side effects
 - **WHEN** an applied run finishes
 - **THEN** the target has an uncommitted working tree on `adopt-<new tag>`, and no commit, merge, tag or push was made
