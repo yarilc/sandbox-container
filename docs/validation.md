@@ -1,6 +1,51 @@
 # Validation record
 
-## Windows pre-tag gaps (pending tag)
+## Reference tag `sandbox-ref-27`: 2026-11-22
+
+Windows support on a Podman machine (WSL provider). The tag holds these
+changes, recorded in the sections below:
+- `support-windows-podman-machine`;
+- `add-windows-installer`;
+- `clean-up-setup-output-and-tags`;
+- `support-machine-restricted-networking`;
+- `validate-windows-remaining-cases`;
+- `close-windows-pre-tag-gaps`.
+
+Shared files changed since `sandbox-ref-26`:
+- `launcher/core.sh` and the new `launcher/windows/` files;
+- `network/guard.c` and `network/README.md`;
+- `setup/common.py`, `setup/launch.py` and `setup/setup.py`;
+- the shared tests `test_alignment.py`, `test_guard.py`, `test_launcher.py`,
+  `test_setup.py`, `test_windows_bootstrap.py` and `test_windows_enter.py`,
+  and `tests/windows/shim_tests.ps1`.
+
+**Runner modes on the final tree.** Every mode that `docs/propagation.md`
+requires for these files ran on 2026-11-21 and 2026-11-22. `--qualification`
+is required because `launcher/core.sh` is in `SHARED_CODE`. The runner was
+WSL2 x86_64 `6.18.58.1-microsoft-standard-WSL2`, with Podman client 4.3.1,
+server 4.9.3, the `systemd` cgroup manager and controllers `[cpu memory pids]`.
+The runtime image was `localhost/sandbox-container:setup-c496ace9b5e94548b7f86f4a0bcbd8bc`,
+passed as `SANDBOX_CONTAINER_IMAGE`: its `build-inputs-hash` `b50c3422...`
+matches the current inputs, and the engine had no `latest` tag left.
+
+| Mode | Result |
+| --- | --- |
+| `--shared` (unit discovery, with `test_agent_profile.py` and `test_alignment.py`) | 495 tests, 74 skipped; only the 14 `AF_UNIX path too long` environment failures (13 in `test_session.py`, 1 in `test_launcher.py`) |
+| `--setup` | Passed: 86 tests |
+| `--setup-runtime` | Passed: 2 tests in 151 s |
+| `--qualification` | Passed: 31 tests in 164 s, 1 skipped (no authentication method in the checkout profile) |
+| `--guard` | Passed: 25 tests in 123 s, 1 skipped (`--guard-idle`) |
+| `--network` | Passed: 16 tests in 312 s, 1 skipped (toolchain examples) |
+| `bash tools/shellcheck.sh .`, `bash tools/powershell.sh .`, `git diff --check` | Passed: no finding, 62 shim cases |
+
+**On Windows** (Podman machine `podman-machine-default`, WSL 3.0.5.0, kernel
+6.18.58.1-1, Landlock ABI 7), `tools/windows-validate.ps1` passed in Windows
+PowerShell 5.1 and PowerShell 7, including `-Install` and `-StopMachine`. It
+passed in offline and unrestricted modes, with the `default` and `local`
+endpoints. The sections below record each run and the restricted runner modes
+in the machine.
+
+## Windows pre-tag gaps (`sandbox-ref-27`): 2026-11-21
 
 Change: `openspec/changes/archive/2026-11-21-close-windows-pre-tag-gaps/`.
 
@@ -38,7 +83,7 @@ namespaces. The "One engine" failure of the earlier run stays tied to the
 release that run started from, whose settings are not known.
 
 
-## Windows remaining cases (pending tag)
+## Windows remaining cases (`sandbox-ref-27`): 2026-11-21
 
 Change: `openspec/changes/archive/2026-11-21-validate-windows-remaining-cases/`. From the Windows
 entry, the launcher's "setup required" refusals now name
@@ -106,7 +151,7 @@ were copied after each run.
 - After the final offline setup, `sandbox-container.ps1 -c 'echo ok'` from a
   project folder printed `ok`.
 
-## Windows restricted networking (pending tag)
+## Windows restricted networking (`sandbox-ref-27`): 2026-11-21
 
 Change: `openspec/changes/archive/2026-11-21-support-machine-restricted-networking/`. The operator
 ran four rounds of throwaway spike scripts, not committed, on 2026-11-21:
@@ -345,7 +390,7 @@ machine started by Podman, Ubuntu running:
   | `--guard` | 25 tests in 127 s, 1 skipped. The 5 new init cases and the provider descriptor case passed. The only failure is the AF_VSOCK control, with the same probe results as before |
   | `--network` | 16 tests in 237 s, 1 skipped. The only failures are the `cgroupfs` budget cases of the spike: `memory.max` and `pids.events` reads, and the unbounded memory case |
 
-## Setup output and candidate tags (pending tag)
+## Setup output and candidate tags (`sandbox-ref-27`): 2026-11-21
 
 Change: `openspec/changes/archive/2026-11-21-clean-up-setup-output-and-tags/`.
 
@@ -376,7 +421,7 @@ by Podman:
   The 18 local `sandbox-container` tags listed before the run were listed
   unchanged after it, and the candidate tag was gone.
 
-## Windows installer (pending tag)
+## Windows installer (`sandbox-ref-27`): 2026-11-21
 
 Change: `openspec/changes/archive/2026-11-21-add-windows-installer/`.
 
@@ -455,7 +500,7 @@ Setup run from the installed copy still prints its Linux guidance
 setup adds a `setup-*` tag to the runtime image (twelve in this round, all on
 the same image). Both are left for a later change.
 
-## Windows Podman machine support (pending tag)
+## Windows Podman machine support (`sandbox-ref-27`): 2026-11-20
 
 Change: `openspec/changes/archive/2026-11-20-support-windows-podman-machine/`. Operator runs on
 2026-11-19: Windows 10.0.26300.9974, WSL 2.5.10.0 (kernel 6.6.87.2-1,
