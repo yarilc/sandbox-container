@@ -581,6 +581,33 @@ setup proposes, the machine's system bundle (see
 and saves it for sessions. Rerun setup after the machine is recreated, and
 enable the import again on the new machine.
 
+### Toolchains on Windows
+
+The [toolchain](#toolchains) commands run from PowerShell like the other
+options, from any directory outside the checkout:
+
+```powershell
+sandbox-container --container-toolchain add java21
+sandbox-container --container-toolchain add C:\Users\me\recipes\x.json
+sandbox-container --container-toolchain list
+```
+
+- **Location:** the library lives inside the Podman machine's distribution, in
+  `~/.local/share/sandbox-toolchains` of the machine user, or in
+  `SANDBOX_CONTAINER_TOOLCHAINS_DIR` (a distribution path). Every wrapper that
+  runs in the machine shares it. Recreating the machine removes it: after the
+  new setup, add the toolchains again.
+- **Windows paths:** a recipe path or a local archive path in a recipe written
+  as a Windows drive path (`C:\...` or `C:/...`) is translated to its drive
+  mount in the machine. Network shares, paths inside a WSL distribution and
+  drives that the distribution does not mount are refused. Keep your recipes
+  outside project folders (see [Managing the library](#managing-the-library)).
+- **Network:** pulls and downloads run inside the machine. On a network that
+  re-signs TLS, they trust the CA that `podman machine set --import-native-ca`
+  adds to the machine (see [Trusting a host CA on Windows](#trusting-a-host-ca-on-windows)).
+  The entry forwards no Windows proxy variable, so `add` downloads without an
+  explicit HTTP proxy; pulls follow the machine's Podman configuration.
+
 ### Install as a command
 
 Instead of setup from the checkout, you can install the entry for your
@@ -909,38 +936,69 @@ The operator runs these commands on the host; `--container-toolchain` must be
 the first argument:
 
 ```bash
-./sandbox-container.sh --container-toolchain add java21.json   # install or replace from a recipe
-./sandbox-container.sh --container-toolchain list              # name, version, default, size, verified base
+./sandbox-container.sh --container-toolchain add java21            # install or replace a catalog recipe
+./sandbox-container.sh --container-toolchain add ~/recipes/x.json  # install or replace an operator recipe
+./sandbox-container.sh --container-toolchain list                  # installed toolchains, then the catalog
 ./sandbox-container.sh --container-toolchain remove java21
-./sandbox-container.sh --container-toolchain verify [java21]   # rerun the checks on the current runtime image
+./sandbox-container.sh --container-toolchain verify [java21]       # rerun the checks on the current runtime image
 ```
 
-- **Sources:** a toolchain is a relocatable directory tree, taken either from
-  a path inside an OCI image referenced by `@sha256:` digest, or from a local
-  archive with its SHA-256. The command never downloads archives.
-- **Pulls:** pulling a missing image requires exact
-  `SANDBOX_CONTAINER_MAINTENANCE=1`. Like image builds, the pull happens on the
-  host, outside runtime filtering.
-- **Extraction:** it rejects absolute paths, `..`, device nodes and links
-  that leave the toolchain, and clears setuid and setgid bits.
+An argument without `/` that does not end in `.json` names a recipe of the
+release's catalog (see [Recipes](#recipes)); any other argument is a recipe
+file. `list` shows the name, version, default flag, size, requirements and
+verified base of each installed toolchain, then the catalog recipes that are
+not installed.
+
+- **Sources:** a toolchain is a relocatable directory tree, assembled from one
+  or more sources: a path inside an OCI image referenced by `@sha256:` digest,
+  an HTTPS archive URL with its SHA-256, or a local archive with its SHA-256.
+- **Operator recipes:** keep them outside project directories, for example in
+  `~/recipes`. A session can write its workspace and state directories, so an
+  agent could have written a recipe found there: `add` refuses a recipe file
+  inside the directory it runs from (its parent, when setup saved the worktree
+  scope) or inside a state directory, before fetching anything. It cannot
+  recognize the directories of other projects. Catalog names are not affected,
+  and neither are the local archives that a recipe pins by SHA-256.
+- **Fetching:** `add` fetches what the recipe names by itself and prints each
+  image and URL first. It pulls a missing image and downloads archive URLs
+  without `SANDBOX_CONTAINER_MAINTENANCE`, because the content is fixed by its
+  digest or SHA-256 and no code runs while it is fetched and extracted.
+  Downloads use HTTPS only and follow redirects only to HTTPS. They trust the
+  host CA bundle that setup saved when host CA trust is enabled, and the system
+  trust otherwise, and they use the host's proxy variables. Like image builds,
+  pulls and downloads happen on the host, outside runtime filtering. `add`
+  never builds an image; image builds still require maintenance.
+- **Extraction:** every archive is checked against its SHA-256 before anything
+  is extracted, and is extracted from a private copy in the library, so a local
+  archive changed afterwards cannot reach the toolchain. Extraction rejects
+  absolute paths, `..`, device nodes and links that leave the toolchain, and
+  clears setuid and setgid bits. A file that two sources provide fails the
+  command.
 - **Atomic changes:** changes take a library lock and replace directories
   atomically.
 - **Check:** before accepting a toolchain, `add` runs the recipe's `check`
   command in the runtime image, without network and with the session's
   identity and hardening. A toolchain that needs a newer C library than the
   image's glibc fails here. The manifest records the base image from the
-  installed `Containerfile`. If that base changes, the toolchain stays visible
-  but loses its default environment until `verify` succeeds, and the launcher
-  prints one warning naming it.
+  installed `Containerfile`.
+- **After an update:** when setup selects a new release, it reruns the check of
+  every installed toolchain verified on another base, records the new base
+  when the check passes, and prints the result for each. A failed check does
+  not fail setup: that toolchain stays visible but loses its default
+  environment until `verify` succeeds, and the launcher prints one warning
+  naming it.
 
 ### Recipes
 
-A recipe is a JSON file that the operator keeps and reviews:
+The release contains a catalog of reviewed recipes in
+`setup/toolchain-catalog/`, shared by every wrapper: `add <name>` installs one
+with nothing else to prepare. An operator recipe is a JSON file that the
+operator keeps and reviews, and gives to `add` by its path:
 
 | Key | Meaning |
 | --- | --- |
-| `schema`, `name`, `version` | `1`; `[a-z0-9][a-z0-9._-]*`; free version text |
-| `source` | `{"image": "<ref>@sha256:<digest>", "path": "/abs/path"}` or `{"archive": "/abs/file.tar.xz", "sha256": "<hex>", "strip_components": 1}` |
+| `schema`, `name`, `version` | `2`; `[a-z0-9][a-z0-9._-]*`; free version text |
+| `sources` | 1 to 16 sources, extracted in order into one toolchain (see below) |
 | `path` | directories relative to the toolchain, added to `PATH` (default `["bin"]`) |
 | `env` | variables: `{"toolchain": "<relative path>"}` or `{"value": "<literal>"}` |
 | `requires` | other toolchains whose environment is loaded first |
@@ -948,6 +1006,23 @@ A recipe is a JSON file that the operator keeps and reviews:
 | `check` | command run in the runtime image before the toolchain is accepted |
 | `default` | `true` adds the toolchain to new sessions' environment |
 
+Each source is one of:
+
+| Source | Keys |
+| --- | --- |
+| Image | `{"image": "<ref>@sha256:<digest>", "path": "/abs/dir", "target": "rel/dir"}` |
+| Archive URL | `{"url": "https://...", "sha256": "<hex>", "path": "member/dir", "target": "rel/dir"}` |
+| Local archive | `{"archive": "/abs/file.tar.xz", "sha256": "<hex>", "path": "member/dir", "target": "rel/dir"}` |
+
+- **Placement:** an image source copies the directory `path` of the image. For
+  an archive, `path` selects one directory inside it, or `strip_components`
+  drops that many leading directories instead. The result goes to `target`
+  (default: the toolchain root). Directories of several sources merge; a file
+  that two sources provide fails `add`. An archive that several sources use is
+  fetched once.
+- **Schema 1:** recipes with `"schema": 1` and one `source` object (an image or
+  a local archive, with `strip_components`) stay valid.
+- **Catalog recipes** use only images and archive URLs, never local files.
 - **Protected variables:** recipes cannot set `PATH`, `HOME`, loader, proxy
   or CA variables, any `XDG_` or `SANDBOX_` variable, or
   `DBUS_SESSION_BUS_ADDRESS` (no session has a bus). These rules are the same in
@@ -972,37 +1047,25 @@ A recipe is a JSON file that the operator keeps and reviews:
   access that offline mode does not grant. Provide dependencies in
   the workspace, or use an unrestricted session.
 
-The examples below were verified with the versions, digests and checksums
-shown. See [the validation record](docs/validation.md#toolchain-library-2026-11-13).
+The catalog recipes pin the versions, digests and checksums below; the
+recipe files hold the full values. See [the validation
+record](docs/validation.md#toolchain-library-2026-11-13) for the checks.
 
-The recipes are in [`docs/toolchains/`](docs/toolchains/), and download
-sources are listed in `docs/toolchains/sources.json`:
-
-| Recipe | Version | Source | Default | Notes |
+| Name | Version | Source | Default | Notes |
 | --- | --- | --- | --- | --- |
-| `java21.json` | Temurin 21.0.13 | image `eclipse-temurin@sha256:0a3f3298…`, `/opt/java/openjdk` | yes | `JAVA_HOME` |
-| `maven3.9.json` | 3.9.16 | image `maven@sha256:99e61abc…`, `/usr/share/maven` | yes | requires `java21`; local repository in `/tmp/m2`; harmless jansi warning |
-| `go.json` | 1.27.4 | image `golang@sha256:4fa7c968…`, `/usr/local/go` | yes | `GOTOOLCHAIN=local`; caches in `/tmp`; `go test` needs `GOTMPDIR` in the workspace |
-| `node24.json` | 24.22.3 | archive `node-v24.22.3-linux-x64.tar.xz` | no | the image's Node.js 22 stays first |
-| `python3.13.json` | 3.13.18 | archive python-build-standalone `20261110` `install_only` | no | the image's `python3` stays first; virtual environments in the workspace |
-| `rust.json` | 1.100.0 | image built from `rust-musl.Containerfile` | yes | target `x86_64-unknown-linux-musl` linked by `rust-lld`; crates with build scripts or procedural macros fail |
+| `java21` | Temurin 21.0.13 | image `eclipse-temurin@sha256:0a3f3298…`, `/opt/java/openjdk` | yes | `JAVA_HOME` |
+| `maven3.9` | 3.9.16 | image `maven@sha256:99e61abc…`, `/usr/share/maven` | yes | requires `java21`; local repository in `/tmp/m2`; harmless jansi warning |
+| `go` | 1.27.4 | image `golang@sha256:4fa7c968…`, `/usr/local/go` | yes | `GOTOOLCHAIN=local`; caches in `/tmp`; `go test` needs `GOTMPDIR` in the workspace |
+| `node24` | 24.22.3 | archive `node-v24.22.3-linux-x64.tar.xz` from `nodejs.org` | no | the image's Node.js 22 stays first |
+| `python3.13` | 3.13.18 | python-build-standalone `20261110` `install_only` archive from GitHub | no | the image's `python3` stays first; virtual environments in the workspace |
+| `rust` | 1.100.0 | `rustc`, `cargo` and `rust-std` (host and `x86_64-unknown-linux-musl`) archives from `static.rust-lang.org` | yes | target `x86_64-unknown-linux-musl` linked by `rust-lld`; crates with build scripts or procedural macros fail |
 
-Notes on using the recipes:
-- **Archive recipes:** download the file, check it against the recipe's
-  SHA-256, and set `archive` to its absolute path.
-- **Rust:** the runtime image has no C linker, so the recipe uses the musl
-  target, whose startup files ship with Rust, and links with `rust-lld`. Build
-  the image, then put its local digest in the recipe:
-
-  ```bash
-  podman build --tag localhost/sandbox-rust-musl:local \
-      --file docs/toolchains/rust-musl.Containerfile docs/toolchains
-  podman image inspect --format '{{.Digest}}' localhost/sandbox-rust-musl:local
-  ```
+The runtime image has no C linker, so the `rust` recipe uses the musl target,
+whose startup files ship with Rust, and links with `rust-lld`.
 
 `SANDBOX_TOOLCHAIN_EXAMPLES=1 bash tests/run-runtime.sh --network -k
-documented_toolchain` downloads, pulls and builds all six, then checks them in
-an offline session.
+documented_toolchain` adds all six by name, which pulls and downloads them,
+then checks them in an offline session.
 
 ### Using toolchains in the shell
 

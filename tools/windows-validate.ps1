@@ -22,7 +22,9 @@
 # Ctrl+C, closing the window and the terminal size are checked by hand; the
 # script prints how. The mode cases follow the network mode that setup saved:
 # run the script after an offline setup for the restricted cases, and after an
-# unrestricted one for the refusal of an unprepared restricted mode.
+# unrestricted one for the refusal of an unprepared restricted mode. The
+# toolchain cases use a validation library of their own and need a release with
+# the toolchain catalog: rerun setup after updating the checkout.
 # Bitdefender's Advanced Threat Control (Atc4.Detection) has blocked this
 # script, which other antivirus products did not: run it with the checkout
 # folder excluded, or with the protection paused for the run, as the
@@ -242,6 +244,15 @@ try {
         return
     }
     Add-Result 'PASS' 'Setup state' ('release bootstrap present: ' + $bootstrap)
+    # The worktree scope that setup saved. With it, every launch mounts the parent
+    # of its folder, so the cases that assume no scope are skipped, and the
+    # toolchain case that needs it runs.
+    $setupFile = $bootstrap.Replace('launcher/windows/bootstrap.sh', 'setup.json')
+    $scopeProbe = Invoke-Probe @('-d', $distro, '-u', $user, '--exec', '/bin/sh', '-c',
+        ('cd && grep -Eq ''worktree.: *true'' ' + $setupFile))
+    $scopeSaved = ($scopeProbe.Code -eq 0)
+    $scopeSkip = 'setup saved the worktree scope, so this launch mounts the parent folder; run the script again ' +
+        'after a setup without it'
     if ($others.Count -eq 0) { Add-Result 'SKIP' 'Another distribution is active' 'start another WSL distribution and rerun' }
 
     $r = Invoke-Case '& $E @C -c ''printf ok'''
@@ -304,8 +315,15 @@ try {
     if ($profileDirectory -and $windowsDirectory) {
         Test-Outcome 'Windows folders: profile' (Invoke-Case '& $E' $profileDirectory) 1 'refusing sensitive workspace'
         Test-Outcome 'Windows folders: profile in lower case' (Invoke-Case '& $E' $profileDirectory.ToLowerInvariant()) 1 'refusing sensitive workspace'
-        Test-Outcome 'Windows folders: Users' (Invoke-Case '& $E' (Split-Path -Parent $profileDirectory)) 1 'refusing sensitive workspace'
-        Test-Outcome 'Windows folders: Windows' (Invoke-Case '& $E' $windowsDirectory) 1 'refusing sensitive workspace'
+        if ($scopeSaved) {
+            # The parent of these folders is the drive root, which contains the
+            # checkout: the entry-directory refusal comes first.
+            Add-Result 'SKIP' 'Windows folders: Users' $scopeSkip
+            Add-Result 'SKIP' 'Windows folders: Windows' $scopeSkip
+        } else {
+            Test-Outcome 'Windows folders: Users' (Invoke-Case '& $E' (Split-Path -Parent $profileDirectory)) 1 'refusing sensitive workspace'
+            Test-Outcome 'Windows folders: Windows' (Invoke-Case '& $E' $windowsDirectory) 1 'refusing sensitive workspace'
+        }
         $documents = [Environment]::GetFolderPath('MyDocuments')
         if ($documents) {
             Test-Outcome 'Windows folders: Documents' (Invoke-Case '& $E' $documents) 1 'refusing sensitive workspace'
@@ -376,7 +394,11 @@ try {
     } else {
         [void](New-Item -ItemType Directory -Path $sibling)
         Test-Outcome 'Worktree scope with a sibling checkout' (Invoke-Case '& $E @C --container-git-worktree -c true' $sibling) 1 'overlaps the writable mount'
-        Test-Outcome 'Sibling without worktree scope' (Invoke-Case '& $E @C -c ''printf ok''' $sibling) 0 'ok'
+        if ($scopeSaved) {
+            Add-Result 'SKIP' 'Sibling without worktree scope' $scopeSkip
+        } else {
+            Test-Outcome 'Sibling without worktree scope' (Invoke-Case '& $E @C -c ''printf ok''' $sibling) 0 'ok'
+        }
         Remove-Item -LiteralPath $sibling -Recurse -Force
     }
 
@@ -406,6 +428,42 @@ try {
     Test-Outcome 'Help with a machine (wrapper help)' $r 0 'Usage:'
     Test-Outcome 'Help without a machine' (Invoke-Case ('$env:' + $P + '_WSL_DISTRO = ''validate-missing''; & $E --container-help')) 0 'Podman Desktop'
     Test-Outcome 'Setup with other arguments' (Invoke-Case '& $E --container-setup --container-shell') 1 'must be used alone'
+
+    # Toolchain library, in a validation library of its own: a catalog name, a
+    # Windows recipe path, a network path and, when setup saved it, the worktree
+    # scope. The recipe folder is outside $work, which that scope mounts.
+    $homeProbe = Invoke-Probe @('-d', $distro, '-u', $user, '--exec', '/bin/sh', '-c', 'printf %s $HOME')
+    $machineHome = (@($homeProbe.Output) -join '').Trim()
+    $recipeFolder = Join-Path (Split-Path -Parent $Checkout) ($name + '-validate-recipes')
+    if ($homeProbe.Code -ne 0 -or -not $machineHome.StartsWith('/')) {
+        Add-Result 'SKIP' 'Toolchain library' 'the home directory of the machine user is unknown'
+    } elseif (Test-Path -LiteralPath $recipeFolder) {
+        Add-Result 'SKIP' 'Toolchain library' ($recipeFolder + ' already exists')
+    } else {
+        $library = $machineHome + '/' + $name + '-validate-toolchains'
+        $useLibrary = '$env:' + $P + '_TOOLCHAINS_DIR = ' + (ConvertTo-Literal $library) + '; '
+        try {
+            Test-Outcome 'Toolchain by name' (Invoke-Case ($useLibrary + '& $E --container-toolchain add node24')) 0 'Added toolchain node24'
+            [void](New-Item -ItemType Directory -Path $recipeFolder)
+            $recipeFile = Join-Path $recipeFolder 'node24.json'
+            Copy-Item -LiteralPath ([IO.Path]::Combine($Checkout, 'setup', 'toolchain-catalog', 'node24.json')) -Destination $recipeFile
+            Test-Outcome 'Recipe path from PowerShell' (Invoke-Case ($useLibrary + '& $E --container-toolchain add ' +
+                (ConvertTo-Literal $recipeFile))) 0 'Added toolchain node24'
+            Test-Outcome 'Toolchain recipe on a network share' (Invoke-Case ($useLibrary +
+                '& $E --container-toolchain add ''\\server\share\node24.json''')) 1 'network or device path'
+            $listing = Invoke-Case ($useLibrary + '& $E --container-toolchain list')
+            if ($scopeSaved) {
+                Test-Outcome 'Toolchain command with the saved worktree scope' $listing 0 'node24'
+            } else {
+                Test-Outcome 'Toolchain list' $listing 0 'node24'
+                Add-Result 'SKIP' 'Toolchain command with the saved worktree scope' ('setup saved no worktree ' +
+                    'scope; run the script again after a setup that saves it')
+            }
+        } finally {
+            $null = Invoke-Probe @('-d', $distro, '-u', $user, '--exec', 'rm', '-rf', '--', $library)
+            if (Test-Path -LiteralPath $recipeFolder) { Remove-Item -LiteralPath $recipeFolder -Recurse -Force }
+        }
+    }
 
     if ($Install) {
         . ([IO.Path]::Combine($Checkout, 'launcher', 'windows', 'user-path.ps1'))

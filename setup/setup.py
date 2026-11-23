@@ -37,6 +37,8 @@ NAME = PROFILE.display_name
 GUARD = 'sandbox-egress-guard'
 import agent_budgets  # noqa: E402  (protected network code beside common.py's path entry)
 from proxy_hardening import PIDS_LIMIT as PROXY_PIDS_LIMIT  # noqa: E402
+import toolchains  # noqa: E402
+TOOLCHAIN_VERIFY_TIMEOUT = 900
 BUDGET_QUESTIONS = (
     ('memory_limit', 'Agent memory limit (integer with k, m or g unit)'),
     ('cpu_limit', 'Agent CPU limit (CPUs, up to 3 decimals)'),
@@ -892,6 +894,46 @@ def release_owned_tags(tags, env, changes):
             changes.append('Could not remove the tag of the abandoned candidate ' + tag + ': ' + str(error))
 
 
+def run_toolchain_verify(release, name, env):
+    """One toolchain check with the new release's own toolchain command."""
+    command = [sys.executable, '-I', str(release / 'setup/toolchains.py'), 'verify', name]
+    try:
+        return subprocess.run(command, env=env, capture_output=True, text=True, timeout=TOOLCHAIN_VERIFY_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return subprocess.CompletedProcess(command, 1, '', str(error))
+
+
+def reverify_toolchains(value, release):
+    """Recheck installed toolchains verified on another base, after the release is selected (design D9).
+
+    A passing check records the new base, so default toolchains keep their
+    environment; a failure is reported and never changes the setup result.
+    """
+    env = runtime_environment(value, release, overrides=False)
+    try:
+        library = toolchains.library_path(env)
+        if not library.is_dir():
+            return
+        base = toolchains.base_reference(release)
+        stale = sorted(name for name, item in toolchains.installed(library).items()
+                       if not isinstance(item.get('verified'), dict) or item['verified'].get('base') != base)
+    except (SetupError, OSError, ValueError) as error:
+        print('Toolchains not re-verified: ' + str(error))
+        return
+    if not stale:
+        return
+    print('Re-verifying toolchains checked on another base image: ' + ', '.join(stale))
+    for name in stale:
+        result = run_toolchain_verify(release, name, env)
+        if result.returncode == 0:
+            print('  ' + name + ': verified on the new base')
+            continue
+        lines = (result.stderr or result.stdout or '').strip().splitlines()
+        reason = lines[0][:300] if lines else 'status ' + str(result.returncode)
+        print('  ' + name + ': check failed (' + reason + '); new sessions give it no default environment until '
+              '--container-toolchain verify ' + name + ' succeeds')
+
+
 def windows_entry():
     # The Windows entry (launcher/windows/core.ps1) starts setup with this exact
     # value and prints the next step itself.
@@ -1003,6 +1045,9 @@ def main():
                 activated = True
             finally:
                 signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
+        # Only now: a failed earlier step keeps the old release, whose base the
+        # library must still record.
+        reverify_toolchains(value, candidate)
         print('Sandbox: ready')
         status = authenticate(value, candidate)
         print('Authentication: ' + status)

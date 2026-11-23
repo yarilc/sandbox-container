@@ -1,5 +1,79 @@
 # Validation record
 
+## Toolchain provisioning (`simplify-toolchain-provisioning`, no tag yet): 2026-11-23
+
+Change: `openspec/changes/simplify-toolchain-provisioning/`, on the branch of
+the same name.
+- `--container-toolchain add` pulls pinned images and downloads pinned
+  archives without maintenance consent.
+- Recipes gain schema 2 with several sources, and a catalog in
+  `setup/toolchain-catalog/` adds them by name.
+- An operator recipe inside a writable mount is refused.
+- Windows drive paths are translated from `/proc/self/mountinfo`.
+- The managed launcher keeps host commands first with a saved worktree scope.
+- Setup re-verifies the toolchains after it selects a new release.
+
+Shared files changed since `sandbox-ref-28`:
+- `setup/toolchains.py`, `setup/launch.py`, `setup/setup.py`, `setup/common.py`
+  and the new `setup/toolchain-catalog/`;
+- `launcher/core.sh`;
+- `tests/test_toolchains.py`, `tests/test_setup.py` and
+  `tests/test_launcher.py`.
+
+`setup/toolchains.py` and `launcher/core.sh` are in `SHARED_CODE`, so
+`--qualification` ran too.
+
+Runner:
+- **Host:** Windows host, WSL 3.0.5.0, kernel 6.18.58.1. Podman machine
+  `podman-machine-default`: Fedora Linux 44, Podman server 6.1.4, rootless,
+  `cgroupfs` manager. Python 3.14.8 in the machine.
+- **Images:** runtime `localhost/sandbox-container:setup-2ab24eec57c9464383114a90d9ecafc7`
+  through `SANDBOX_CONTAINER_IMAGE`. Guard toolchain `dde2fe627a7b…`, tagged
+  `localhost/sandbox-container-guard-toolchain:development` for the runner,
+  because `tests/run-runtime.sh` forwards `SANDBOX_GUARD_TOOLCHAIN` only in
+  `--guard` mode.
+- **Network:** the network inspects TLS. Its CA is imported into the machine
+  (`podman machine set --import-native-ca`), and setup saved host CA trust.
+- **Unit tests:** they ran on a copy of the checkout on the machine's ext4
+  (`~/sbx-check`, `SANDBOX_TEST_TMPDIR=~/sbx-tmp`). The checkout on `C:` is
+  drvfs with mode 777, and the development session (an agent sandbox) has no
+  executable native storage with protected ancestors.
+
+| Check | Result |
+| --- | --- |
+| `tests/test_setup.py` and `tests/test_launcher.py` after the worktree fix | Passed: 200 tests, including `test_saved_worktree_scope_leaves_host_commands_first` |
+| `tests/test_toolchains.py` (final) | Passed: 55 tests, 4 skipped. The skipped download tests need the `openssl` CLI, which the machine lacks. They passed in the development session with a local HTTPS server and a private CA; only the library ancestor check was relaxed there |
+| `--shared` (unit discovery) | 531 tests, 77 skipped, 3 failures not caused by the change (see below) |
+| `--setup` | Passed: 92 tests |
+| `--setup-runtime` | Passed: 2 tests in 83 s |
+| `--qualification` | Passed: 31 tests, 1 skipped (no authentication method in the profile) |
+| `--network` | 16 tests, 1 skipped (the opt-in examples). Only the budget failures recorded for this machine under `cgroupfs` (Windows restricted networking, 2026-11-21): agent budgets (2 subtests), proxy budgets at maximum streams, proxy exhaustion (`pids` failure, `memory` error). `test_toolchain_added_during_offline_session_without_network` passed |
+| `SANDBOX_TOOLCHAIN_EXAMPLES=1 bash tests/run-runtime.sh --network -k documented_toolchain` | Unavailable on this network. `java21`, `maven3.9` and `go` were added by name; the `node24` download failed with `CERTIFICATE_VERIFY_FAILED`, because the test container trusts only the image's bundle and the runner passes no host CA. An earlier run stalled 900 s in `add go` while the image was missing. The cause was not isolated: the same pull through the image's Podman 4.3.1 client against the machine's Podman 6.1.4 service took 34 s alone, and `add go` with the remote client in the machine took 40 s |
+| The same steps by hand in the machine, in a scratch library | `node24` downloaded with the machine's system trust. With host CA trust and the saved bundle, `node24`, `python3.13` and `rust` were installed; `rust` has 5 sources from 4 archives, each downloaded once. An offline session started by the installed release (the previous code) on that library compiled a new crate with `cargo build --offline` for `x86_64-unknown-linux-musl` and printed `Hello, world!`. `node --version` gave the image's v22, and `env.sh` gave v24.22.3 |
+| README "Managing the library" commands, as written | Passed: `add java21`, `add ~/recipes/x.json`, `list` (installed, then catalog), `remove java21`, `verify`, `verify rust`. A recipe copied into the current directory was refused |
+| `tools/windows-validate.ps1`, Windows PowerShell 5.1, setup with the worktree scope | First run: 42 passed, 4 failed. "Recipe path from PowerShell" failed: `wslpath` failed for every drive path once the command ran through the entry, after `enter.sh`, while it worked from a shell in the machine. Translation now reads `mountinfo` (design D7). The three other failures were cases that assume no saved scope. After the fix, with the script skipping those three cases when setup saved the scope: 43 passed, 0 failed, 6 skipped |
+| Sessions through the Windows entry, worktree scope saved | `java21` and `go` added by name to the real library; an offline session printed `openjdk version "21.0.13"` and `go version go1.27.4` |
+| Sessions through the managed command in the machine shell, same setup | `--container-toolchain list` worked with the saved worktree scope; an offline session printed the same versions |
+| `bash tools/shellcheck.sh .`, `bash tools/powershell.sh .`, `git diff --check` | Passed: no finding, 62 shim cases |
+
+The three unit-discovery failures:
+- **`test_repository_text_files_have_no_carriage_return`** found the PowerShell
+  summary of `windows-validate.ps1` (CRLF), copied into the checkout for this
+  record. It moved to `.test-state/`, and `tests/test_alignment.py` then
+  passed (21 tests).
+- **`test_managed_rerun_reviews_saved_defaults_without_inheriting_launch_values`**
+  also fails on `main`. It finds setup's probe of the machine's real Podman
+  socket in `/run/user/1000`; the change does not touch that part of setup.
+- **`test_interrupted_start_group_is_terminated_and_stop_recovers_ownership`**
+  races between `exists()` and `read_text()` on `/proc/<pid>/stat`. It failed
+  5 of 5 times on the branch and 1 of 3 on `main`. Neither `network/` nor the
+  test is changed.
+
+Not run: `tools/windows-validate.ps1` on PowerShell 7, `-Install` and
+`-StopMachine`, and a native Linux host (the Linux steps ran in the machine
+shell). Not changed: the pull in `add` has no timeout, and the Windows entry
+forwards no explicit HTTP proxy (README, Toolchains on Windows).
+
 ## `windows-validate.ps1` with an agent wrapper (no tag): 2026-11-22
 
 The Claude adoption of `sandbox-ref-28` ran `tools/windows-validate.ps1

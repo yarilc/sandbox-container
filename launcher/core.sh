@@ -76,7 +76,8 @@ Container options:
   --container-git-worktree mount the parent of the current directory read/write
                          for Git worktrees; the container starts in the current directory
   --container-toolchain  manage the shared read-only toolchain library; must be first:
-                         add <recipe.json> | list | remove <name> | verify [<name>]
+                         add <recipe.json|name> | list | remove <name> | verify [<name>];
+                         add pulls pinned images and downloads pinned archives itself
   --container-help       show this wrapper help
 
 All other arguments are passed to @COMMAND@ (or to Bash in shell mode) unchanged.
@@ -247,7 +248,7 @@ core_arguments() {
     done
     # Toolchain management runs on the host and never starts a session.
     if [[ "${1:-}" == --container-toolchain ]]; then
-        [[ "${2:-}" != launch-env ]] || die 'usage: --container-toolchain add <recipe.json> | list | remove <name> | verify [<name>]'
+        [[ "${2:-}" != launch-env ]] || die 'usage: --container-toolchain add <recipe.json|name> | list | remove <name> | verify [<name>]'
         command -v python3 >/dev/null || die 'host Python 3 is required for the toolchain library'
         # shellcheck disable=SC2154 # wrapper_dir is set by the entry script.
         exec python3 -I "$wrapper_dir/setup/toolchains.py" "${@:2}"

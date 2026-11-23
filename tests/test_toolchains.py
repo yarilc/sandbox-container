@@ -1,16 +1,19 @@
 """Synthetic toolchain library tests: native disposable storage and a fake engine."""
 import contextlib
 import hashlib
+import http.server
 import io
 import json
 import os
 from pathlib import Path
 import shutil
+import ssl
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -69,28 +72,82 @@ class Engine:
         self.image_tar = image_tar
         self.check_status = check_status
         self.exists = exists
+        self.pull_status = 0
 
     def run(self, args, timeout=None):
         self.calls.append(list(args))
-        output = ''
+        output = error = ''
         status = 0
         if args[:2] == ['image', 'exists']:
             status = 0 if self.exists else 1
         elif args[:2] == ['image', 'inspect']:
             output = 'sha256:' + 'b' * 64 + '\n'
         elif args[:1] == ['pull']:
-            self.exists = True
+            status = self.pull_status
+            if status:
+                error = 'Error: initializing source: manifest unknown\n'
+            else:
+                self.exists = True
         elif args[:1] == ['create']:
             output = 'c' * 64 + '\n'
         elif args[:1] == ['run']:
             status = self.check_status
             output = 'check output\n'
-        return subprocess.CompletedProcess(['podman', *args], status, output, '')
+        return subprocess.CompletedProcess(['podman', *args], status, output, error)
 
     @contextlib.contextmanager
     def stream(self, args):
         self.calls.append(list(args))
         yield io.BytesIO(self.image_tar)
+
+
+def certificate(directory):
+    """Self-signed certificate for localhost, or None without the openssl CLI."""
+    if not shutil.which('openssl'):
+        return None
+    result = subprocess.run(['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256',
+                             '-nodes', '-keyout', str(directory / 'key.pem'), '-out', str(directory / 'cert.pem'),
+                             '-days', '1', '-subj', '/CN=localhost',
+                             '-addext', 'subjectAltName=DNS:localhost'], capture_output=True)
+    return directory / 'cert.pem' if result.returncode == 0 else None
+
+
+class ArchiveServer:
+    """Local HTTPS server: routes map a path to (status, headers, body); requests are recorded."""
+
+    def __init__(self, directory, routes):
+        self.routes = routes
+        self.requests = []
+        self.cert = certificate(directory)
+        if self.cert is None:
+            raise unittest.SkipTest('openssl CLI unavailable for a controlled certificate')
+        server = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                server.requests.append(self.path)
+                status, headers, body = server.routes.get(self.path, (404, {}, b'missing'))
+                self.send_response(status)
+                for key, value in {'Content-Length': str(len(body)), **headers}.items():
+                    self.send_header(key, value)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+        self.httpd = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(self.cert), str(directory / 'key.pem'))
+        self.httpd.socket = context.wrap_socket(self.httpd.socket, server_side=True)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def url(self, path, scheme='https'):
+        return f'{scheme}://localhost:{self.httpd.server_address[1]}{path}'
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
 
 
 class ToolchainTests(unittest.TestCase):
@@ -100,6 +157,11 @@ class ToolchainTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.base, True)
         self.library = self.base / 'library'
         self.env = {'HOME': str(self.base / 'home'), name('IMAGE'): 'localhost/runtime:test'}
+        # add refuses recipes in the directory it runs from: run from a directory of our own.
+        self.cwd = self.base / 'elsewhere'
+        self.cwd.mkdir()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.cwd)
         self.engine = Engine()
         for target, value in (('run', self.engine.run), ('stream', self.engine.stream)):
             patcher = patch.object(toolchains, target, side_effect=value)
@@ -115,9 +177,20 @@ class ToolchainTests(unittest.TestCase):
                   'path': ['bin'], 'env': {'TOOL_HOME': {'toolchain': ''}}, 'requires': [], 'notes': [],
                   'check': ['tool'], 'default': True}
         recipe.update(values)
+        if recipe['schema'] == 2 and 'source' not in values:
+            del recipe['source']
         path = self.base / (recipe['name'] + '.json')
         path.write_text(json.dumps(recipe))
         return path
+
+    def archive_source(self, data, label='part', **extra):
+        """A schema-2 local archive source for the given tar bytes."""
+        archive = self.base / (label + '.tar')
+        archive.write_bytes(data)
+        return {'archive': str(archive), 'sha256': hashlib.sha256(data).hexdigest(), **extra}
+
+    def leftovers(self):
+        return [p.name for p in self.library.iterdir() if p.name.startswith(('.staging', '.download', '.old'))]
 
     def add(self, **values):
         return toolchains.add(self.library, self.recipe(**values), self.env)
@@ -198,6 +271,7 @@ class ToolchainTests(unittest.TestCase):
             toolchains.add(self.library, path, self.env)
         self.assertIn('SHA-256', str(raised.exception))
         self.assertFalse((self.library / 'tool').exists())
+        self.assertEqual(self.leftovers(), [])
 
     def test_unsafe_members_are_rejected(self):
         cases = {
@@ -212,7 +286,7 @@ class ToolchainTests(unittest.TestCase):
         for label, entry in cases.items():
             with self.subTest(label=label):
                 self.assert_rejected('unsafe', archive_bytes=tool_archive(extra=(entry,)))
-                self.assertFalse(any(p.name.startswith('.staging') for p in self.library.iterdir()))
+                self.assertEqual(self.leftovers(), [])
 
     def test_extracted_permissions_and_relative_links(self):
         extra = (('tool-1.0/bin/setuid', 'file', b'#!/bin/sh\n', 0o6755),
@@ -229,26 +303,491 @@ class ToolchainTests(unittest.TestCase):
         for path in root.rglob('*'):
             self.assertEqual(path.lstat().st_uid, os.getuid(), str(path))
 
-    def test_image_source_requires_maintenance_to_pull(self):
+    def test_image_source_is_pulled_without_maintenance(self):
         self.engine.exists = False
         self.engine.image_tar = tool_archive(prefix='tool')
-        recipe = {'source': {'image': DIGEST, 'path': '/opt/tool'}}
-        self.assert_rejected(name('MAINTENANCE'), **recipe)
-        self.assertFalse(any(call[:1] == ['pull'] for call in self.engine.calls))
-        self.env[name('MAINTENANCE')] = '1'
-        self.add(**recipe)
+        self.assertNotIn(name('MAINTENANCE'), self.env)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.add(source={'image': DIGEST, 'path': '/opt/tool'})
+        self.assertIn('Pulling ' + DIGEST, output.getvalue())
         self.assertIn(['pull', DIGEST], self.engine.calls)
+        self.assertFalse(any(call[:1] == ['build'] for call in self.engine.calls))
         create = next(call for call in self.engine.calls if call[:1] == ['create'])
         self.assertIn('--network=none', create)
         self.assertIn(['cp', 'c' * 64 + ':/opt/tool', '-'], self.engine.calls)
         self.assertIn(['rm', '--force', 'c' * 64], self.engine.calls)
         manifest = json.loads((self.library / 'tool/toolchain.json').read_text())
-        self.assertEqual(manifest['source'], {'image': DIGEST, 'path': '/opt/tool'})
+        self.assertEqual(manifest['source'], [{'image': DIGEST, 'path': '/opt/tool', 'image_id': 'sha256:' + 'b' * 64}])
+
+    def test_failed_pull_names_the_image(self):
+        self.add(name='other', archive_bytes=tool_archive(command='other'), check=['other'], env={})
+        self.engine.exists = False
+        self.engine.pull_status = 125
+        error = self.assert_rejected('Cannot pull ' + DIGEST, source={'image': DIGEST, 'path': '/opt/tool'})
+        self.assertIn('manifest unknown', str(error))
+        self.assertFalse((self.library / 'tool').exists())
+        self.assertFalse(any(call[:1] == ['create'] for call in self.engine.calls))
 
     def test_owned_container_removed_after_failed_copy(self):
         self.engine.image_tar = tar_bytes([('tool/../x', 'file', b'x', 0o644)])
         self.assert_rejected('unsafe', source={'image': DIGEST, 'path': '/opt/tool'})
         self.assertIn(['rm', '--force', 'c' * 64], self.engine.calls)
+
+    # Schema 2: several sources in one toolchain
+
+    def test_schema_two_recipe_validation(self):
+        good = self.archive_source(tool_archive(), strip_components=1)
+        member = {'archive': good['archive'], 'sha256': good['sha256']}
+        url = {'url': 'https://example.org/tool.tar', 'sha256': good['sha256']}
+        cases = {
+            'unsupported schema': ({'schema': 3}, 'schema must be 1 or 2'),
+            'schema-1 key in schema 2': ({'schema': 2, 'sources': [good], 'source': good}, 'unknown key source'),
+            'no sources': ({'schema': 2}, 'missing key sources'),
+            'empty sources': ({'schema': 2, 'sources': []}, 'sources must be a list'),
+            'too many sources': ({'schema': 2, 'sources': [good] * 17}, 'sources must be a list'),
+            'source not an object': ({'schema': 2, 'sources': ['tool.tar']}, 'must be an object'),
+            'URL in schema 1': ({'source': url}, 'needs image and path, or archive'),
+            'plain HTTP URL': ({'schema': 2, 'sources': [{**url, 'url': 'http://example.org/t.tar'}]}, 'https://'),
+            'URL with credentials': ({'schema': 2, 'sources': [{**url, 'url': 'https://u:p@example.org/t.tar'}]},
+                                     'without credentials'),
+            'URL with spaces': ({'schema': 2, 'sources': [{**url, 'url': 'https://example.org/a b.tar'}]}, 'https://'),
+            'path and strip': ({'schema': 2, 'sources': [{**good, 'path': 'tool-1.0'}]}, 'either path or strip'),
+            'absolute member path': ({'schema': 2, 'sources': [{**member, 'path': '/tool-1.0'}]}, 'relative'),
+            'parent member path': ({'schema': 2, 'sources': [{**member, 'path': 'tool-1.0/..'}]}, 'relative'),
+            'empty member path': ({'schema': 2, 'sources': [{**member, 'path': ''}]}, 'directory inside the archive'),
+            'absolute target': ({'schema': 2, 'sources': [{**good, 'target': '/opt'}]}, 'relative'),
+            'parent target': ({'schema': 2, 'sources': [{**good, 'target': '../x'}]}, 'relative'),
+            'strip on an image': ({'schema': 2, 'sources': [{'image': DIGEST, 'path': '/opt', 'strip_components': 1}]},
+                                  'unknown keys'),
+            'target in schema 1': ({'source': {**good, 'target': 'lib'}}, 'unknown keys'),
+        }
+        for label, (values, message) in cases.items():
+            with self.subTest(label=label):
+                self.assert_rejected(message, **values)
+
+    def test_schema_two_recipe_with_target(self):
+        source = self.archive_source(tool_archive(), strip_components=1, target='opt/tool')
+        self.add(schema=2, sources=[source], path=['opt/tool/bin'])
+        self.assertTrue((self.library / 'tool/opt/tool/bin/tool').is_file())
+        manifest = json.loads((self.library / 'tool/toolchain.json').read_text())
+        self.assertEqual(manifest['source'], [{'archive': 'part.tar', 'sha256': source['sha256'], 'target': 'opt/tool'}])
+        self.assertNotIn('sources', manifest)
+        self.assertEqual(self.index()['toolchains'][0]['commands'], ['tool'])
+
+    def test_sources_merge_into_one_root(self):
+        compiler = tar_bytes([('dist/rustc/bin/tool', 'file', b'#!/bin/sh\necho ok\n', 0o755),
+                              ('dist/rustc/lib/core.rlib', 'file', b'core', 0o644),
+                              ('dist/rustc/manifest.in', 'file', b'rustc', 0o644)])
+        library = tar_bytes([('std/rust-std/lib/std.rlib', 'file', b'std', 0o644),
+                             ('std/rust-std/manifest.in', 'file', b'std', 0o644)])
+        sources = [self.archive_source(compiler, 'rustc', path='dist/rustc/bin', target='bin'),
+                   self.archive_source(compiler, 'rustc', path='dist/rustc/lib', target='lib'),
+                   self.archive_source(library, 'std', path='std/rust-std/lib', target='lib')]
+        checked = []
+        original_check = toolchains.check
+
+        def record_tree(library_path, toolchain, root, *args):
+            checked.extend(sorted(str(p.relative_to(root)) for p in Path(root).rglob('*') if p.is_file()))
+            return original_check(library_path, toolchain, root, *args)
+        with patch.object(toolchains, 'verified_copy', wraps=toolchains.verified_copy) as copy, \
+                patch.object(toolchains, 'check', side_effect=record_tree):
+            self.add(schema=2, sources=sources)
+        # Each archive is read once per command, however many sources use it.
+        self.assertEqual(copy.call_count, 2)
+        # The check ran on the merged tree, before the manifest was written.
+        self.assertEqual(checked, ['bin/tool', 'env.sh', 'lib/core.rlib', 'lib/std.rlib'])
+        root = self.library / 'tool'
+        self.assertFalse((root / 'manifest.in').exists())
+        manifest = json.loads((root / 'toolchain.json').read_text())
+        self.assertEqual([(r['archive'], r['path'], r['target']) for r in manifest['source']],
+                         [('rustc.tar', 'dist/rustc/bin', 'bin'), ('rustc.tar', 'dist/rustc/lib', 'lib'),
+                          ('std.tar', 'std/rust-std/lib', 'lib')])
+        self.assertEqual(self.leftovers(), [])
+
+    def test_sources_that_provide_the_same_file_fail(self):
+        first = self.archive_source(tool_archive(), 'first', strip_components=1)
+        cases = {
+            'same file': (self.archive_source(tar_bytes([('x/bin/tool', 'file', b'x', 0o755)]), 'second',
+                                              strip_components=1), 'bin/tool'),
+            'file where a directory goes': (self.archive_source(tar_bytes([('x/bin', 'file', b'x', 0o644)]), 'third',
+                                                                strip_components=1), 'bin'),
+            'target below a file': (self.archive_source(tar_bytes([('x/y', 'file', b'x', 0o644)]), 'fourth',
+                                                        strip_components=1, target='README/sub'), 'README'),
+        }
+        for label, (second, path) in cases.items():
+            with self.subTest(label=label):
+                error = self.assert_rejected('overlap', schema=2, sources=[first, second])
+                self.assertIn('overlap at ' + path, str(error))
+                self.assertFalse((self.library / 'tool').exists())
+                self.assertEqual(self.leftovers(), [])
+
+    def test_missing_archive_path_fails(self):
+        source = self.archive_source(tool_archive(), path='tool-2.0/bin')
+        self.assert_rejected('not found', schema=2, sources=[source])
+        self.assertEqual(self.leftovers(), [])
+
+    def test_archive_is_extracted_from_the_verified_copy(self):
+        # A local archive changed after its check (for example in a workspace)
+        # cannot reach the toolchain: extraction reads the private copy.
+        source = self.archive_source(tool_archive(), strip_components=1)
+        original = toolchains.verified_copy
+
+        def replace_after_copy(item, library, env):
+            copy = original(item, library, env)
+            Path(item['archive']).write_bytes(tool_archive(extra=(('tool-1.0/evil', 'file', b'x', 0o755),)))
+            return copy
+        with patch.object(toolchains, 'verified_copy', side_effect=replace_after_copy):
+            self.add(schema=2, sources=[source])
+        self.assertTrue((self.library / 'tool/bin/tool').is_file())
+        self.assertFalse((self.library / 'tool/evil').exists())
+
+    def test_library_format_stays_readable_by_older_wrappers(self):
+        # Wrappers on older reference tags read the shared library (design D3).
+        self.add()
+        entries = self.index()['toolchains']
+        environment = toolchains.launch_env(self.library, BASE)
+        recipe = json.loads(self.recipe().read_text())
+        recipe.update(schema=2, sources=[recipe.pop('source')])
+        path = self.base / 'tool-schema-2.json'
+        path.write_text(json.dumps(recipe))
+        toolchains.add(self.library, path, self.env)
+        index = self.index()
+        self.assertEqual(index['schema'], 1)
+        self.assertEqual(index['toolchains'], entries)
+        self.assertEqual(toolchains.launch_env(self.library, BASE), environment)
+        manifest = json.loads((self.library / 'tool/toolchain.json').read_text())
+        for key in ('name', 'version', 'default', 'commands', 'path', 'env', 'requires', 'notes', 'check', 'source',
+                    'verified'):
+            self.assertIn(key, manifest)
+        self.assertEqual(manifest['source'], [{'archive': 'tool-tool.tar', 'sha256': recipe['sources'][0]['sha256']}])
+
+    # Archive downloads
+
+    def archive_server(self, routes):
+        directory = self.base / 'server'
+        directory.mkdir(exist_ok=True)
+        server = ArchiveServer(directory, routes)
+        self.addCleanup(server.close)
+        # urllib takes proxies from the process environment, as on the host.
+        patcher = patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for key in [key for key in os.environ if key.lower() in ('http_proxy', 'https_proxy', 'all_proxy')]:
+            del os.environ[key]
+        return server
+
+    def trust(self, server):
+        self.env.update({name('TRUST_HOST_CA'): '1', name('CA_BUNDLE'): str(server.cert)})
+
+    def test_download_with_the_saved_host_ca(self):
+        data = tool_archive()
+        server = self.archive_server({'/tool.tar': (200, {}, data)})
+        self.trust(server)
+        self.assertNotIn(name('MAINTENANCE'), self.env)
+        common_source = {'url': server.url('/tool.tar'), 'sha256': hashlib.sha256(data).hexdigest()}
+        sources = [{**common_source, 'path': 'tool-1.0/bin', 'target': 'bin'},
+                   {**common_source, 'path': 'tool-1.0', 'target': 'share/tool'}]
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.add(schema=2, sources=sources)
+        # Two sources share the archive: one download.
+        self.assertEqual(server.requests, ['/tool.tar'])
+        self.assertEqual(output.getvalue().count('Downloading ' + server.url('/tool.tar')), 1)
+        self.assertTrue((self.library / 'tool/bin/tool').is_file())
+        self.assertTrue((self.library / 'tool/share/tool/README').is_file())
+        manifest = json.loads((self.library / 'tool/toolchain.json').read_text())
+        self.assertEqual(manifest['source'][0], {'url': server.url('/tool.tar'), 'sha256': common_source['sha256'],
+                                                 'path': 'tool-1.0/bin', 'target': 'bin'})
+        self.assertEqual(self.leftovers(), [])
+
+    def test_download_follows_https_redirects_only(self):
+        data = tool_archive()
+        server = self.archive_server({'/tool.tar': (200, {}, data)})
+        server.routes['/moved'] = (302, {'Location': server.url('/tool.tar')}, b'')
+        server.routes['/insecure'] = (302, {'Location': server.url('/tool.tar', scheme='http')}, b'')
+        self.trust(server)
+        source = {'sha256': hashlib.sha256(data).hexdigest(), 'strip_components': 1}
+        error = self.assert_rejected('not https', schema=2, sources=[{**source, 'url': server.url('/insecure')}])
+        self.assertIn(server.url('/insecure'), str(error))
+        self.assertEqual(server.requests, ['/insecure'])
+        self.assertFalse((self.library / 'tool').exists())
+        self.assertEqual(self.leftovers(), [])
+        self.add(schema=2, sources=[{**source, 'url': server.url('/moved')}])
+        self.assertEqual(server.requests, ['/insecure', '/moved', '/tool.tar'])
+        self.assertTrue((self.library / 'tool/bin/tool').is_file())
+
+    def test_untrusted_certificate_fails_with_guidance(self):
+        data = tool_archive()
+        server = self.archive_server({'/tool.tar': (200, {}, data)})
+        source = {'url': server.url('/tool.tar'), 'sha256': hashlib.sha256(data).hexdigest(), 'strip_components': 1}
+        error = self.assert_rejected('Cannot download ' + server.url('/tool.tar'), schema=2, sources=[source])
+        self.assertIn('host CA trust', str(error))
+        self.assertFalse((self.library / 'tool').exists())
+        self.assertEqual(self.leftovers(), [])
+
+    def test_plain_http_url_is_refused_before_any_download(self):
+        with patch.object(toolchains, 'download') as download:
+            self.assert_rejected('https://', schema=2,
+                                 sources=[{'url': 'http://localhost/tool.tar', 'sha256': '0' * 64}])
+        download.assert_not_called()
+
+    def test_failed_downloads_leave_nothing(self):
+        data = tool_archive()
+        server = self.archive_server({'/tool.tar': (200, {}, data)})
+        self.trust(server)
+        good = {'url': server.url('/tool.tar'), 'sha256': hashlib.sha256(data).hexdigest(), 'strip_components': 1}
+        cases = {
+            'checksum mismatch': ({**good, 'sha256': '0' * 64}, 'SHA-256 mismatch for ' + good['url']),
+            'missing file': ({**good, 'url': server.url('/gone.tar')}, 'Cannot download ' + server.url('/gone.tar')),
+        }
+        for label, (source, message) in cases.items():
+            with self.subTest(label=label):
+                self.assert_rejected(message, schema=2, sources=[source])
+                self.assertEqual(self.leftovers(), [])
+        with patch.object(toolchains, 'DOWNLOAD_LIMIT', 16):
+            self.assert_rejected('larger than 16 bytes', schema=2, sources=[good])
+        self.assertEqual(self.leftovers(), [])
+        self.assertFalse((self.library / 'tool').exists())
+
+    # Release catalog
+
+    def catalog_recipe(self, toolchain='tool', **values):
+        recipe = {'schema': 2, 'name': toolchain, 'version': '1.0',
+                  'sources': [{'image': DIGEST, 'path': '/opt/' + toolchain}],
+                  'path': ['bin'], 'env': {}, 'check': [toolchain], 'default': False}
+        recipe.update(values)
+        return recipe
+
+    def use_catalog(self, *recipes):
+        directory = self.base / 'catalog'
+        directory.mkdir()
+        for recipe in recipes:
+            (directory / (recipe['name'] + '.json')).write_text(json.dumps(recipe))
+        patcher = patch.object(toolchains, 'CATALOG', directory)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_add_by_catalog_name(self):
+        self.engine.image_tar = tool_archive(prefix='tool')
+        self.use_catalog(self.catalog_recipe(), self.catalog_recipe('other'))
+        toolchains.add(self.library, 'tool', self.env)
+        self.assertTrue((self.library / 'tool/bin/tool').is_file())
+        self.assertIn(['cp', 'c' * 64 + ':/opt/tool', '-'], self.engine.calls)
+        self.assertEqual([item['name'] for item in self.index()['toolchains']], ['tool'])
+
+    def test_unknown_catalog_name_fetches_nothing(self):
+        self.use_catalog(self.catalog_recipe(), self.catalog_recipe('other'))
+        with self.assertRaises(common.SetupError) as raised:
+            toolchains.add(self.library, 'tol', self.env)
+        self.assertIn('No catalog recipe named tol; available: other, tool', str(raised.exception))
+        self.assertEqual(self.engine.calls, [])
+        self.assertFalse(self.library.exists())
+
+    def test_list_shows_available_catalog_recipes(self):
+        self.engine.image_tar = tool_archive(prefix='tool')
+        self.use_catalog(self.catalog_recipe(), self.catalog_recipe('other', version='2.0', requires=['tool']))
+        toolchains.add(self.library, 'tool', self.env)
+        lines = toolchains.listing(self.library, self.env)
+        self.assertEqual(lines[0], 'Toolchain library: ' + str(self.library))
+        self.assertTrue(lines[1].startswith('tool\t1.0\tdefault=no\t'), lines)
+        self.assertEqual(lines[2:], ['Available in the catalog (add <name>):',
+                                     'other\t2.0\tdefault=no\trequires=tool\tavailable'])
+
+    def test_catalog_accepts_only_pinned_remote_sources(self):
+        cases = {
+            'tag-only image': {'sources': [{'image': 'docker.io/library/example:1', 'path': '/opt/tool'}]},
+            'plain HTTP URL': {'sources': [{'url': 'http://example.org/t.tar', 'sha256': 'a' * 64}]},
+            'URL without SHA-256': {'sources': [{'url': 'https://example.org/t.tar'}]},
+            'local archive': {'sources': [{'archive': '/srv/t.tar', 'sha256': 'a' * 64}]},
+            'name differs from the file': {'name': 'renamed'},
+        }
+        for index, (label, values) in enumerate(cases.items()):
+            with self.subTest(label=label):
+                directory = self.base / ('catalog-' + str(index))
+                directory.mkdir()
+                (directory / 'tool.json').write_text(json.dumps(self.catalog_recipe(**values)))
+                with self.assertRaises(common.SetupError):
+                    toolchains.catalog(directory)
+
+    # Recipe location
+
+    def project_recipe(self, relative, archive_inside=False):
+        """A project directory, a recipe at project/relative, and its local archive."""
+        project = self.base / 'projects/app'
+        project.mkdir(parents=True, exist_ok=True)
+        recipe_path = self.base / relative
+        recipe_path.parent.mkdir(parents=True, exist_ok=True)
+        data = tool_archive()
+        archive = (project if archive_inside else self.base) / 'tool-archive.tar'
+        archive.write_bytes(data)
+        recipe = json.loads(self.recipe().read_text())
+        recipe['source'] = {'archive': str(archive), 'sha256': hashlib.sha256(data).hexdigest(), 'strip_components': 1}
+        recipe_path.write_text(json.dumps(recipe))
+        os.chdir(project)
+        return recipe_path
+
+    def assert_location_refused(self, argument, inside):
+        with self.assertRaises(common.SetupError) as raised:
+            toolchains.add(self.library, argument, self.env)
+        self.assertIn('is inside ' + str(inside), str(raised.exception))
+        self.assertEqual(self.engine.calls, [])
+        self.assertFalse(self.library.exists())
+
+    def test_recipe_in_the_workspace_is_refused(self):
+        self.project_recipe('projects/app/tools/java.json')
+        self.assert_location_refused('tools/java.json', self.base / 'projects/app')
+
+    def test_recipe_kept_outside_is_accepted(self):
+        recipe = self.project_recipe('recipes/java.json')
+        toolchains.add(self.library, str(recipe), self.env)
+        self.assertTrue((self.library / 'tool/bin/tool').is_file())
+
+    def test_saved_worktree_scope_widens_the_refusal(self):
+        recipe = self.project_recipe('projects/sibling/java.json')
+        with patch.object(toolchains, 'saved_worktree_scope', return_value=True):
+            self.assert_location_refused(str(recipe), self.base / 'projects')
+        # Without the scope, sessions started from the project do not mount its siblings.
+        toolchains.add(self.library, str(recipe), self.env)
+        self.assertTrue((self.library / 'tool').is_dir())
+
+    def test_recipe_in_a_state_directory_is_refused(self):
+        recipe = self.project_recipe('state/java.json')
+        self.env[name('STATE_DIR')] = str(self.base / 'state')
+        self.assert_location_refused(str(recipe), self.base / 'state')
+
+    def test_local_archive_in_the_workspace_is_accepted(self):
+        recipe = self.project_recipe('recipes/java.json', archive_inside=True)
+        toolchains.add(self.library, str(recipe), self.env)
+        self.assertTrue((self.library / 'tool/bin/tool').is_file())
+
+    def test_catalog_recipes_are_not_location_checked(self):
+        # The release catalog may lie below the current directory, as in a checkout.
+        self.engine.image_tar = tool_archive(prefix='tool')
+        self.use_catalog(self.catalog_recipe())
+        os.chdir(self.base)
+        toolchains.add(self.library, 'tool', self.env)
+        self.assertTrue((self.library / 'tool/bin/tool').is_file())
+
+    def test_saved_worktree_scope_is_read_from_the_release(self):
+        release = self.base / 'release'
+        release.mkdir()
+        with patch.object(toolchains, 'INSTALLATION', release):
+            self.assertFalse(toolchains.saved_worktree_scope())
+            for saved, expected in (({'worktree': True}, True), ({'worktree': False}, False), ({}, False)):
+                (release / 'setup.json').write_text(json.dumps(saved))
+                self.assertEqual(toolchains.saved_worktree_scope(), expected, saved)
+            (release / 'setup.json').write_text('{not json')
+            with self.assertRaises(common.SetupError):
+                toolchains.saved_worktree_scope()
+
+    # Windows paths from the Windows entry
+
+    def windows_entry(self):
+        """A fake mountinfo with C: mounted on a directory of the test, as in a Podman machine."""
+        self.drive = self.base / 'mnt/c'
+        self.drive.mkdir(parents=True)
+        mountinfo = self.base / 'mountinfo'
+        mountinfo.write_text(
+            '785 645 0:138 / ' + str(self.drive) + ' rw,noatime shared:266 - 9p C:\\134 '
+            'rw,aname=drvfs;path=C:\\;uid=1000;gid=1000;symlinkroot=/mnt/,cache=0x5\n'
+            '864 645 0:138 /Users/me/AppData/Roaming/containers /etc/containers rw,noatime shared:266 - 9p C:\\134 '
+            'rw,aname=drvfs;path=C:\\;uid=1000;gid=1000\n')
+        patcher = patch.object(toolchains, 'MOUNTINFO', mountinfo)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.env[common.WINDOWS_ENTRY] = '/mnt/c/Programs/sandbox'
+
+    def windows_recipe(self, archive, schema=1):
+        """C:\\Work\\recipes\\java.json naming the given archive path, with C:\\Work\\recipes\\tool.tar present."""
+        recipes = self.drive / 'Work/recipes'
+        recipes.mkdir(parents=True, exist_ok=True)
+        data = tool_archive()
+        (recipes / 'tool.tar').write_bytes(data)
+        recipe = json.loads(self.recipe().read_text())
+        source = {'archive': archive, 'sha256': hashlib.sha256(data).hexdigest(), 'strip_components': 1}
+        if schema == 1:
+            recipe['source'] = source
+        else:
+            del recipe['source']
+            recipe.update(schema=2, sources=[source])
+        (recipes / 'java.json').write_text(json.dumps(recipe))
+
+    def test_drive_mounts_come_from_mountinfo(self):
+        mountinfo = self.base / 'mountinfo'
+        mountinfo.write_text(
+            '785 645 0:138 / /mnt/c rw - 9p C:\\134 rw,aname=drvfs;path=C:\\;uid=1000\n'
+            '864 645 0:138 /Users/me /etc/containers rw - 9p C:\\134 rw,aname=drvfs;path=C:\\;uid=1000\n'
+            '900 645 0:140 / /mnt/d\\040disk rw - 9p D:\\134 rw,aname=drvfs;path=D:\\;uid=1000\n'
+            '901 645 0:141 / /mnt/e rw - 9p E:\\134Data rw,aname=drvfs;path=E:\\Data;uid=1000\n'
+            '902 645 0:142 / /data rw - ext4 /dev/sdb rw\n')
+        with patch.object(toolchains, 'MOUNTINFO', mountinfo):
+            # Whole drives only: a bind of a subdirectory and a drive subdirectory are not drive roots.
+            self.assertEqual(toolchains.drive_mounts(), {'c': '/mnt/c', 'd': '/mnt/d disk'})
+        with patch.object(toolchains, 'MOUNTINFO', self.base / 'missing'):
+            self.assertEqual(toolchains.drive_mounts(), {})
+
+    def test_windows_recipe_and_archive_paths_are_translated(self):
+        self.windows_entry()
+        self.windows_recipe('C:\\Work\\recipes\\tool.tar')
+        with patch.object(toolchains, 'drive_mounts', wraps=toolchains.drive_mounts) as mounts:
+            toolchains.add(self.library, 'C:\\Work\\recipes\\java.json', self.env)
+        self.assertTrue((self.library / 'tool/bin/tool').is_file())
+        # The recipe path and its archive path.
+        self.assertEqual(mounts.call_count, 2)
+        # Schema 2, forward slashes and another letter case.
+        self.windows_recipe('c:/Work/recipes/tool.tar', schema=2)
+        toolchains.add(self.library, 'C:/Work/recipes/java.json', self.env)
+        manifest = json.loads((self.library / 'tool/toolchain.json').read_text())
+        self.assertEqual(manifest['source'][0]['archive'], 'tool.tar')
+
+    def test_windows_network_wsl_unmounted_and_missing_paths_are_refused(self):
+        self.windows_entry()
+        cases = {
+            '\\\\server\\share\\java.json': 'network or device path',
+            '\\\\wsl.localhost\\Ubuntu\\home\\java.json': 'inside a WSL distribution',
+            '\\\\wsl$\\Ubuntu\\home\\java.json': 'inside a WSL distribution',
+            'Z:\\recipes\\java.json': 'is on drive Z:, which this distribution does not mount',
+            'C:\\Work\\missing.json': 'C:\\Work\\missing.json does not exist (' + str(self.drive) + '/Work/missing.json',
+        }
+        for argument, message in cases.items():
+            with self.subTest(argument=argument), self.assertRaises(common.SetupError) as raised:
+                toolchains.add(self.library, argument, self.env)
+            self.assertIn(message, str(raised.exception))
+        # The archive of a recipe on a Windows drive follows the same rules.
+        self.windows_recipe('\\\\server\\share\\tool.tar')
+        with self.assertRaises(common.SetupError) as raised:
+            toolchains.add(self.library, 'C:\\Work\\recipes\\java.json', self.env)
+        self.assertIn('network or device path', str(raised.exception))
+        self.assertEqual(self.engine.calls, [])
+        self.assertFalse(self.library.exists())
+
+    def test_windows_paths_unchanged_outside_the_windows_entry(self):
+        self.windows_entry()
+        del self.env[common.WINDOWS_ENTRY]
+        with patch.object(toolchains, 'drive_mounts') as mounts, self.assertRaises(common.SetupError) as raised:
+            toolchains.add(self.library, 'C:\\Work\\recipes\\java.json', self.env)
+        # A relative file name for Linux, like any other: no translation.
+        self.assertIn(str(self.cwd / 'C:\\Work\\recipes\\java.json'), str(raised.exception))
+        mounts.assert_not_called()
+
+    def test_release_catalog_is_pinned_and_installed(self):
+        directory = ROOT / 'setup/toolchain-catalog'
+        files = sorted('setup/toolchain-catalog/' + path.name for path in directory.glob('*.json'))
+        self.assertTrue(files)
+        # Every recipe in the directory reaches releases and the Windows installed copy.
+        self.assertEqual(sorted(common.TOOLCHAIN_CATALOG), files)
+        self.assertLessEqual(set(common.TOOLCHAIN_CATALOG), set(common.MANIFEST))
+        recipes = toolchains.catalog(directory)
+        self.assertEqual(sorted(recipes), sorted(Path(name).stem for name in files))
+        for toolchain, recipe in recipes.items():
+            for source in recipe['sources']:
+                with self.subTest(toolchain=toolchain, source=source):
+                    if 'image' in source:
+                        self.assertRegex(source['image'], r'@sha256:[a-f0-9]{64}$')
+                    else:
+                        self.assertTrue(source['url'].startswith('https://'))
+                        self.assertRegex(source['sha256'], r'^[a-f0-9]{64}$')
 
     # Verification
 
@@ -361,8 +900,8 @@ class ToolchainTests(unittest.TestCase):
         self.assertEqual(entry['commands'], ['tool'])
         self.assertEqual(entry['env']['TOOL_HOME'], '/toolchains/tool')
         self.assertEqual(entry['path'], ['/toolchains/tool/bin'])
-        self.assertEqual(entry['source'], {'archive': 'tool-tool.tar',
-                                           'sha256': json.loads(self.recipe().read_text())['source']['sha256']})
+        self.assertEqual(entry['source'], [{'archive': 'tool-tool.tar',
+                                            'sha256': json.loads(self.recipe().read_text())['source']['sha256']}])
         guide = (self.library / 'toolchains.md').read_text()
         for needle in ('read-only', 'Do not install', 'ask the operator', '. /toolchains/tool/env.sh && tool',
                        'Use GOTMPDIR under the workspace for go test.', BASE, 'TOOL_HOME'):

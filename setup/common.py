@@ -30,11 +30,14 @@ WINDOWS_ENTRY = 'WRAPPER_WINDOWS_ENTRY'
 DRIVE_MOUNT = re.compile(r'/mnt/[A-Za-z](?:/|$)')
 
 
+# Reviewed toolchain recipes that every release installs (`--container-toolchain add <name>`).
+TOOLCHAIN_CATALOG = tuple('setup/toolchain-catalog/' + name + '.json'
+                          for name in ('go', 'java21', 'maven3.9', 'node24', 'python3.13', 'rust'))
 MANIFEST = (
     PROFILE.wrapper, 'launcher/core.sh', 'launcher/windows/bootstrap.sh', 'launcher/windows/enter.sh',
     'agent/launcher.sh', 'Containerfile', '.containerignore', agent_profile.PROFILE, agent_profile.POLICY,
     'setup/common.py', 'setup/setup.py', 'setup/launch.py', 'setup/smoke.py', 'setup/diagnostics.py',
-    'setup/toolchains.py',
+    'setup/toolchains.py', *TOOLCHAIN_CATALOG,
     'network/Containerfile', 'network/.containerignore',
     'network/guard-build.Containerfile', 'network/build-guard.sh',
     'network/guard.c', 'network/guard_landlock.h', 'network/guard_seccomp.h',

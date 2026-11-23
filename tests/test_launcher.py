@@ -433,14 +433,21 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('Toolchain library: ' + str(self.library), result.stdout)
         self.assertIn('No toolchains are installed.', result.stdout)
         self.assertEqual(self.calls(), [])
+        usage = 'usage: --container-toolchain add <recipe.json|name> | list | remove <name> | verify [<name>]'
         for args, message in ((('--version', '--container-toolchain', 'list'), 'must be the first argument'),
-                              (('--container-toolchain', 'launch-env'), 'usage'),
-                              (('--container-toolchain',), 'usage')):
+                              (('--container-toolchain', 'launch-env'), usage),
+                              (('--container-toolchain',), usage)):
             with self.subTest(args=args):
                 result = self.run_wrapper(*args)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
                 self.assertFalse(any(c[0] in ('create', 'build') for c in self.calls()))
+        # Help names catalog recipes and says that add fetches without maintenance consent.
+        result = self.run_wrapper('--container-help')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('add <recipe.json|name> | list | remove <name> | verify [<name>]', result.stdout)
+        self.assertIn('add pulls pinned images and downloads pinned archives itself', result.stdout)
+        self.assertFalse(any(c[0] in ('create', 'build', 'pull') for c in self.calls()))
 
     def test_toolchain_library_created_private_and_mounted_read_only(self):
         self.assertFalse(self.library.exists())

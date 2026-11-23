@@ -92,6 +92,16 @@ The toolchain library (`add-toolchain-library`) changes the wrapper and adds
 `--container-setup` after upgrading. Setup does not manage toolchains: the
 operator adds them with `--container-toolchain`, and every session mounts the
 library read-only at `/toolchains` (see the README "Toolchains" section).
+`--container-toolchain add` pulls digest-pinned images and downloads
+SHA-256-pinned archives without maintenance consent, because it runs no code
+while fetching; it never builds an image, and image builds keep requiring
+`SANDBOX_CONTAINER_MAINTENANCE=1`. After it selects a new release, setup reruns
+the check of each installed toolchain verified on another base image, with the
+new runtime image, and prints `Re-verifying toolchains checked on another base
+image: …` followed by one result per toolchain. A failed check does not fail
+setup; that toolchain gets no default environment until
+`--container-toolchain verify <name>` succeeds. Setup checks nothing when every
+toolchain was verified on the new base.
 
 Setup and qualification refuse provider mode for this profile before any
 image, proxy or container operation. The provider CONNECT/SNI binding, its

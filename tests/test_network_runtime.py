@@ -69,6 +69,7 @@ class NetworkRuntime(unittest.TestCase):
         for name in ('agent/profile.json', 'agent/policies/default.json', 'agent/launcher.sh', 'setup/common.py',
                      'setup/toolchains.py', 'Containerfile', '.containerignore', 'launcher/core.sh'):
             shutil.copyfile(ROOT / name, self.install / name)
+        shutil.copytree(ROOT / 'setup/toolchain-catalog', self.install / 'setup/toolchain-catalog', dirs_exist_ok=True)
         binary_dir = self.install / 'network/bin'
         binary_dir.mkdir(mode=0o700, exist_ok=True)
         for name in ('sandbox-egress-guard', 'sandbox-egress-guard.sha256'):
@@ -421,32 +422,13 @@ exit 0"""
         self.assertNotIn('direct-network', output)
 
     @unittest.skipUnless(os.environ.get('SANDBOX_TOOLCHAIN_EXAMPLES') == '1',
-                         'set SANDBOX_TOOLCHAIN_EXAMPLES=1 to download, pull and verify the documented toolchains')
+                         'set SANDBOX_TOOLCHAIN_EXAMPLES=1 to pull, download and verify the catalog toolchains')
     def test_documented_toolchain_examples_in_an_offline_session(self):
-        examples = ROOT / 'docs/toolchains'
-        sources = json.loads((examples / 'sources.json').read_text())
-        environment = self.env | {real_env('MAINTENANCE'): '1'}
-        rust_image = 'localhost/sandbox-rust-musl:example-' + uuid.uuid4().hex[:8]
-        self.addCleanup(subprocess.run, ['podman', 'image', 'rm', '--force', '--ignore', rust_image],
-                        capture_output=True, timeout=120)
-        build = subprocess.run(['podman', 'build', '--tag', rust_image, '--file', str(examples / sources['rust']),
-                                str(examples)], capture_output=True, text=True, timeout=900)
-        self.assert_success(build)
-        rust_digest = self.podman('image', 'inspect', '--format', '{{.Digest}}', rust_image)
+        # Every catalog recipe is added by name: no maintenance consent, manual download or image build.
+        environment = {key: value for key, value in self.env.items() if key != real_env('MAINTENANCE')}
         results = {}
         for name in ('java21', 'maven3.9', 'go', 'node24', 'python3.13', 'rust'):
-            recipe = json.loads((examples / (name + '.json')).read_text())
-            if 'archive' in recipe['source']:
-                archive = self.base / Path(recipe['source']['archive']).name
-                download = subprocess.run(['curl', '-fsSL', '-o', str(archive), sources[name]],
-                                          capture_output=True, text=True, timeout=600)
-                self.assert_success(download)
-                recipe['source']['archive'] = str(archive)
-            if name == 'rust':
-                recipe['source']['image'] = rust_image.split(':')[0] + '@' + rust_digest
-            path = self.base / (name + '.json')
-            path.write_text(json.dumps(recipe))
-            added = subprocess.run([str(self.wrapper), '--container-toolchain', 'add', str(path)], cwd=self.project,
+            added = subprocess.run([str(self.wrapper), '--container-toolchain', 'add', name], cwd=self.project,
                                    env=environment, capture_output=True, text=True, timeout=900)
             results[name] = added.stdout + added.stderr
             self.assert_success(added)

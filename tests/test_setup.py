@@ -1066,7 +1066,7 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
 
         patches = dict(check_prerequisites=None, questionnaire=(value, None), planned_paths=root, owned_command=None,
                        prepare_service=self.env, image_identity='', engine_delegation=([], 'systemd', '6.6'),
-                       yes=True, prepare_state=[], validate=None, activate=None, authenticate='none')
+                       yes=True, prepare_state=[], validate=None, authenticate='none')
         for smoke_fails in (True, False):
             with self.subTest(smoke_fails=smoke_fails), contextlib.ExitStack() as stack:
                 stack.enter_context(patch.object(setup.sys.stdin, 'isatty', return_value=True))
@@ -1076,6 +1076,10 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
                 stack.enter_context(patch.object(setup, 'prepare_artifacts', side_effect=artifacts))
                 stack.enter_context(patch.object(setup, 'smoke',
                                                  side_effect=common.SetupError('smoke failed') if smoke_fails else None))
+                order = []
+                stack.enter_context(patch.object(setup, 'activate', side_effect=lambda *args: order.append('activate')))
+                reverify = stack.enter_context(patch.object(setup, 'reverify_toolchains',
+                                                            side_effect=lambda *args: order.append('reverify')))
                 release = stack.enter_context(patch.object(setup, 'release_owned_tags'))
                 stack.enter_context(patch('builtins.print'))
                 root.mkdir(parents=True, exist_ok=True)
@@ -1085,9 +1089,78 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
                     tags = release.call_args.args[0]
                     self.assertEqual(len(tags), 1)
                     self.assertRegex(tags[0], ':setup-[0-9a-f]{32}$')
+                    # The old release stays selected: the library keeps the base it recorded.
+                    reverify.assert_not_called()
                 else:
                     setup.main()
                     release.assert_not_called()
+                    # Toolchains are rechecked only with the selected new release.
+                    self.assertEqual(order, ['activate', 'reverify'])
+                    self.assertEqual(reverify.call_args.args[1].parent, root / 'releases')
+
+    def toolchain_manifests(self, **bases):
+        """Installed toolchains in the default library, each verified on the given base."""
+        library = self.home / '.local/share/sandbox-toolchains'
+        library.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for toolchain, base in bases.items():
+            (library / toolchain).mkdir()
+            (library / toolchain / 'toolchain.json').write_text(json.dumps(
+                {'name': toolchain, 'verified': {'base': base, 'date': '2026-11-01'}}))
+        return library
+
+    def test_setup_reverifies_toolchains_checked_on_another_base(self):
+        _, release = self.release()
+        current = setup.toolchains.base_reference(release)
+        other = 'docker.io/library/other@sha256:' + 'e' * 64
+        self.toolchain_manifests(stale=other, fresh=current, failing=other)
+        calls = []
+
+        def verify(release_dir, toolchain, env):
+            calls.append((release_dir, toolchain, env.get(name('IMAGE'))))
+            if toolchain == 'failing':
+                return subprocess.CompletedProcess([], 1, '', 'prefix: toolchain check failed for failing (status 1): x\n')
+            return subprocess.CompletedProcess([], 0, 'Verified ' + toolchain + '\n', '')
+        output = io.StringIO()
+        with patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stdout(output), \
+                patch.object(setup, 'run_toolchain_verify', side_effect=verify):
+            setup.reverify_toolchains(self.value, release)
+        self.assertEqual([call[1] for call in calls], ['failing', 'stale'])
+        self.assertTrue(all(call[0] == release and call[2] == self.value['image'] for call in calls), calls)
+        text = output.getvalue()
+        self.assertIn('stale: verified on the new base', text)
+        self.assertIn('failing: check failed (prefix: toolchain check failed for failing (status 1): x)', text)
+        self.assertIn('--container-toolchain verify failing succeeds', text)
+        self.assertNotIn('fresh', text)
+
+    def test_setup_runs_no_toolchain_check_when_nothing_is_stale(self):
+        _, release = self.release()
+        library = self.home / '.local/share/sandbox-toolchains'
+        output = io.StringIO()
+        with patch.dict(os.environ, self.env, clear=True), contextlib.redirect_stdout(output), \
+                patch.object(setup, 'run_toolchain_verify') as verify:
+            setup.reverify_toolchains(self.value, release)
+            self.assertFalse(library.exists())
+            self.toolchain_manifests(fresh=setup.toolchains.base_reference(release))
+            setup.reverify_toolchains(self.value, release)
+            verify.assert_not_called()
+            self.assertEqual(output.getvalue(), '')
+            # An unreadable library is reported, and setup goes on.
+            (library / 'broken').mkdir()
+            (library / 'broken/toolchain.json').write_text('{not json')
+            setup.reverify_toolchains(self.value, release)
+        verify.assert_not_called()
+        self.assertIn('Toolchains not re-verified: Invalid toolchain manifest: broken', output.getvalue())
+
+    def test_toolchain_verify_runs_the_release_command(self):
+        _, release = self.release()
+        completed = subprocess.CompletedProcess([], 0, '', '')
+        with patch.object(setup.subprocess, 'run', return_value=completed) as run:
+            setup.run_toolchain_verify(release, 'go', {'HOME': str(self.home)})
+        self.assertEqual(run.call_args.args[0], [sys.executable, '-I', str(release / 'setup/toolchains.py'), 'verify', 'go'])
+        self.assertEqual(run.call_args.kwargs['env'], {'HOME': str(self.home)})
+        self.assertEqual(run.call_args.kwargs['timeout'], setup.TOOLCHAIN_VERIFY_TIMEOUT)
+        with patch.object(setup.subprocess, 'run', side_effect=subprocess.TimeoutExpired('verify', 1)):
+            self.assertEqual(setup.run_toolchain_verify(release, 'go', {}).returncode, 1)
 
     def test_mode_specific_artifacts_and_scoped_maintenance(self):
         _, release = self.release()
@@ -1419,6 +1492,23 @@ printf 'APP_TTY=%s ARGS=%s\\n' "$terminal" "$*"
         code, output = pty_run([str(command), '--version'], self.env, project, [])
         self.assertEqual(code, 0, output)
         self.assertIn('APP_TTY=yes ARGS=--container-git-worktree --version', output)
+
+    def test_saved_worktree_scope_leaves_host_commands_first(self):
+        # The toolchain command must stay the first argument; sessions keep the scope.
+        self.value['worktree'] = True
+        root, release = self.release()
+        command = Path(self.value['command'])
+        setup.activate(root, release, command)
+        project = self.base / 'projects/project'
+        project.mkdir(parents=True)
+        (release / WRAPPER).write_text('#!/bin/bash\nprintf "ARGS=%s\\n" "$*"\n')
+        for args, expected in ((['--container-toolchain', 'list'], 'ARGS=--container-toolchain list'),
+                               (['--version'], 'ARGS=--container-git-worktree --version')):
+            with self.subTest(args=args):
+                result = subprocess.run([str(command), *args], cwd=project, env=self.env,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
 
     def test_smoke_budgets_follow_the_enforced_controllers(self):
         import smoke
