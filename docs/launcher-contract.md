@@ -60,8 +60,7 @@ defaults. Only the wording differs ("shell", "agent" or "session").
 | `TOOLCHAINS_DIR` | `${XDG_DATA_HOME:-~/.local/share}/sandbox-toolchains` | shared toolchain library |
 | `IMAGE` | profile image | image name |
 | `MAINTENANCE` | unset | exact `1` authorizes image preparation |
-| `PODMAN` | disabled | exact `1` enables host Podman access |
-| `PODMAN_SOCKET` | unset | absolute delegation socket override |
+| `PODMAN` | ignored | exact `1` stops the launch: host Podman delegation was removed |
 | `QUALIFICATION_INPUT` | unset | internal: qualification probe input |
 
 ### Variables with differing meaning or presence
@@ -122,7 +121,7 @@ authentication methods (none in S). The core reads these values through
 | Offline without protected installation | setup guidance before engine | (mode required) | (mode required) | (mode required) | (mode required) | (mode required) | union: S's check for every wrapper | - |
 | `<P>_NETWORK=provider` | refused: no authentication method | accepted | accepted | accepted | accepted | accepted | same; refused when the profile has no method | - |
 | Provider mode requires `NETWORK_PROFILE`, `NETWORK_POLICY`, `NETWORK_RUNTIME_DIR`, `EGRESS_IMAGE` | n/a | yes | yes | yes | yes | yes | same | - |
-| `<P>_PODMAN=1` outside unrestricted | refused | refused | refused | refused | refused | refused | same | - |
+| `<P>_PODMAN=1` outside unrestricted | refused | refused | refused | refused | refused | refused | refused in every mode since delegation was removed (`replace-podman-delegation-with-session-engine`) | - |
 | Boolean parsing (`1/true/yes`, `''/0/false/no`) | `boolean()` | `boolean()` | `boolean()` | `boolean()` | `case` | `case` | same: `boolean()` | - |
 | Empty `<P>_TOOLCHAINS` | mounted | mounted | mounted | **not mounted** (`${...-1}`) | mounted | mounted | same: empty means default (mounted); visible change for A | - |
 | Approval bypass variable | n/a | `CLAUDE_YOLO` | `CODEX_YOLO` adds `--yolo` | `ANTIGRAVITY_YOLO` | `OPENCODE_CONTAINER_YOLO`, refused with `OPENCODE_PERMISSION`, applied in shell mode too | `PI_CONTAINER_YOLO`, notice only | union: the core validates the profile's `approval_bypass_env` and never applies it in shell mode (visible for O) | `agent_approval_bypass` |
@@ -171,7 +170,7 @@ differs.
 | Launch engine check (rootless, Linux, `ServiceIsRemote` true or false, remote only with explicit `unix://`) | whole-string compare | as S | field parse, extra field refused | regex | regex | field parse | same: field parse with extra fields refused (X, P) | - |
 | Cgroup controllers, budget flags, notices for unenforced budgets | yes | yes | yes | yes | yes | yes | same | - |
 | Restricted modes: host Python, same-host service, backend, version, platform queries; probe needs restricted | yes | yes | yes | yes | yes | yes | same | - |
-| Podman delegation socket: override, `unix://` `CONTAINER_HOST`, XDG default; resolved; rootless and host path from the service | yes | yes | yes, clearer messages | yes, regex | yes | yes | same: resolve before the access check (X, O, P); the reported host path is never slash-only and, when visible to the wrapper, must be a socket (`verify-delegated-socket-path`) | - |
+| Podman delegation socket: override, `unix://` `CONTAINER_HOST`, XDG default; resolved; rootless and host path from the service | yes | yes | yes, clearer messages | yes, regex | yes | yes | removed with delegation (`replace-podman-delegation-with-session-engine`) | - |
 | `STATE_DIR` lexical check (absolute, no colon, CR or LF) before the engine | no | no | no | yes | yes | yes | union | - |
 | `STATE_DIR` must not overlap the workspace (physical paths) | `readlink -m` | as S | as S | parent-aware resolution | as A | as A | same: parent-aware resolution (A, O, P) | - |
 | Private directory rule (owner, `077` clear, created with `umask 077`, never repaired) | `private_directory` | as S | `private_state` with per-variable hints | `validate_private` | `check_private_dir` | `validate_state` | same: one function, X's messages | - |
@@ -188,7 +187,7 @@ differs.
 Covering tests: `test_sensitive_workspaces_refused_before_engine`,
 `test_windows_system_and_profile_folders_refused_before_engine`, `test_state_*`,
 `test_*isolated*`, `test_timeout_prerequisite_*`, `test_response_validation*`,
-`test_*socket*`, `test_*delegation*`, `test_default_state_and_help_with_invalid_state` (X),
+`test_leftover_delegation*`, `test_former_socket_override_is_ignored`, `test_default_state_and_help_with_invalid_state` (X),
 `test_common_names_and_deprecated_aliases` (P).
 
 ### Decisions (user, 2026-11-16)
@@ -220,7 +219,7 @@ Covering tests: `test_sensitive_workspaces_refused_before_engine`,
 | `USER` | unset | unset | unset | unset | host user name | unset | union | - |
 | CA bundle at `<home>/ca/bundle.pem` with the four CA variables | yes | yes | yes | yes | yes | yes | same | - |
 | Fixed agent settings (telemetry, update, traffic switches) | `HISTFILE` (and the config variable) | provider mode (6 variables) | none | always (`AGY_CLI_DISABLE_AUTO_UPDATE`, `--unsetenv DBUS_SESSION_BUS_ADDRESS`) | restricted modes (`OPENCODE_DISABLE_*`) | restricted modes (`PI_OFFLINE`, `PI_SKIP_VERSION_CHECK`, `PI_TELEMETRY`) | same: data in `agent/launcher.sh` per scope (always, restricted, provider; M2), applied after every forwarded variable so they win; S declares `HISTFILE` in `AGENT_SESSION_ENV` | - |
-| Podman delegation mount at `/run/podman/podman.sock`, `CONTAINER_HOST` set; otherwise unset | yes | yes | yes | yes | yes | yes, also unsets `CONTAINER_CONNECTION` | union: unset both | - |
+| Podman delegation mount at `/run/podman/podman.sock`, `CONTAINER_HOST` set; otherwise unset | yes | yes | yes | yes | yes | yes, also unsets `CONTAINER_CONNECTION` | union: unset both; delegation removed, and `CONTAINER_HOST` names only the session container engine | - |
 | Credential forwarding | n/a | own `--env ANTHROPIC_API_KEY` in provider mode, both policy profiles; none unrestricted | own `--env OPENAI_API_KEY` for `openai-api` and `openai-api-docs`; none unrestricted | profile credential; `GEMINI_API_KEY` unrestricted | profile credential; `PROVIDER` names unrestricted | profile credential; `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY` unrestricted | user (U10): provider forwards the `credential_env` of the selected policy profile's method only; unrestricted forwards none (use `<P>_ENV_VARS`) | `agent_environment` (O `PROVIDER`) |
 | Opt-in read-only host files (O `AGENTS_DIR`, `SYSTEM_CONFIG`; P `GITCONFIG`) | no | no | no | no | yes | yes | hook | `agent_mounts` |
 | OpenCode native-variable allowlist (`OPENCODE_CONFIG`, `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG_CONTENT`, `OPENCODE_PERMISSION`, `OPENCODE_SERVER_USERNAME`, `OPENCODE_SERVER_PASSWORD`, `OPENCODE_DISABLE_*` outside restricted modes) forwarded by name | no | no | no | no | yes | no | hook (H-g) | `agent_environment` (`NAME` entries) |
@@ -445,7 +444,7 @@ size.
   `USER`, `EDITOR`, `VISUAL`, the config variable, the CA variables,
   `CONTAINER_NAME`, `CONTAINER_HOST`); fixed agent settings (session, then
   restricted, then provider); finally `--unsetenv` for `AGENT_UNSET_ENV`,
-  `CONTAINER_CONNECTION` and, without delegation, `CONTAINER_HOST`. The output
+  `CONTAINER_CONNECTION` and, without a session container engine, `CONTAINER_HOST`. The output
   of `session.py agent-args` (its proxy `--unsetenv`, provider proxy values and
   guard `--entrypoint`) follows every core engine argument; the core adds no
   `--entrypoint` in restricted modes.
@@ -459,9 +458,9 @@ size.
   no credential; `<P>_ENV_VARS` may name one in unrestricted mode.
 - **Pi features made common (U12, H5).** Unrestricted sessions add `--init`
   (restricted ones cannot: the guard rejects its mount below `/run`). Each
-  create attempt sets `CONTAINER_NAME=<name>`. With delegation the core adds
-  tmpfs `/var/lib/containers` (256m) and `/run/containers` (64m), `noexec`,
-  `mode=0700,U`. Builds use `--format docker` and no build timeout.
+  create attempt sets `CONTAINER_NAME=<name>`. The delegation tmpfs mounts
+  `/var/lib/containers` and `/run/containers` were removed with delegation.
+  Builds use `--format docker` and no build timeout.
 - **Build (H6, M11, U8).** `build-inputs-hash` covers `Containerfile`,
   `.containerignore`, `network/relay.py`, `network/mux.py`, the profile's
   `install.files` and `agent_build_inputs`, in that order; the CA bundle is
@@ -472,7 +471,7 @@ size.
   application argument (`--container-git-worktree` and `--container-shell` do
   not count) builds and exits. It first validates every launch setting: mode,
   maintenance, budgets, lifetime, image name, state and configuration paths
-  (lexically), delegation settings and socket, host tools, the launch engine
+  (lexically), the leftover delegation opt-in, host tools, the launch engine
   and CA selection. It skips the workspace refusal, state creation, toolchains,
   cgroup checks, restricted preparation and the session. With an application
   argument, `--container-build` builds and then starts the session.
@@ -503,15 +502,11 @@ size.
   back to its lexical path (S, not P's stop); `PI_DEBUG` output is dropped
   except what `agent_validate` prints.
 - **Reported delegation socket (`verify-delegated-socket-path`, `sandbox-ref-25`).**
-  The service's `Host.RemoteSocket.Path`, after removing `unix://`, must be
-  absolute and not consist only of slashes. When that path exists in the
-  wrapper's own namespace (`-e` or a dangling link), it must be a Unix socket
-  (`-S`, following links). A path the wrapper cannot see is accepted: it is the
-  remapped socket of a wrapper that runs in a container, and the service's
-  answer is trusted there. Guided setup applies the same rule.
+  Removed with host Podman delegation (`replace-podman-delegation-with-session-engine`):
+  no session receives a Podman socket, so no reported path is bound.
 - **Engine query timeouts (M8).** Every read-only engine query (`info`,
   `version`, `ps`, `image exists`, `image inspect`, `container exists`,
-  `inspect`, the delegation socket query) runs under `timeout --kill-after=1s
+  `inspect`, the session engine's readiness query) runs under `timeout --kill-after=1s
   10s`. `create`, `start`, `build` and `pull` are not bounded; shutdown calls
   follow U9.
 - **Read-only state (U6, M9).** With `<P>_READONLY_STATE=1` the core mounts
@@ -523,6 +518,23 @@ size.
   resolved before creation, must stay inside the home, and must be private.
 - **Temporary mount modes (L7).** `/tmp`, `/var/tmp` and the ephemeral home are
   `mode=1777`; `/run` is `noexec` in every wrapper (X's executable `/run` ends).
+
+- **Session container engine (`session-container-engine`).** When
+  `toolchains.py launch-env` reports a `store` line (the library holds image
+  toolchains), phase 5 checks the engine image (`<P>_ENGINE_IMAGE`, set by
+  setup, else `<agent image>-engine:latest`) and phase 6 starts the engine
+  before the session: it reconciles engines whose launcher no longer runs
+  (`sandbox-engine.owner=<pid>-<start time>`), derives the seccomp profile when
+  the release has none, takes the session's `--network=` options, applies the
+  session budgets and verifies them, and waits until the engine answers as a
+  rootless engine. The session then joins with `--network container:<engine>`,
+  a private read-only `/etc/hosts` filled after create, and
+  `CONTAINER_HOST`/`DOCKER_HOST=tcp://127.0.0.1:2375`; without an engine both
+  are unset. Phase 7 removes the engine and its storage with
+  `rm --force --volumes`. The engine options come from `setup/engine.py options`.
+- **Leftover delegation opt-in.** Host Podman delegation was removed: an exact
+  `<P>_PODMAN=1` stops every launch and build-only operation in phase 1-2, and
+  the former socket override is ignored.
 
 ### Agent-specific helpers
 
@@ -619,7 +631,7 @@ adoption change; the reference rows are marked "reference: none".
 | phase 3-4 | `container-launcher` | Single-record launch verification response | MODIFIED: every read-only engine query is bounded and refuses CR and extra records |
 | U10, U11, U13 | `container-launcher` | Transparent invocation and terminal handling | MODIFIED: unrestricted sessions forward `TERM`, `COLORTERM`, `LANG`, `LC_ALL` and the proxy variables, and no credential; provider sessions forward only the selected method's credential; `<P>_ENV_VARS` reserved names |
 | U12 | `container-launcher` | Owned container lifecycle | MODIFIED: unrestricted sessions run with `--init`; every create attempt sets `CONTAINER_NAME` |
-| U12 | `container-podman-access` | Access policy applies across launch modes | MODIFIED: delegated sessions get private tmpfs `/var/lib/containers` and `/run/containers` |
+| U12 | `container-podman-access` | Access policy applies across launch modes | MODIFIED: delegated sessions get private tmpfs `/var/lib/containers` and `/run/containers` (capability retired later by `replace-podman-delegation-with-session-engine`) |
 | U12 | `container-launcher` | Predictable image operations | MODIFIED: builds use `--format docker`, pull missing exact bases, then `--pull=never`; no build timeout |
 | M4 | `persistent-state` | Resolved state paths and isolation scope | MODIFIED: every isolated-home child is contained and private |
 | H-a | `container-launcher` | Restricted launches require current local qualification | MODIFIED: qualification checks use the mode the launcher resolved, including a profile's provider default |
@@ -763,7 +775,7 @@ unset. The shim then handles the call in this order:
      and `-`) or `<P>_WSL_INSTALLATION` (an absolute path of the same
      characters and `/`);
    - `--container-setup` with other arguments;
-   - `<P>_PODMAN=1`: Podman delegation is unsupported on Podman machine.
+   - `<P>_PODMAN=1`: refused with the launcher's migration message; delegation was removed.
      `<P>_NETWORK` and `--container-qualify` reach the launcher, which checks
      them as on Linux.
 3. `--container-setup` checks the LF line endings of the Bash entry,

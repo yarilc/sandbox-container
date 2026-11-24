@@ -5,7 +5,7 @@
 # started by Podman, and another WSL distribution (for example Ubuntu) running.
 # It stops at once when the machine is stopped, without starting it:
 #
-#   .\tools\windows-validate.ps1 [-Checkout <wrapper checkout>] [-StopMachine] [-Install]
+#   .\tools\windows-validate.ps1 [-Checkout <wrapper checkout>] [-StopMachine] [-Install] [-SavedDelegation]
 #
 # It runs the windows-launcher scenario matrix against the checkout's entry.
 # Each case runs in a child process of the same PowerShell edition, so its
@@ -19,10 +19,18 @@
 # from the checkout (answer its setup questions), launches the command through
 # the new user PATH, and uninstalls; it refuses to start when an installation
 # already exists, and changes the user PATH only for the time of the run.
+# -SavedDelegation rewrites the installation's saved preferences as an earlier
+# release with host Podman delegation saved them, checks that a launch stops,
+# then reruns setup (answer its questions) and checks that the setting is gone;
+# a cancelled or failed setup gets the preferences back.
 # Ctrl+C, closing the window and the terminal size are checked by hand; the
 # script prints how. The mode cases follow the network mode that setup saved:
 # run the script after an offline setup for the restricted cases, and after an
-# unrestricted one for the refusal of an unprepared restricted mode.
+# unrestricted one for the refusal of an unprepared restricted mode. The
+# toolchain cases use a validation library of their own and need a release with
+# the toolchain catalog: rerun setup after updating the checkout. The image
+# toolchain case pulls a small pinned image into that library on the machine,
+# and runs it from an offline session after an offline or provider setup.
 # Bitdefender's Advanced Threat Control (Atc4.Detection) has blocked this
 # script, which other antivirus products did not: run it with the checkout
 # folder excluded, or with the protection paused for the run, as the
@@ -30,7 +38,8 @@
 param(
     [string]$Checkout = (Split-Path -Parent $PSScriptRoot),
     [switch]$StopMachine,
-    [switch]$Install
+    [switch]$Install,
+    [switch]$SavedDelegation
 )
 Set-StrictMode -Version 3
 $ErrorActionPreference = 'Stop'
@@ -242,6 +251,15 @@ try {
         return
     }
     Add-Result 'PASS' 'Setup state' ('release bootstrap present: ' + $bootstrap)
+    # The worktree scope that setup saved. With it, every launch mounts the parent
+    # of its folder, so the cases that assume no scope are skipped, and the
+    # toolchain case that needs it runs.
+    $setupFile = $bootstrap.Replace('launcher/windows/bootstrap.sh', 'setup.json')
+    $scopeProbe = Invoke-Probe @('-d', $distro, '-u', $user, '--exec', '/bin/sh', '-c',
+        ('cd && grep -Eq ''worktree.: *true'' ' + $setupFile))
+    $scopeSaved = ($scopeProbe.Code -eq 0)
+    $scopeSkip = 'setup saved the worktree scope, so this launch mounts the parent folder; run the script again ' +
+        'after a setup without it'
     if ($others.Count -eq 0) { Add-Result 'SKIP' 'Another distribution is active' 'start another WSL distribution and rerun' }
 
     $r = Invoke-Case '& $E @C -c ''printf ok'''
@@ -304,8 +322,15 @@ try {
     if ($profileDirectory -and $windowsDirectory) {
         Test-Outcome 'Windows folders: profile' (Invoke-Case '& $E' $profileDirectory) 1 'refusing sensitive workspace'
         Test-Outcome 'Windows folders: profile in lower case' (Invoke-Case '& $E' $profileDirectory.ToLowerInvariant()) 1 'refusing sensitive workspace'
-        Test-Outcome 'Windows folders: Users' (Invoke-Case '& $E' (Split-Path -Parent $profileDirectory)) 1 'refusing sensitive workspace'
-        Test-Outcome 'Windows folders: Windows' (Invoke-Case '& $E' $windowsDirectory) 1 'refusing sensitive workspace'
+        if ($scopeSaved) {
+            # The parent of these folders is the drive root, which contains the
+            # checkout: the entry-directory refusal comes first.
+            Add-Result 'SKIP' 'Windows folders: Users' $scopeSkip
+            Add-Result 'SKIP' 'Windows folders: Windows' $scopeSkip
+        } else {
+            Test-Outcome 'Windows folders: Users' (Invoke-Case '& $E' (Split-Path -Parent $profileDirectory)) 1 'refusing sensitive workspace'
+            Test-Outcome 'Windows folders: Windows' (Invoke-Case '& $E' $windowsDirectory) 1 'refusing sensitive workspace'
+        }
         $documents = [Environment]::GetFolderPath('MyDocuments')
         if ($documents) {
             Test-Outcome 'Windows folders: Documents' (Invoke-Case '& $E' $documents) 1 'refusing sensitive workspace'
@@ -317,7 +342,7 @@ try {
     } else { Add-Result 'SKIP' 'Windows folders' 'no Windows profile or system folder' }
 
     # Modes: as setup prepared them; delegation stays refused.
-    Test-Outcome 'Delegation requested' (Invoke-Case ('$env:' + $P + '_PODMAN = ''1''; & $E')) 1 ('Podman delegation (' + $P + '_PODMAN=1) is unsupported on Podman machine')
+    Test-Outcome 'Delegation requested' (Invoke-Case ('$env:' + $P + '_PODMAN = ''1''; & $E')) 1 ($P + '_PODMAN=1: host Podman delegation was removed')
     Test-Outcome 'Explicit unrestricted networking' (Invoke-Case ('$env:' + $P + '_NETWORK = ''unrestricted''; & $E @C -c ''printf ok''')) 0 'ok'
     if ($savedMode -eq 'offline' -or $savedMode -eq 'provider') {
         $connect = 'if (exec 3<>/dev/tcp/1.1.1.1/443) 2>/dev/null; then echo reached; else echo blocked; fi'
@@ -376,7 +401,11 @@ try {
     } else {
         [void](New-Item -ItemType Directory -Path $sibling)
         Test-Outcome 'Worktree scope with a sibling checkout' (Invoke-Case '& $E @C --container-git-worktree -c true' $sibling) 1 'overlaps the writable mount'
-        Test-Outcome 'Sibling without worktree scope' (Invoke-Case '& $E @C -c ''printf ok''' $sibling) 0 'ok'
+        if ($scopeSaved) {
+            Add-Result 'SKIP' 'Sibling without worktree scope' $scopeSkip
+        } else {
+            Test-Outcome 'Sibling without worktree scope' (Invoke-Case '& $E @C -c ''printf ok''' $sibling) 0 'ok'
+        }
         Remove-Item -LiteralPath $sibling -Recurse -Force
     }
 
@@ -406,6 +435,127 @@ try {
     Test-Outcome 'Help with a machine (wrapper help)' $r 0 'Usage:'
     Test-Outcome 'Help without a machine' (Invoke-Case ('$env:' + $P + '_WSL_DISTRO = ''validate-missing''; & $E --container-help')) 0 'Podman Desktop'
     Test-Outcome 'Setup with other arguments' (Invoke-Case '& $E --container-setup --container-shell') 1 'must be used alone'
+
+    # Toolchain library, in a validation library of its own: a catalog name, a
+    # Windows recipe path, a network path and, when setup saved it, the worktree
+    # scope. The recipe folder is outside $work, which that scope mounts.
+    $homeProbe = Invoke-Probe @('-d', $distro, '-u', $user, '--exec', '/bin/sh', '-c', 'printf %s $HOME')
+    $machineHome = (@($homeProbe.Output) -join '').Trim()
+    $recipeFolder = Join-Path (Split-Path -Parent $Checkout) ($name + '-validate-recipes')
+    if ($homeProbe.Code -ne 0 -or -not $machineHome.StartsWith('/')) {
+        Add-Result 'SKIP' 'Toolchain library' 'the home directory of the machine user is unknown'
+    } elseif (Test-Path -LiteralPath $recipeFolder) {
+        Add-Result 'SKIP' 'Toolchain library' ($recipeFolder + ' already exists')
+    } else {
+        $library = $machineHome + '/' + $name + '-validate-toolchains'
+        $useLibrary = '$env:' + $P + '_TOOLCHAINS_DIR = ' + (ConvertTo-Literal $library) + '; '
+        try {
+            Test-Outcome 'Toolchain by name' (Invoke-Case ($useLibrary + '& $E --container-toolchain add node24')) 0 'Added toolchain node24'
+            [void](New-Item -ItemType Directory -Path $recipeFolder)
+            $recipeFile = Join-Path $recipeFolder 'node24.json'
+            Copy-Item -LiteralPath ([IO.Path]::Combine($Checkout, 'setup', 'toolchain-catalog', 'node24.json')) -Destination $recipeFile
+            Test-Outcome 'Recipe path from PowerShell' (Invoke-Case ($useLibrary + '& $E --container-toolchain add ' +
+                (ConvertTo-Literal $recipeFile))) 0 'Added toolchain node24'
+            Test-Outcome 'Toolchain recipe on a network share' (Invoke-Case ($useLibrary +
+                '& $E --container-toolchain add ''\\server\share\node24.json''')) 1 'network or device path'
+            $listing = Invoke-Case ($useLibrary + '& $E --container-toolchain list')
+            if ($scopeSaved) {
+                Test-Outcome 'Toolchain command with the saved worktree scope' $listing 0 'node24'
+            } else {
+                Test-Outcome 'Toolchain list' $listing 0 'node24'
+                Add-Result 'SKIP' 'Toolchain command with the saved worktree scope' ('setup saved no worktree ' +
+                    'scope; run the script again after a setup that saves it')
+            }
+            # Image toolchain: the image enters the library's store, and an offline
+            # session runs it through its private engine, without a pull and with
+            # no network path in the nested container.
+            $image = 'docker.io/library/alpine@sha256:c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e'
+            $imageRecipe = Join-Path $recipeFolder 'validate-image.json'
+            [IO.File]::WriteAllText($imageRecipe, ('{"schema": 2, "name": "validate-image", "version": "1", ' +
+                '"default": false, "images": ["' + $image + '"], ' +
+                '"check": ["podman", "run", "--rm", "--network=none", "' + $image + '", "true"]}'))
+            Test-Outcome 'Image toolchain' (Invoke-Case ($useLibrary + '& $E --container-toolchain add ' +
+                (ConvertTo-Literal $imageRecipe))) 0 'Added toolchain validate-image'
+            if ($savedMode -eq 'offline' -or $savedMode -eq 'provider') {
+                $nested = 'printf "engine=%s\n" "$CONTAINER_HOST"; podman run --rm --pull=never ' + $image +
+                    ' sh -c ''if wget -q -T 3 -O /dev/null http://1.1.1.1/ 2>/dev/null; then echo reached; ' +
+                    'else echo nested-blocked; fi'''
+                $r = Invoke-Case ($useLibrary + '$env:' + $P + '_NETWORK = ''offline''; & $E @C -c ' +
+                    (ConvertTo-Literal $nested))
+                Test-Outcome 'Session with library images (engine)' $r 0 'engine=tcp://127.0.0.1:2375'
+                Test-Outcome 'Session with library images (offline)' $r 0 'nested-blocked'
+            } else {
+                Add-Result 'SKIP' 'Session with library images' ('setup saved ' + $savedMode +
+                    ' networking; run .\' + $name + '.ps1 --container-setup with offline networking, then the script again')
+            }
+            Test-Outcome 'Image toolchain removed' (Invoke-Case ($useLibrary +
+                '& $E --container-toolchain remove validate-image')) 0 'Removed toolchain validate-image'
+        } finally {
+            # Image layers in the store can belong to subordinate IDs.
+            $null = Invoke-Probe @('-d', $distro, '-u', $user, '--exec', 'podman', 'unshare', 'rm', '-rf', '--', $library)
+            $null = Invoke-Probe @('-d', $distro, '-u', $user, '--exec', 'rm', '-rf', '--', $library)
+            if (Test-Path -LiteralPath $recipeFolder) { Remove-Item -LiteralPath $recipeFolder -Recurse -Force }
+        }
+    }
+
+    if ($SavedDelegation) {
+        # Saved host Podman delegation from an earlier release: preferences schema 2
+        # with podman set. A launch stops before the command; setup from this
+        # checkout drops the setting and saves schema 3 preferences. Single quotes
+        # only: Windows PowerShell 5.1 passes embedded double quotes to wsl.exe
+        # unescaped.
+        $backup = $name + '-validate-setup.json'
+        $plant = 'import json,os,sys; s,b=sys.argv[1:3]; d=open(s,''rb'').read(); v=json.loads(d); ' +
+            'assert v.get(''schema_version'')==3, ''the saved preferences are not schema 3''; ' +
+            'f=os.open(b,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(f,d); os.close(f); ' +
+            '[v.pop(k) for k in (''engine_image'',''engine_sources_sha256'',''engine_seccomp_sha256'')]; ' +
+            'v.update(schema_version=2,podman=True,delegation_socket=''''); t=s+''.validate''; ' +
+            'f=os.open(t,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); ' +
+            'os.write(f,(json.dumps(v,indent=2,sort_keys=True)+''\n'').encode()); os.close(f); os.replace(t,s)'
+        $migrated = 'import json,sys; v=json.load(open(sys.argv[1])); ' +
+            'sys.exit(0 if v.get(''schema_version'')==3 and ''podman'' not in v else 1)'
+        # The original goes back into the release it came from, which a completed
+        # setup has made the previous one, unless setup removed that release.
+        $restore = 'import os,sys; s,b=sys.argv[1:3]; ' +
+            'os.replace(b,s) if os.path.isdir(os.path.dirname(s)) else os.remove(b)'
+        $resolved = Invoke-Probe @('-d', $distro, '-u', $user, '--cd', '~', '--exec', 'readlink', '-e', '--', $setupFile)
+        $savedFile = (@($resolved.Output) -join '').Trim()
+        $existing = Invoke-Probe @('-d', $distro, '-u', $user, '--cd', '~', '--exec', 'test', '!', '-e', $backup)
+        if ($resolved.Code -ne 0 -or -not $savedFile.StartsWith('/')) {
+            Add-Result 'FAIL' 'Saved delegation' ('cannot resolve ' + $setupFile + ' in ' + $distro)
+        } elseif ($existing.Code -ne 0) {
+            Add-Result 'FAIL' 'Saved delegation' ('~/' + $backup + ' exists in ' + $distro + ' from an earlier run: ' +
+                'compare it with ' + $savedFile + ', put it back or remove it, and run the script again')
+        } else {
+            $planted = Invoke-Probe @('-d', $distro, '-u', $user, '--cd', '~', '--exec', 'python3', '-I', '-c', $plant,
+                $savedFile, $backup)
+            try {
+                if ($planted.Code -ne 0) {
+                    Add-Result 'FAIL' 'Saved delegation' ('cannot rewrite ' + $savedFile + ': ' + ($planted.Output -join ' '))
+                } else {
+                    $r = Invoke-Case '& $E @C -c ''printf ok'''
+                    Test-Outcome 'Saved delegation' $r 1 'saved host Podman delegation, which was removed'
+                    [Console]::Out.WriteLine('Setup over saved delegation: answer the setup questions as for ' +
+                        '--container-setup. It must announce that the saved host Podman delegation was removed.')
+                    $process = Start-Process -FilePath $exe -ArgumentList @('-NoProfile', '-File', ('"' + $entry + '"'),
+                        '--container-setup') -WorkingDirectory $Checkout -NoNewWindow -Wait -PassThru
+                    $check = Invoke-Probe @('-d', $distro, '-u', $user, '--cd', '~', '--exec', 'python3', '-I', '-c',
+                        $migrated, $setupFile)
+                    if ($process.ExitCode -eq 0 -and $check.Code -eq 0) {
+                        Add-Result 'PASS' 'Setup rerun over saved delegation' ('status 0; ' + $setupFile +
+                            ' is schema 3 without the podman setting')
+                        Test-Outcome 'Launch after the migration' (Invoke-Case '& $E @C -c ''printf ok''') 0 'ok'
+                    } else {
+                        Add-Result 'FAIL' 'Setup rerun over saved delegation' ('setup status ' + $process.ExitCode +
+                            '; preferences check status ' + $check.Code)
+                    }
+                }
+            } finally {
+                $null = Invoke-Probe @('-d', $distro, '-u', $user, '--cd', '~', '--exec', 'python3', '-I', '-c', $restore,
+                    $savedFile, $backup)
+            }
+        }
+    } else { Add-Result 'SKIP' 'Saved delegation' 'rerun with -SavedDelegation (reruns setup; answer its questions)' }
 
     if ($Install) {
         . ([IO.Path]::Combine($Checkout, 'launcher', 'windows', 'user-path.ps1'))

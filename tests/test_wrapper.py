@@ -64,11 +64,6 @@ class WrapperTests(unittest.TestCase):
         self.env.update(PATH=str(self.bin) + ':' + self.env['PATH'],
                         FAKE_LOG=str(self.log),
                         SANDBOX_CONTAINER_STATE_DIR=str(self.state))
-        self.socket = socket.socket(socket.AF_UNIX)
-        self.socket_path = self.base / 'podman.sock'
-        self.socket.bind(str(self.socket_path))
-        self.addCleanup(self.socket.close)
-        self.env['SANDBOX_CONTAINER_PODMAN_SOCKET'] = str(self.socket_path)
         self.library = self.base / 'host-home/.local/share/sandbox-toolchains'
 
     def run_wrapper(self, *args, cwd=None, caller_umask=-1, **env):
@@ -132,7 +127,7 @@ class WrapperTests(unittest.TestCase):
             env=self.env | {'PATH': str(help_bin), 'CLAUDE_YOLO': 'invalid'},
             text=True, capture_output=True)
         self.assertEqual(result.returncode, 0)
-        self.assertIn('beyond the workspace', result.stdout)
+        self.assertIn('Host Podman delegation was removed: SANDBOX_CONTAINER_PODMAN=1 stops startup.', result.stdout)
         self.assertFalse(self.calls())
         self.assertFalse(self.state.exists())
 
@@ -208,7 +203,7 @@ class WrapperTests(unittest.TestCase):
         shutil.copyfile(ROOT / 'network/proxy_hardening.py', install / 'network/proxy_hardening.py')
         shutil.copyfile(ROOT / 'network/platform_check.py', install / 'network/platform_check.py')
         for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py',
-                     'network/revisions.py', 'agent/profile.json', 'setup/common.py', 'setup/toolchains.py',
+                     'network/revisions.py', 'agent/profile.json', 'setup/common.py', 'setup/toolchains.py', 'setup/engine.py',
                      'Containerfile', 'launcher/core.sh', 'agent/launcher.sh'):
             (install / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, install / name)

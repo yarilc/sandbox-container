@@ -16,7 +16,21 @@ if os.environ.get('FAKE_UMASK_LOG'):
 with log.open('a') as f:
     f.write(json.dumps(args) + '\n')
 state = pathlib.Path(str(log) + '.container')
+# The session container engine: its fixed ID, and the budgets it was created with.
+ENGINE_ID = 'e' * 64
+engine_budgets = pathlib.Path(str(log) + '.engine-budgets')
 command = args[0]
+
+
+def requested_budgets(args):
+    from decimal import Decimal
+    flag = lambda name: next((a.split('=', 1)[1] for a in args if a.startswith(name + '=')), '0')
+    # Requested rlimits as the inspect template lists them: [NAME=soft:hard,...].
+    rlimits = ''.join('RLIMIT_' + args[i + 1].split('=', 1)[0].upper() + '=' + args[i + 1].split('=', 1)[1] + ','
+                      for i, a in enumerate(args) if a == '--ulimit')
+    return ' '.join((flag('--memory'), str(int(Decimal(flag('--cpus')) * 10**9)), flag('--pids-limit'),
+                     '[' + rlimits + ']'))
+
 if command in os.environ.get('FAKE_STALL', '').split(',') and (command != 'ps' or '--filter' in args):
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     pathlib.Path(str(log) + '.stalled-' + command).write_text(str(os.getpid()))
@@ -25,12 +39,7 @@ if command in os.environ.get('FAKE_STALL', '').split(',') and (command != 'ps' o
 if command in os.environ.get('FAKE_FAIL', '').split(','):
     print('synthetic control failure: ' + command, file=sys.stderr)
     sys.exit(17)
-if args[:2] == ['--remote', '--url']:
-    sys.stdout.write(os.environ.get('FAKE_SOCKET_RAW',
-                     os.environ.get('FAKE_SOCKET_ROOTLESS', 'true') + ' ' +
-                     os.environ.get('FAKE_HOST_SOCKET', '/host/podman.sock') + '\n'))
-    sys.exit(int(os.environ.get('FAKE_SOCKET_STATUS', '0')))
-elif args[0] == 'info':
+if args[0] == 'info':
     if args[-1] == '{{json .Host}}':
         print(os.environ.get('FAKE_PLATFORM',json.dumps({'kernel':'6.6.87.2-microsoft-standard-WSL2','arch':'amd64',
             'security':{'seccompEnabled':True,'selinuxEnabled':False,'apparmorEnabled':False}})))
@@ -47,6 +56,9 @@ elif args[0] == 'info':
         else:
             print(os.environ.get('FAKE_CGROUP_MANAGER', 'systemd'))
         sys.exit(int(os.environ.get('FAKE_CGROUP_MANAGER_STATUS', '0')))
+    if args[-1] == '{{.Host.Security.SECCOMPProfilePath}}':
+        print(os.environ.get('FAKE_SECCOMP', ''))
+        sys.exit(0)
     if args[-1] == '{{.Host.Kernel}}':
         # FAKE_KERNEL_RAW replaces the whole response (escapes allowed).
         if 'FAKE_KERNEL_RAW' in os.environ:
@@ -59,6 +71,8 @@ elif args[0] == 'info':
 elif args[0] == 'version':
     print(os.environ.get('FAKE_SERVER_VERSION', '4.9.3'))
 elif args[:2] == ['image', 'exists']:
+    if args[-1].endswith('-engine:latest') or args[-1] == os.environ.get('FAKE_ENGINE_IMAGE', '-'):
+        sys.exit(int(os.environ.get('FAKE_ENGINE_IMAGE_STATUS', '0')))
     sys.exit(int(os.environ.get('FAKE_IMAGE_STATUS', '0')))
 elif args[:2] == ['image', 'inspect']:
     if any('build-inputs-hash' in a for a in args):
@@ -74,7 +88,10 @@ elif args[0] == 'build':
     time.sleep(float(os.environ.get('FAKE_BUILD_DELAY', '0')))
     sys.exit(int(os.environ.get('FAKE_BUILD_STATUS', '0')))
 elif args[0] == 'ps':
-    if '--filter' in args:
+    if 'label=sandbox-engine.owner' in args:
+        # Running engines as '<id> <owner>' lines (FAKE_ENGINES, escapes allowed).
+        sys.stdout.write(os.environ.get('FAKE_ENGINES', '').encode().decode('unicode_escape'))
+    elif '--filter' in args:
         print(os.environ.get('FAKE_RECOVERY_ID', 'a' * 64) if state.exists() else '')
     else:
         print(os.environ.get('FAKE_NAMES', ''))
@@ -94,13 +111,10 @@ elif args[0] == 'create':
         sys.exit(125)
     token = args[args.index('--label') + 1].split('=', 1)[1]
     state.write_text(token)
-    from decimal import Decimal
-    flag = lambda name: next((a.split('=', 1)[1] for a in args if a.startswith(name + '=')), '0')
-    # Requested rlimits as the inspect template lists them: [NAME=soft:hard,...].
-    rlimits = ''.join('RLIMIT_' + args[i + 1].split('=', 1)[0].upper() + '=' + args[i + 1].split('=', 1)[1] + ','
-                      for i, a in enumerate(args) if a == '--ulimit')
-    pathlib.Path(str(log) + '.budgets').write_text(' '.join((flag('--memory'),
-        str(int(Decimal(flag('--cpus')) * 10**9)), flag('--pids-limit'), '[' + rlimits + ']')))
+    pathlib.Path(str(log) + '.budgets').write_text(requested_budgets(args))
+    # The private hosts file a session joined to its engine binds, for start to report.
+    hosts = [a.rsplit(':', 2)[0] for a in args if a.endswith(':/etc/hosts:ro')]
+    pathlib.Path(str(log) + '.hosts-source').write_text(hosts[0] if hosts else '')
     pause = os.environ.get('FAKE_CREATE_PAUSE')
     if pause != 'before':
         # FAKE_CID_CONTENT replaces the private creation record (escapes allowed).
@@ -113,6 +127,17 @@ elif args[0] == 'create':
             time.sleep(0.05)
     print('a' * 64)
     sys.exit(int(os.environ.get('FAKE_CREATED_STATUS', '0')))
+elif args[:2] == ['run', '--detach']:
+    # The session container engine.
+    engine_budgets.write_text(requested_budgets(args))
+    if os.environ.get('FAKE_ENGINE_STATUS'):
+        print('engine failed to start', file=sys.stderr)
+        sys.exit(int(os.environ['FAKE_ENGINE_STATUS']))
+    print(ENGINE_ID)
+elif args[0] == 'exec' and args[1] == ENGINE_ID:
+    print(os.environ.get('FAKE_ENGINE_READY', 'true'))
+elif args[0] == 'inspect' and args[-1] == ENGINE_ID:
+    print(os.environ.get('FAKE_ENGINE_BUDGETS', engine_budgets.read_text() if engine_budgets.exists() else ''))
 elif args[0] == 'inspect':
     if '{{.HostConfig.Memory}}' in args[-2]:
         # Report the created configuration unless a test overrides it.
@@ -141,6 +166,10 @@ elif args[0] == 'kill':
 elif args[0] == 'rm':
     if os.environ.get('FAKE_NETWORK') and args[-1] == 'b' * 64:
         sys.exit(0)
+    stale = [line.split()[0] for line in os.environ.get('FAKE_ENGINES', '').encode().decode('unicode_escape').splitlines()
+             if line.split()]
+    if args[-1] == ENGINE_ID or args[-1] in stale:
+        sys.exit(0)
     assert args[-1] == 'a' * 64, 'refusing to remove unrelated identity'
     state.unlink(missing_ok=True)
     pid = pathlib.Path(str(log) + '.pid')
@@ -152,6 +181,9 @@ elif args[0] == 'rm':
 elif args[0] == 'start':
     if os.environ.get('FAKE_NETWORK') and args[-1] == 'b' * 64:
         sys.exit(0)
+    source = pathlib.Path(str(log) + '.hosts-source')
+    if source.exists() and source.read_text():
+        pathlib.Path(str(log) + '.hosts').write_text(pathlib.Path(source.read_text()).read_text())
     if os.environ.get('FAKE_START_STDERR'):
         sys.stderr.write(os.environ['FAKE_START_STDERR'])
         sys.stderr.flush()

@@ -129,7 +129,7 @@ Setup SHALL inspect or prepare the runtime image and the additional components r
 - **AND** it does not substitute a different policy, toolchain or network mode
 
 ### Requirement: Persistent non-secret managed launch preferences
-Setup SHALL save versioned non-secret preferences and provide a managed launcher usable from another workspace without repeated exports. Preferences and launcher code SHALL remain outside application-writable mounts and be validated before use. The launcher SHALL preserve arguments, stdin, terminal handling and current-directory semantics. Direct wrapper invocation SHALL support explicit environment-based runtime modes; an unset or empty effective network mode SHALL follow the wrapper's admission rule, which in the reference is the offline default.
+Setup SHALL save versioned non-secret preferences and provide a managed launcher usable from another workspace without repeated exports. Preferences and launcher code SHALL remain outside application-writable mounts and be validated before use. The launcher SHALL preserve arguments, stdin, terminal handling and current-directory semantics. Direct wrapper invocation SHALL support explicit environment-based runtime modes; an unset or empty effective network mode SHALL follow the wrapper's admission rule, which in the reference is the offline default. The saved workspace scope SHALL apply only to session launches: host management commands such as `--container-toolchain` SHALL reach the wrapper with their arguments unchanged.
 
 #### Scenario: New terminal and workspace
 - **WHEN** the user invokes the managed launcher in a new terminal from a separate workspace
@@ -169,6 +169,11 @@ Setup SHALL save versioned non-secret preferences and provide a managed launcher
 - **WHEN** an operator invokes the wrapper directly with a valid nonempty network mode and its required configuration
 - **THEN** it proceeds through existing runtime checks without requiring managed preferences
 - **AND** mode selection alone does not authorize maintenance, delegation or restricted qualification
+
+#### Scenario: Toolchain command with the saved worktree scope
+- **WHEN** setup saved the worktree scope and the operator runs the managed launcher with `--container-toolchain list`, on Linux or through the Windows entry
+- **THEN** the toolchain command lists the library and no session starts
+- **AND** a session started by the same launcher still mounts the parent of the current directory
 
 ### Requirement: Credential-preserving authentication assistance
 When the profile declares authentication methods, setup SHALL support reusing selected shared account state or offering an explicit fresh login in isolated state; a profile without methods SHALL skip authentication entirely. It SHALL NOT copy credentials, collect or persist API keys/tokens in setup preferences, or require an API key for account use. Authentication SHALL use the chosen installed sandbox and preserve its selected network and CA policies.
@@ -488,3 +493,18 @@ When the selected workflow needs a same-host Unix service and the saved launch e
 #### Scenario: Unrestricted rerun
 - **WHEN** a rerun keeps unrestricted networking without delegation
 - **THEN** setup still proposes the saved local endpoint
+
+### Requirement: Setup re-verifies the toolchain library
+After setup prepares the runtime image of a new release, it SHALL rerun the check of every installed toolchain whose verified base differs from that release's base, and record the new base for each check that passes. A failed check SHALL NOT fail setup: setup SHALL name the toolchain and its failure, and the toolchain SHALL keep its previous verified base.
+
+#### Scenario: Base changed by an update
+- **WHEN** a default toolchain was verified on the previous base and setup installs a release with a new base
+- **THEN** setup reruns its check, and new sessions get its default environment without a manual `verify`
+
+#### Scenario: Check fails after an update
+- **WHEN** the rerun check of a toolchain fails on the new runtime image
+- **THEN** setup completes with its usual result, names the toolchain and the failed check, and new sessions give that toolchain no default environment, with the launcher's usual warning
+
+#### Scenario: Nothing to re-verify
+- **WHEN** no toolchain is installed, or every installed toolchain was verified on the new base
+- **THEN** setup runs no toolchain check
