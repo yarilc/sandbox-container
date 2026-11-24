@@ -95,6 +95,8 @@ if args[0]=='snapshot':
  s=socket.socket(socket.AF_UNIX); s.bind(str(p/'transport/proxy.sock')); s.close()
  (p/'transport/ready').write_text('fixture-policy guard='+ 'c'*64 +' mux=1 tls=' + TLS_ENFORCEMENT + '\\n')
  print('fixture-policy')
+elif args[0]=='qualification-input':
+ print('e'*32+' 0')
 ''')
     return wrapper
 
@@ -141,6 +143,18 @@ class LauncherTests(unittest.TestCase):
 
     def create(self):
         return next(c for c in self.calls() if c[0] == 'create')
+
+    def created_command(self, create):
+        # The arguments after the image, which follows --env CONTAINER_NAME=<name>.
+        return create[next(i for i, a in enumerate(create) if a.startswith('CONTAINER_NAME=')) + 2:]
+
+    @staticmethod
+    def step(limit=512):
+        # The process rlimit step: /bin/sh sets the limit, then executes the entry program.
+        return ['-c', f'{{ ulimit -u {limit} 2>/dev/null || ulimit -p {limit}; }} && exec "$0" "$@"']
+
+    def has_step(self, create, limit=512):
+        return self.created_command(create)[:2] == self.step(limit)
 
     def wait_marker(self, proc, suffix):
         marker = Path(str(self.log) + suffix)
@@ -615,9 +629,41 @@ class LauncherTests(unittest.TestCase):
                 run, create = self.engine_run(), self.create()
                 budget = ('--memory=', '--cpus=', '--pids-limit=')
                 self.assertEqual([a for a in run if a.startswith(budget)], [a for a in create if a.startswith(budget)])
-                self.assertEqual([run[i + 1] for i, a in enumerate(run) if a == '--ulimit'],
-                                 [create[i + 1] for i, a in enumerate(create) if a == '--ulimit'])
                 self.assertEqual('--memory=4294967296' in run, manager == 'systemd')
+                # On the process rlimit fallback the engine's entrypoint sets the limit
+                # given after the port; the engine applies no process rlimit.
+                fallback = manager == 'cgroupfs' and kernel != '5.4.0'
+                self.assertNotIn('--ulimit', run)
+                self.assertEqual(run[run.index('localhost/fixture-shell-engine:latest') + 1:],
+                                 ['2375', '512'] if fallback else ['2375'])
+                self.assertEqual(self.has_step(create), fallback)
+                self.assertEqual(['exec', self.ENGINE, 'grep', '^Max processes ', '/proc/2/limits'] in self.calls(),
+                                 fallback)
+
+    def test_engine_process_rlimit_is_verified_before_the_session(self):
+        # set-process-limits-inside-containers: the engine's entrypoint, PID 2 under
+        # --init, must run with the budget; an exec process would show the engine's default.
+        engine_env = self.image_library() | {'FAKE_CGROUP_MANAGER': 'cgroupfs'}
+        result = self.run_wrapper('-c', 'true', **engine_env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for env, message in (
+                ({'FAKE_ENGINE_LIMIT': '63948 63948'}, 'does not run with the process rlimit fallback'),
+                ({'FAKE_ENGINE_LIMIT': '512 1024'}, 'does not run with the process rlimit fallback'),
+                ({'FAKE_ENGINE_LIMIT': '256 256'}, 'does not run with the process rlimit fallback'),
+                ({'FAKE_ENGINE_LIMIT': 'missing'}, 'cannot read the process rlimit of the container engine'),
+                ({'FAKE_ENGINE_COMMAND': json.dumps(['/run/podman-init', '--', '/usr/local/bin/sandbox-engine',
+                                                      '2375'])}, 'container engine resource budgets were not applied'),
+                ({'FAKE_ENGINE_COMMAND': json.dumps(['/run/podman-init', '--', '/usr/local/bin/sandbox-engine',
+                                                      '2375', '256'])}, 'container engine resource budgets were not applied'),
+                ({'FAKE_ENGINE_BUDGETS': '0 0 -1 [RLIMIT_NPROC=512:512,]'},
+                 'container engine resource budgets were not applied')):
+            with self.subTest(env=env):
+                self.log.unlink(missing_ok=True)
+                result = self.run_wrapper('-c', 'true', **engine_env, **env)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(any(c[0] == 'create' for c in self.calls()))
+                self.assertIn(['rm', '--force', '--volumes', '--time', '0', '--ignore', self.ENGINE], self.calls())
 
     def test_engines_of_launchers_that_no_longer_run_are_removed(self):
         # session-container-engine: Session-owned engine storage / Interrupted session.
@@ -757,6 +803,48 @@ class LauncherTests(unittest.TestCase):
                 if '--container-shell' not in flags:
                     self.assertNotIn('lifetime limit', result.stderr)
 
+    def test_process_rlimit_step_wraps_the_entry_program(self):
+        # set-process-limits-inside-containers, design D1 and D2: on the fallback the
+        # session's first process sets the limit, then executes the entry program.
+        restricted = self.restricted_fixture()
+        guard = '/opt/sandbox-egress/guard'
+        rlimit, cgroup, none = {'FAKE_CONTROLLERS': '[cpu memory]'}, {}, {'FAKE_CONTROLLERS': '[cpu memory]',
+                                                                            'FAKE_KERNEL': '5.10.0'}
+        for mode, values, init, entry in (('unrestricted', {}, True, '/bin/bash'), ('offline', restricted, False, guard)):
+            for mechanism, env in (('rlimit', rlimit), ('cgroup', cgroup), ('none', none)):
+                with self.subTest(mode=mode, mechanism=mechanism):
+                    self.log.unlink(missing_ok=True)
+                    result = self.run_wrapper('-c', 'true', **(values | env | {'FIXTURE_SHELL_NETWORK': mode}))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    create = self.create()
+                    self.assertNotIn('--ulimit', create)
+                    self.assertEqual(create.count('--entrypoint'), 1)
+                    self.assertEqual('--init' in create, init)
+                    application = (['/bin/bash', '-c', 'true'] if mode == 'unrestricted'
+                                   else ['--offline', '--', '/bin/bash', '-c', 'true'])
+                    inspected = [c[-2] for c in self.calls() if c[0] == 'inspect' and c[-1] == OWNED_ID]
+                    if mechanism == 'rlimit':
+                        self.assertEqual(create[create.index('--entrypoint') + 1], '/bin/sh')
+                        self.assertEqual(self.created_command(create),
+                                         [*self.step(), entry, *application[mode == 'unrestricted':]])
+                        self.assertEqual(inspected[1:], ['{{.Path}}', *(f'{{{{index .Args {i}}}}}'
+                                                                        for i in range(3 + 2 * init))])
+                    else:
+                        self.assertEqual(create[create.index('--entrypoint') + 1], entry)
+                        self.assertEqual(self.created_command(create), application[mode == 'unrestricted':])
+                        self.assertEqual(len(inspected), 1)
+        # The qualification probe goes through the same launch and gets the same step.
+        input_file = self.base / 'qualification/input.json'
+        input_file.parent.mkdir()
+        input_file.write_text('{}')
+        self.log.unlink(missing_ok=True)
+        result = self.run_wrapper('--container-qualify-probe', **restricted, **rlimit,
+                                  FIXTURE_SHELL_QUALIFICATION_INPUT=str(input_file))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.created_command(self.create()),
+                         [*self.step(), guard, '--offline', '--', '/usr/bin/python3', '-I',
+                          '/opt/sandbox-egress/qualification_probe.py', 'probe'])
+
     def test_budget_overrides_and_rejections_precede_engine(self):
         result = self.run_wrapper(FIXTURE_SHELL_MEMORY_LIMIT='8G', FIXTURE_SHELL_CPU_LIMIT='1.5',
                                   FIXTURE_SHELL_PIDS_LIMIT='1024', FIXTURE_SHELL_RUN_TIMEOUT='60')
@@ -819,7 +907,8 @@ class LauncherTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     create = self.create()
                     self.assertEqual('--pids-limit=512' in create, mechanism == 'cgroup')
-                    self.assertEqual('nproc=512:512' in create, mechanism == 'rlimit')
+                    self.assertEqual(self.has_step(create), mechanism == 'rlimit')
+                    self.assertNotIn('--ulimit', create)
                     if mechanism == 'none':
                         self.assertIn(agent_budgets.fallback_reason(kernel), result.stderr)
         # Delegation: the same cgroup manager rule in Bash and Python.
@@ -834,7 +923,7 @@ class LauncherTests(unittest.TestCase):
                     self.assertEqual(any(a.startswith('--memory=') for a in create), 'memory' in delegated)
                     self.assertEqual(any(a.startswith('--cpus=') for a in create), 'cpu' in delegated)
                     self.assertEqual('--pids-limit=512' in create, 'pids' in delegated)
-                    self.assertEqual('nproc=512:512' in create,
+                    self.assertEqual(self.has_step(create),
                                      agent_budgets.process_mechanism(delegated, '6.6.87.2') == 'rlimit')
                     for controller in {'memory', 'cpu', 'pids'} - set(delegated):
                         self.assertIn(agent_budgets.cgroup_reason(controller, manager), result.stderr)
@@ -871,9 +960,8 @@ class LauncherTests(unittest.TestCase):
                         self.assertEqual(notices[name] in result.stderr, name not in present)
                     self.assertEqual(flags['pids'] in create, not missing_pids)
                     self.assertEqual('--pids-limit=-1' in create, missing_pids)
-                    self.assertEqual('--ulimit' in create, missing_pids and fallback)
-                    if missing_pids and fallback:
-                        self.assertEqual(create[create.index('--ulimit') + 1], 'nproc=512:512')
+                    self.assertNotIn('--ulimit', create)
+                    self.assertEqual(self.has_step(create), missing_pids and fallback)
                     self.assertEqual(rlimit_notice in result.stderr, missing_pids and fallback)
                     self.assertEqual(notices['pids'] in result.stderr, missing_pids and not fallback)
                     self.assertEqual(reason != '' and reason in result.stderr, missing_pids and not fallback)
@@ -889,7 +977,8 @@ class LauncherTests(unittest.TestCase):
         self.assertFalse(any(a.startswith(('--memory=', '--cpus=')) for a in create))
         self.assertNotIn('--pids-limit=512', create)
         self.assertIn('--pids-limit=-1', create)
-        self.assertEqual(create[create.index('--ulimit') + 1], 'nproc=512:512')
+        self.assertNotIn('--ulimit', create)
+        self.assertTrue(self.has_step(create))
         manager = 'the rootless engine uses the cgroupfs cgroup manager, which applies no cgroup limits'
         for budget in ('memory', 'CPU'):
             self.assertIn(f'agent {budget} budget not enforced: {manager}', result.stderr)
@@ -899,7 +988,7 @@ class LauncherTests(unittest.TestCase):
         result = self.run_wrapper(FAKE_CONTROLLERS='[cpu memory pids]', FAKE_CGROUP_MANAGER='cgroupfs',
                                   FAKE_KERNEL='5.10.0')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn('--ulimit', self.create())
+        self.assertFalse(self.has_step(self.create()))
         self.assertIn(f'agent process budget not enforced: {manager}; kernel 5.10.0 counts', result.stderr)
         for env in (dict(FAKE_CGROUP_MANAGER=''), dict(FAKE_CGROUP_MANAGER='Systemd'),
                     dict(FAKE_CGROUP_MANAGER='system d'), dict(FAKE_CGROUP_MANAGER_RAW='systemd\\nsystemd\\n'),
@@ -915,7 +1004,7 @@ class LauncherTests(unittest.TestCase):
         result = self.run_wrapper(FAKE_CONTROLLERS='[cpu memory]', FIXTURE_SHELL_PIDS_LIMIT='1024')
         self.assertEqual(result.returncode, 0, result.stderr)
         create = self.create()
-        self.assertEqual(create[create.index('--ulimit') + 1], 'nproc=1024:1024')
+        self.assertTrue(self.has_step(create, 1024))
         self.assertIn('(1024 tasks of the session user', result.stderr)
         # The kernel is an engine query with the same record and failure rules as the others.
         for env in (dict(FAKE_KERNEL_RAW='6.6.87.2\\n5.10\\n'), dict(FAKE_KERNEL_RAW='6.6.87.2\\r\\n'),
@@ -1003,27 +1092,42 @@ class LauncherTests(unittest.TestCase):
                 self.assertIn('controller delegation', result.stderr)
                 self.assertFalse(any(c[0] == 'start' for c in self.calls()))
                 self.assertTrue(any(c[0] == 'rm' and c[-1] == OWNED_ID for c in self.calls()))
-        # The process rlimit fallback: exactly one RLIMIT_NPROC entry at the budget and no cgroup limit.
+        # The process rlimit fallback (set-process-limits-inside-containers): no cgroup limit,
+        # no engine process rlimit at or below the budget, and the created command starts
+        # with the step that sets the budget. Each failure removes only the owned container.
         configured = '4294967296 2000000000 '
-        for reported in (configured + '-1 []', configured + '-1 [RLIMIT_NPROC=512:1024,]',
-                         configured + '-1 [RLIMIT_NPROC=256:256,]', configured + '-1 [RLIMIT_NPROC=1024:512,]',
-                         configured + '-1 [RLIMIT_NPROC=512:512,RLIMIT_NPROC=512:512,]',
-                         configured + '-1 [RLIMIT_NPROC=512:512,RLIMIT_NPROC=4096:4096,]',
-                         configured + '512 [RLIMIT_NPROC=512:512,]', configured + '-1 RLIMIT_NPROC=512:512',
-                         configured + '-1 [RLIMIT_NPROC=512:512]', configured + '-1', configured + '-1 [] extra'):
-            with self.subTest(fallback=reported):
+        shell = ['/run/podman-init', '--', '/bin/sh', *self.step(), '/bin/bash']
+        for reported, command in (
+                (configured + '-1 [RLIMIT_NPROC=512:512,]', None),
+                (configured + '-1 [RLIMIT_NPROC=256:63948,]', None),
+                (configured + '-1 [RLIMIT_NPROC=63948:512,]', None),
+                (configured + '-1 [RLIMIT_NPROC=63948:63948,RLIMIT_NPROC=100:100,]', None),
+                (configured + '512 []', None), (configured + '-1 RLIMIT_NPROC=63948:63948', None),
+                (configured + '-1 [RLIMIT_NPROC=63948:63948]', None), (configured + '-1', None),
+                (configured + '-1 [] extra', None),
+                (configured + '-1 []', ['/run/podman-init', '--', '/bin/bash']),
+                (configured + '-1 []', ['/bin/sh', *self.step(), '/bin/bash']),
+                (configured + '-1 []', [*shell[:3], *self.step(256), '/bin/bash']),
+                (configured + '-1 []', [*shell[:4], 'ulimit -u 512 && exec "$0" "$@"', '/bin/bash']),
+                (configured + '-1 []', [*shell[:5], '/usr/local/bin/other']),
+                (configured + '-1 []', shell[:4]), (configured + '-1 []', [])):
+            with self.subTest(fallback=reported, command=command):
                 self.log.unlink(missing_ok=True)
-                result = self.run_wrapper(FAKE_CONTROLLERS='[cpu memory]', FAKE_AGENT_BUDGETS=reported)
+                env = {} if command is None else {'FAKE_AGENT_COMMAND': json.dumps(command)}
+                result = self.run_wrapper('--container-shell', FAKE_CONTROLLERS='[cpu memory]',
+                                          FAKE_AGENT_BUDGETS=reported, **env)
                 self.assertEqual(result.returncode, 1)
                 self.assertIn('agent resource budgets were not applied', result.stderr)
                 self.assertIn('process rlimit fallback', result.stderr)
                 self.assertFalse(any(c[0] == 'start' for c in self.calls()))
                 self.assertTrue(any(c[0] == 'rm' and c[-1] == OWNED_ID for c in self.calls()))
-        # Accepted: the exact fallback beside other rlimits, and an engine-default process
-        # rlimit when the budget uses the cgroup controller or has no enforcement.
+        # Accepted: the step beside other rlimits, an engine default above the budget, and an
+        # engine-default process rlimit when the budget uses the cgroup controller or has no enforcement.
         for controllers, kernel, reported in (
-                ('[cpu memory]', '6.6.87.2', configured + '-1 [RLIMIT_NOFILE=1024:1024,RLIMIT_NPROC=512:512,]'),
-                ('[cpu memory]', '6.6.87.2', configured + '0 [RLIMIT_NPROC=512:512,]'),
+                ('[cpu memory]', '6.6.87.2', configured + '-1 [RLIMIT_NOFILE=1024:1024,]'),
+                ('[cpu memory]', '6.6.87.2', configured + '0 []'),
+                ('[cpu memory]', '6.6.87.2', configured + '-1 [RLIMIT_NPROC=63948:63948,]'),
+                ('[cpu memory]', '6.6.87.2', configured + '-1 [RLIMIT_NPROC=513:18446744073709551615,]'),
                 ('[cpu memory pids]', '6.6.87.2', configured + '512 [RLIMIT_NPROC=63948:63948,]'),
                 ('[cpu memory]', '5.10.0', configured + '-1 [RLIMIT_NPROC=63948:63948,]')):
             with self.subTest(accepted=reported, controllers=controllers):
@@ -2140,6 +2244,44 @@ class AgentProfileSettingsTests(unittest.TestCase):
         calls = [call[0] for call in self.hook_calls()]
         self.assertNotIn('agent_approval_bypass', calls)
         self.assertNotIn('agent_command_args', calls)
+
+    def test_process_rlimit_step_wraps_the_agent_program_and_the_proxy(self):
+        # set-process-limits-inside-containers, design D2: in unrestricted agent mode the
+        # profile's agent program replaces the image entrypoint behind the step.
+        step = ['-c', '{ ulimit -u 512 2>/dev/null || ulimit -p 512; } && exec "$0" "$@"']
+        result = self.run_agent('--first', FIXTURE_AGENT_NETWORK='unrestricted', FAKE_CONTROLLERS='[cpu memory]')
+        create = self.session_create(result)
+        self.assertEqual(create[create.index('--entrypoint') + 1], '/bin/sh')
+        image = next(i for i, a in enumerate(create) if a.startswith('CONTAINER_NAME=')) + 1
+        self.assertEqual(create[image + 1:], [*step, '/usr/local/bin/fixture', '--fixture-mode', 'unrestricted',
+                                              '--first'])
+        # Provider mode: the agent's guard and the proxy program both run behind the step.
+        wrapper = synthetic_install(self.base, AGENT_ROOT, AGENT_PROFILE.wrapper)
+        policy = wrapper.parent / 'agent/policies/default.json'
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(AGENT_ROOT / 'agent/policies/default.json', policy)
+        runtime = self.base / 'runtime'
+        runtime.mkdir(mode=0o700)
+        self.log.unlink(missing_ok=True)
+        result = self.run_agent('--first', wrapper=wrapper, FIXTURE_AGENT_NETWORK='provider',
+                                FIXTURE_AGENT_NETWORK_PROFILE='fixture-api', FIXTURE_AGENT_NETWORK_POLICY=str(policy),
+                                FIXTURE_AGENT_NETWORK_RUNTIME_DIR=str(runtime), FIXTURE_AGENT_EGRESS_IMAGE='sha256:' + 'e' * 64,
+                                FIXTURE_API_KEY='key', FAKE_NETWORK='1', FAKE_INFO='true linux true',
+                                CONTAINER_HOST='unix:///run/service.sock', FAKE_CONTROLLERS='[cpu memory]',
+                                FAKE_PROXY_CONFIG='{"PidsLimit":-1,"Memory":268435456}',
+                                FAKE_PROXY_EFFECTIVE='{"pids":null,"memory":268435456,"capabilities":[0,0,0,0,0],'
+                                                     '"no_new_privs":1,"seccomp":2,"nproc":[128,128]}')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.engine_calls()]
+        proxy = next(c for c in calls if c[0] == 'create' and any('.egress=' in a for a in c))
+        agent = next(c for c in calls if c[0] == 'create' and not any('.egress=' in a for a in c))
+        self.assertNotIn('--ulimit', proxy + agent)
+        self.assertEqual(proxy[proxy.index('--entrypoint') + 1], '/bin/sh')
+        self.assertEqual(proxy[proxy.index('sha256:' + 'e' * 64) + 1:],
+                         ['-c', '{ ulimit -u 128 2>/dev/null || ulimit -p 128; } && exec "$0" "$@"', 'python3',
+                          '/opt/sandbox-egress/proxy.py'])
+        image = next(i for i, a in enumerate(agent) if a.startswith('CONTAINER_NAME=')) + 1
+        self.assertEqual(agent[image + 1:image + 5], [*step, '/opt/sandbox-egress/guard', '--provider'])
 
     def test_agent_environment_cannot_set_core_names(self):
         for entries in ('HOME=/elsewhere', 'CONTAINER_NAME=x', 'bad-name=1'):

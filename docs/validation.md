@@ -1,5 +1,122 @@
 # Validation record
 
+## Reference tag `sandbox-ref-34`: 2026-11-24
+
+Change `set-process-limits-inside-containers` (task 6.1). On the process
+rlimit fallback, the agent, the egress proxy and the session engine now set
+their process limit inside the container, instead of receiving
+`--ulimit nproc`. The measurement that motivated it is the next section.
+
+Found during implementation:
+- **dash.** dash, the `/bin/sh` of the agent and proxy images, rejects
+  `ulimit -u` (`Illegal option -u`) and names the limit `-p`. The step
+  therefore tries `-u`, then `-p`. Measured in dash 0.5.12, Bash and BusyBox:
+  both limits are set, and a value above the hard limit fails.
+- **Created commands.** A container created with `--init` reports
+  `/run/podman-init` and `--` before its command in `.Path` and `.Args`.
+  `[{{json .Path}},{{json .Args}}]` and an image's `.Config.Entrypoint` print
+  identically through Podman 4.3.1 and 6.2.0 clients.
+- **The proxy program.** The network suite's provider fixture derives its proxy
+  image with an entrypoint of its own. With the proxy program fixed in the step,
+  the two provider tests that reach the fixture's upstream failed with
+  `dns-failure`, so the step executes the proxy image's own entrypoint and
+  default command, read from the image.
+
+Runner modes from a Claude session on the Windows Podman machine, through its
+engine: Podman server 6.2.0, `cgroupfs` manager, kernel
+`6.18.58.1-microsoft-standard-WSL2`. The session ran on the Claude adoption of
+`sandbox-ref-33`. Same runner as `sandbox-ref-31`.
+
+| Mode | Result |
+| --- | --- |
+| unit discovery | Passed: 567 tests, 81 skipped |
+| runtime (default mode) | Passed: 19 tests, 1 skipped (`SessionEngineTests`: an engine cannot start inside a session's engine) |
+| `--setup` | Passed: 93 tests |
+| `--qualification` | Passed: 34 tests, 1 skipped |
+| `--wrapper` | Passed: 117 tests, 1 skipped |
+| `--network-feasibility`, `--network-policy`, `--mux` | Passed: 1, 15 and 26 tests |
+| `--network` | 19 tests, 3 skipped. Only the 5 subtests below fail, all needing cgroup limits |
+| `--guard` | 25 tests, 1 skipped. The AF_VSOCK control and the 3 multiplex tests with explicit `--memory` limits failed, as before |
+| `--setup-runtime` | Unavailable from a session: the offline case stops at the engine qualification (nested engine) |
+| `tools/shellcheck.sh .`, `tools/powershell.sh .` | Passed: no finding, 62 shim cases |
+
+Independence cases (design D4), run with this tag and with `main` before the
+change (`7e7c5d6`), in the same engine:
+
+| Case | Before the change | This tag |
+| --- | --- | --- |
+| A session with a budget of 128 beside a container holding 151 processes | Does not start: `crun: clone: Resource temporarily unavailable` | Starts 100 processes, then stops at 125 of 200 |
+| A provider session beside the same container | The proxy does not start: the same error | The proxy starts, passes its effective check and serves the session |
+| An engine session beside a container holding 521 processes | Unavailable from a session (nested engine) | Unavailable from a session (nested engine) |
+
+No case in any mode failed with `Resource temporarily unavailable`. The
+`crun: fork` failure recorded in "Suites from a session with its engine" below
+is consistent with the shared ceiling. The remaining `--network` failures need
+a cgroup manager:
+- `test_agent_budgets_are_effective_and_lifetime_is_enforced`, both subtests:
+  no `memory.max`;
+- `test_proxy_budgets_at_maximum_streams_and_slow_inspection`: no
+  `memory.current`;
+- `test_proxy_resource_exhaustion_is_bounded_and_fails_closed`, memory: no
+  memory limit, so the allocation runs until the 15-second timeout;
+- the same test, processes: the test forks in a `podman exec` process, which
+  now gets the engine's default limits (the documented exception). Before the
+  change that process got the proxy's `--ulimit`, and the test then required
+  `pids.events`, which exists only with the `pids` controller.
+
+Shared files changed since `sandbox-ref-33`: `launcher/core.sh`,
+`launcher/engine/entrypoint.sh` (the engine image changes), `network/session.py`,
+`network/proxy_hardening.py`, `network/agent_budgets.py`, and comments in
+`network/qualification_probe.py` and `setup/smoke.py`. All but `setup/smoke.py`
+are in `SHARED_CODE`, so installations requalify. Shared
+tests: `tests/fake_podman.py`, `tests/test_launcher.py`, `tests/test_session.py`
+and `tests/test_engine.py`. Per-wrapper tests: `tests/test_runtime.py` and
+`tests/test_network_runtime.py`.
+
+## Process rlimit counted across containers (`set-process-limits-inside-containers`, task 1.1): 2026-11-24
+
+Measured from a Claude session on the Windows Podman machine, through the
+session's engine: Podman server 6.2.0, `cgroupfs` manager, kernel
+`6.18.58.1-microsoft-standard-WSL2`. The test containers ran nested and rootless
+in that engine, with `--userns=keep-id`, `--network=none` and the pinned alpine
+image. Each scenario ran beside a crowd container holding 80 sleeping processes
+plus its shell, 81 in all.
+
+| Scenario | Result |
+| --- | --- |
+| New container with `--ulimit nproc=40:40`, beside the crowd | Does not start: `crun: clone: Resource temporarily unavailable` |
+| New container with `--ulimit nproc=200:200`, beside the crowd | Starts |
+| `--ulimit nproc=40:40` after the crowd is removed | Starts |
+| Running container with `--ulimit nproc=100:100` that starts 60 background processes once the crowd runs | The first fork fails with `can't fork` |
+| The same container alone | 60 started, 61 processes |
+| `ulimit -u 100` run inside the container beside the crowd, 60 requested | 60 started, 61 processes; limit 100/100; raising the hard limit to 200 fails |
+| The same, 150 requested | Stops at 99 processes |
+
+The kernel rule behind this (design "Context"): a new user namespace records
+its creator's `RLIMIT_NPROC`. A fork inside it is checked against the
+process's own limit at the namespace's level, and against the recorded limit
+one level up, where every container of the user counts. crun applies
+`--ulimit` before it creates the container's namespace, so that limit becomes
+a ceiling shared by every container of the user. A limit set later by a
+process in the namespace only bounds the container and its descendants.
+
+This explains the four failures of the Claude adoption's Windows validation of
+`sandbox-ref-33` on the same machine. The operator's Claude session, its
+engine and the validation's own sessions were running:
+- "Drive path with spaces" and "Redirected input": the session did not start,
+  with `crun: clone: Resource temporarily unavailable`;
+- "Qualification": the proxy did not start, with the same error;
+- "Sibling without worktree scope": `cannot verify effective proxy hardening`.
+  The check runs `podman exec` in the proxy, and the exec process gets the
+  proxy's `--ulimit nproc=128`.
+
+The `sandbox-ref-26` record below measured independent limits with `--ulimit`
+on kernel `6.6.87.2-microsoft-standard-WSL2`: two sessions reached 489 and 497
+processes under 512, and two containers 49 each under 64. The machine's WSL
+kernel has since moved to 6.18.58.1, where the limit is shared. Which kernel
+change caused this was not determined. A limit set inside the container does
+not depend on the value recorded when its namespace is created.
+
 ## Suites from a session with its engine (tasks 7.1 and 8.1): 2026-11-24
 
 The suites ran from a restricted Claude session on the Windows Podman machine,

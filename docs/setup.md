@@ -132,9 +132,9 @@ machine on WSL, reports every controller and applies none, so the plan prints
 `enforced agent budgets: none` and names the `cgroupfs` manager. A budget whose
 controller is not delegated is not enforced: the setup plan, the smoke and every
 launch name it, and setup continues without asking. Without `pids`, the process
-budget falls back to a per-session process rlimit at the saved value when the
-engine kernel (`podman info --format '{{.Host.Kernel}}'`) is Linux 5.14 or
-later. The plan then prints
+budget falls back to a per-session process rlimit at the saved value, set by
+the session's first process, when the engine kernel
+(`podman info --format '{{.Host.Kernel}}'`) is Linux 5.14 or later. The plan then prints
 `agent process budget enforced through the process rlimit (512 tasks of the session user, threads included)`,
 and the smoke compares the effective `Max processes` with the saved budget. On
 older or unrecognized kernels the plan line names the reason the fallback was

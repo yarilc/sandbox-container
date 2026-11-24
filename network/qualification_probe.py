@@ -60,7 +60,8 @@ def effective_budgets(budgets, cgroup=Path('/sys/fs/cgroup'), membership=Path('/
     # Effective agent budgets in this container's private cgroup v2 namespace.
     # Enforced budgets must match exactly; a budget whose controller the engine
     # does not delegate must be absent (missing interface or 'max'). Under the
-    # process rlimit fallback, the soft and hard 'Max processes' equal the budget.
+    # process rlimit fallback, the soft and hard 'Max processes' equal the budget:
+    # the container's first process set them, so they count per container.
     assert membership.read_text() == '0::/\n', 'unsupported cgroup namespace'
     enforced = budgets['enforced']
 

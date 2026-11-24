@@ -29,6 +29,35 @@ SAMPLE = os.environ.get('SANDBOX_TEST_ENGINE_SAMPLE', 'docker.io/library/alpine@
 ENABLED = os.environ.get('SANDBOX_RUNTIME_TESTS') == '1'
 
 
+def engine_budgets(env):
+    """Delegated controllers and process mechanism of the engine, by the launcher's rule."""
+    def info(template):
+        return subprocess.run(['podman', 'info', '--format', template], env=env, check=True,
+                              capture_output=True, text=True, timeout=60).stdout.strip()
+    delegated = agent_budgets.delegated(info('{{.Host.CgroupControllers}}'), info('{{.Host.CgroupManager}}'))
+    return delegated, agent_budgets.process_mechanism(delegated, info('{{.Host.Kernel}}'))
+
+
+def start_crowd(test, env, count):
+    """A container of the caller holding count sleeping processes, removed at cleanup."""
+    name = 'sandbox-test-crowd-' + uuid.uuid4().hex[:12]
+    test.addCleanup(subprocess.run, ['podman', 'rm', '--force', '--time', '0', '--ignore', name],
+                    env=env, capture_output=True, timeout=60)
+    subprocess.run(['podman', 'run', '--detach', '--rm', '--name', name, '--userns=keep-id',
+                    '--user', f'{os.getuid()}:{os.getgid()}', '--network=none', '--entrypoint', '/bin/sh', IMAGE,
+                    '-c', f'i=0; while [ $i -lt {count} ]; do sleep 600 & i=$((i + 1)); done; wait'],
+                   env=env, check=True, capture_output=True, text=True, timeout=60)
+    deadline = time.monotonic() + 60
+    while True:
+        top = subprocess.run(['podman', 'top', name, 'pid'], env=env, capture_output=True, text=True, timeout=30)
+        # The header line, the shell and its sleeping children.
+        if len(top.stdout.splitlines()) >= count + 2 or time.monotonic() > deadline:
+            break
+        time.sleep(0.5)
+    test.assertGreaterEqual(len(top.stdout.splitlines()), count + 2, top.stdout + top.stderr)
+    return name
+
+
 @unittest.skipUnless(ENABLED, 'set SANDBOX_RUNTIME_TESTS=1 to use a real rootless engine')
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
@@ -89,12 +118,7 @@ class RuntimeTests(unittest.TestCase):
                 self.assertIn('SANDBOX_CONTAINER_PODMAN=1: host Podman delegation was removed', result.stderr)
 
     def engine_budgets(self):
-        """Delegated controllers and process mechanism of the engine, by the launcher's rule."""
-        def info(template):
-            return subprocess.run(['podman', 'info', '--format', template], env=self.env, check=True,
-                                  capture_output=True, text=True, timeout=60).stdout.strip()
-        delegated = agent_budgets.delegated(info('{{.Host.CgroupControllers}}'), info('{{.Host.CgroupManager}}'))
-        return delegated, agent_budgets.process_mechanism(delegated, info('{{.Host.Kernel}}'))
+        return engine_budgets(self.env)
 
     def test_effective_hardening_and_budgets_in_every_unrestricted_variant(self):
         # Budgets apply as the engine allows: cgroup limits only for delegated
@@ -155,8 +179,7 @@ git --version >/dev/null && openspec --version >/dev/null && ! command -v claude
                                      mechanism == 'none', result.stderr)
         if mechanism == 'none':
             return
-        # A process budget is enforced, not just reported. Under the rlimit
-        # fallback, container startup also counts, so the budget leaves room.
+        # A process budget is enforced, not just reported.
         result = self.shell('python3 - <<\'CHECK\'\nimport subprocess\nchildren = []\ntry:\n'
                             '    for _ in range(200):\n        children.append(subprocess.Popen(["sleep", "30"]))\n'
                             'except (BlockingIOError, OSError):\n    print("PIDS_BUDGET_ENFORCED")\n'
@@ -164,6 +187,27 @@ git --version >/dev/null && openspec --version >/dev/null && ! command -v claude
                             SANDBOX_CONTAINER_PIDS_LIMIT='128')
         self.assert_success(result)
         self.assertIn('PIDS_BUDGET_ENFORCED', result.stdout)
+
+    def test_process_rlimit_counts_per_container(self):
+        # set-process-limits-inside-containers, design D4: on the rlimit fallback, other
+        # containers of the user do not consume the session's budget. A limit applied at
+        # creation would count them, and the session could not even start.
+        _, mechanism = self.engine_budgets()
+        if mechanism != 'rlimit':
+            self.skipTest('the engine does not use the process rlimit fallback')
+        start_crowd(self, self.env, 150)
+        result = self.shell('python3 - <<\'CHECK\'\nimport subprocess\nchildren = []\n'
+                            'def spawn(total):\n    try:\n        while len(children) < total:\n'
+                            '            children.append(subprocess.Popen(["sleep", "60"]))\n'
+                            '    except (BlockingIOError, OSError):\n        pass\n    return len(children)\n'
+                            'first, second = spawn(100), spawn(200)\n[child.kill() for child in children]\n'
+                            'print("PROCESSES", first, second)\nCHECK\n', SANDBOX_CONTAINER_PIDS_LIMIT='128')
+        self.assert_success(result)
+        counts = next(line.split()[1:] for line in result.stdout.splitlines() if line.startswith('PROCESSES'))
+        first, second = map(int, counts)
+        self.assertEqual(first, 100, result.stdout)
+        # The session's own processes count as well: the shell, Python and the init process.
+        self.assertTrue(115 <= second < 128, result.stdout)
 
     def test_session_lifetime_limit_and_early_exit(self):
         started = time.monotonic()
@@ -651,6 +695,20 @@ echo ENGINE_SESSION_OK
         self.assert_success(result)
         self.assertIn('ENGINE_SESSION_OK', result.stdout)
         self.assertEqual((self.project / 'nested-file').stat().st_uid, os.getuid())
+        self.assertEqual(self.engines(), [])
+
+    def test_engine_process_rlimit_counts_per_container(self):
+        # set-process-limits-inside-containers, design D4: on the rlimit fallback, an engine
+        # session starts and runs a nested container beside a container holding more
+        # processes than its budget. A limit applied at creation would count that container.
+        if engine_budgets(self.env)[1] != 'rlimit':
+            self.skipTest('the engine does not use the process rlimit fallback')
+        start_crowd(self, self.env, 520)
+        result = self.shell('test "$(grep "^Max processes" /proc/self/limits | tr -s " " | cut -d" " -f3,4)" = "512 512"\n'
+                            'podman run --rm --network=none localhost/sandbox-test-sample:1 true\n'
+                            'echo NESTED_BESIDE_CROWD_OK\n')
+        self.assert_success(result)
+        self.assertIn('NESTED_BESIDE_CROWD_OK', result.stdout)
         self.assertEqual(self.engines(), [])
 
     def test_no_engine_without_library_images(self):
