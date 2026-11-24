@@ -88,9 +88,16 @@ elif args[0] == 'build':
     time.sleep(float(os.environ.get('FAKE_BUILD_DELAY', '0')))
     sys.exit(int(os.environ.get('FAKE_BUILD_STATUS', '0')))
 elif args[0] == 'ps':
+    if any('.Labels' in a for a in args):
+        # Podman 6.2: `.Labels` is a string in ps templates, so indexing it fails.
+        print('Error: template: ps:1:1: executing "ps" at <index .Labels>: error calling index: '
+              'cannot index slice/array with type string', file=sys.stderr)
+        sys.exit(125)
     if 'label=sandbox-engine.owner' in args:
-        # Running engines as '<id> <owner>' lines (FAKE_ENGINES, escapes allowed).
-        sys.stdout.write(os.environ.get('FAKE_ENGINES', '').encode().decode('unicode_escape'))
+        # Running engines from '<id> <owner>' lines (FAKE_ENGINES, escapes allowed).
+        for line in os.environ.get('FAKE_ENGINES', '').encode().decode('unicode_escape').splitlines():
+            if line.split():
+                print(line.split()[0])
     elif '--filter' in args:
         print(os.environ.get('FAKE_RECOVERY_ID', 'a' * 64) if state.exists() else '')
     else:
@@ -155,6 +162,15 @@ elif args[0] == 'inspect':
         print(owner.read_text())
     else:
         print(state.read_text() if state.exists() and args[-1] == 'a' * 64 else 'foreign-session')
+elif args[:2] == ['container', 'inspect'] and 'sandbox-engine.owner' in args[-2]:
+    # The owner label of a FAKE_ENGINES engine; other identities are gone.
+    owners = {fields[0]: ' '.join(fields[1:]) for fields in
+              (line.split() for line in os.environ.get('FAKE_ENGINES', '').encode().decode('unicode_escape').splitlines())
+              if fields}
+    if args[-1] not in owners:
+        print('Error: no such container ' + args[-1], file=sys.stderr)
+        sys.exit(125)
+    print(owners[args[-1]])
 elif args[0] == 'exec' and os.environ.get('FAKE_NETWORK'):
     print(os.environ.get('FAKE_PROXY_EFFECTIVE', '{"pids":128,"memory":268435456,"capabilities":[0,0,0,0,0],"no_new_privs":1,"seccomp":2,"nproc":[63948,63948]}'))
 elif args[:2] == ['container', 'exists']:

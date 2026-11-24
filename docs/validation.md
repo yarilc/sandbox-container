@@ -45,6 +45,52 @@ its containers. In the Claude network suite one test failed with
 `crun: fork: Resource temporarily unavailable` and passed alone. A session
 started for heavy suites can raise `<P>_PIDS_LIMIT`.
 
+## Reference tag `sandbox-ref-32`: 2026-11-24
+
+Fix to how shared code reads engine labels, found by the Claude adoption's
+Windows validation of `sandbox-ref-31`. The machine's Podman client is 6.x,
+and a session engine was running during the validation. "Image toolchain
+removed" failed with `Cannot list the running container engines: … executing
+"ps" at <index .Labels "sandbox-engine.store">: error calling index: cannot
+index slice/array with type string`. The launcher's reconciliation of engines
+left by interrupted launches used the same template and failed silently, so it
+removed nothing.
+
+Measured through this session's engine (server 6.2.0), with a labelled running
+container:
+
+| Template | 4.3.1 client | 6.2.0 client |
+| --- | --- | --- |
+| `ps --format '{{index .Labels "…"}}'` | works | fails: `.Labels` is a string |
+| `ps --format '{{.Label "…"}}'` | fails: no field `Label` | works |
+| `ps --format json` | works: `Labels` is an object | works: `Labels` is an object |
+| `container inspect --format '{{index .Config.Labels "…"}}'` | works | works |
+| `image inspect --format '{{index .Labels "…"}}'` | works | works |
+
+`setup/toolchains.py` now reads the engine listing as JSON, and
+`launcher/core.sh` lists engine IDs and reads each owner with `container
+inspect`. The fakes in `tests/test_toolchains.py` and `tests/fake_podman.py`
+refuse `.Labels` in `ps` templates, as Podman 6.2 does. A new case covers the
+JSON listing, including unreadable output (design D8, task 3.9). No other
+template in shared code indexes `ps` labels.
+
+Shared files changed since `sandbox-ref-31`: `launcher/core.sh`,
+`setup/toolchains.py`, `tests/fake_podman.py` and `tests/test_toolchains.py`.
+Both code files are in `SHARED_CODE`. The suites ran from a Claude session
+through its engine, as in the section on suites from a session.
+
+| Mode | Result |
+| --- | --- |
+| `--shared` (unit discovery) | Passed: 560 tests, 78 skipped |
+| `--setup` | Passed: 93 tests |
+| `--qualification` | Passed: 34 tests, 1 skipped (no authentication method in the profile) |
+| runtime (default mode) | Passed: 18 tests. `SessionEngineTests` skipped: an engine cannot start inside a session's engine |
+| `--setup-runtime` | Unavailable from a session: the offline case stops at the engine qualification (nested engine), as before this change |
+| ShellCheck | Passed |
+
+The adoption's Windows validation reruns setup and the toolchain cases on the
+machine, with its Podman 6 client.
+
 ## Reference tag `sandbox-ref-31`: 2026-11-24
 
 Fix to the engine image's base pin, found while the operator added an image

@@ -109,7 +109,12 @@ class Engine:
         if args[:2] == ['unshare', 'chown']:
             pass
         elif args[:1] == ['ps']:
-            output = ''.join(f'{name}\t{store}\n' for name, store in self.engines)
+            # As Podman 6.2: `index .Labels` fails in ps templates; JSON works in every version.
+            if args[args.index('--format') + 1] == 'json':
+                output = json.dumps([{'Names': [name], 'Labels': {toolchains.engine.STORE_LABEL: store, 'other': 'x'}}
+                                     for name, store in self.engines])
+            else:
+                status, error = 125, 'Error: template: ps:1:24: cannot index slice/array with type string'
         elif args[:1] == ['info']:
             output = self.seccomp + '\n'
         elif args[:1] == ['volume'] or args[:1] == ['rm']:
@@ -569,6 +574,22 @@ class ToolchainTests(unittest.TestCase):
         self.engine.engines = []
         toolchains.remove(self.library, 'db', self.env)
         self.assertEqual(sorted(self.engine.store), [other])
+
+    def test_engine_listing_reads_the_json_listing(self):
+        # toolchain-library: Image removal waits for idle engines, with any Podman version's listing.
+        store = str(self.library / '.images')
+        self.engine.engines = [('project-1-engine', store), ('elsewhere-engine', store + '-other')]
+        self.assertEqual(toolchains.running_engines(self.library), ['project-1-engine'])
+        listing = json.dumps([{'Names': ['b-engine', 'a-engine'], 'Labels': {toolchains.engine.STORE_LABEL: store}},
+                              {'Names': ['unlabeled'], 'Labels': None}, {'Names': None, 'Labels': {}}])
+        for stdout, expected in (('', []), ('[]\n', []), (listing, ['a-engine', 'b-engine'])):
+            with self.subTest(stdout=stdout), patch.object(toolchains, 'run', return_value=subprocess.CompletedProcess(
+                    [], 0, stdout, '')):
+                self.assertEqual(toolchains.running_engines(self.library), expected)
+        for stdout in ('{{.Names}}', '{"Names": []}', '[1]'):
+            with self.subTest(stdout=stdout), patch.object(toolchains, 'run', return_value=subprocess.CompletedProcess(
+                    [], 0, stdout, '')), self.assertRaisesRegex(common.SetupError, 'unreadable listing'):
+                toolchains.running_engines(self.library)
 
     def test_image_check_runs_against_a_temporary_engine_without_network(self):
         # toolchain-library: Verified against the runtime image / Image check without network.

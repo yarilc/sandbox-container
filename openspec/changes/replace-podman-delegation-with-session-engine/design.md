@@ -215,6 +215,11 @@ The toolchain command lists running engine containers by their label. A change
 that would delete an image fails while any of them is running, naming the
 sessions. Adding images never deletes anything and is always allowed.
 
+The listing is read as JSON, and the launcher's reconciliation of engines
+left by interrupted launches reads each owner with `container inspect`. A `ps`
+template cannot read a label on every Podman version: `.Labels` is a map in
+Podman 4.3 and a string in Podman 6.2.
+
 This is the conservative rule, and task 3.6 showed it is needed: removing an
 image under a running nested container made its files vanish, and the engine
 could no longer inspect or remove that container.
