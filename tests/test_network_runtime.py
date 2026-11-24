@@ -588,6 +588,36 @@ print('AGENT_BUDGETS_OK')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(f'session lifetime limit reached (4 s); exit status {result.returncode}', result.stderr)
 
+    def test_proxy_starts_beside_containers_holding_more_than_its_budget(self):
+        # set-process-limits-inside-containers: on the rlimit fallback the proxy's process
+        # budget is its own. A limit applied at creation would count every container of the
+        # user, and the proxy could not start or pass its effective check.
+        sys.path.insert(0, str(ROOT / 'network'))
+        import agent_budgets
+        sys.path.pop(0)
+        delegated = agent_budgets.delegated(self.podman('info', '--format', '{{.Host.CgroupControllers}}'),
+                                            self.podman('info', '--format', '{{.Host.CgroupManager}}'))
+        if agent_budgets.process_mechanism(delegated, self.podman('info', '--format', '{{.Host.Kernel}}')) != 'rlimit':
+            self.skipTest('the engine does not use the process rlimit fallback')
+        _, environment = self.provider_fixture()
+        crowd = 'sandbox-test-crowd-' + uuid.uuid4().hex[:12]
+        self.addCleanup(subprocess.run, ['podman', 'rm', '--force', '--time', '0', '--ignore', crowd],
+                        capture_output=True, timeout=60)
+        self.podman('run', '--detach', '--rm', '--name', crowd, '--userns=keep-id', '--user',
+                    f'{os.getuid()}:{os.getgid()}', '--network=none', '--entrypoint', '/bin/sh', IMAGE, '-c',
+                    'i=0; while [ $i -lt 150 ]; do sleep 600 & i=$((i + 1)); done; wait')
+        deadline = time.monotonic() + 60
+        # The header line, the shell and its 150 sleeping children.
+        while len(self.podman('top', crowd, 'pid').splitlines()) < 152:
+            self.assertLess(time.monotonic(), deadline, 'the crowd container did not start its processes')
+            time.sleep(0.5)
+        result = self.shell('test "$HTTP_PROXY" = http://127.0.0.1:18080\necho PROXY_BESIDE_CROWD_OK\n',
+                            **environment)
+        self.assert_success(result)
+        self.assertIn('PROXY_BESIDE_CROWD_OK', result.stdout)
+        self.assertIn('proxy process budget enforced through the process rlimit (128 tasks', result.stderr)
+        self.assertFalse(list(self.runtime.iterdir()))
+
     def test_proxy_death_fails_closed_and_preserves_status(self):
         _, environment = self.provider_fixture()
         command = 'printf "network-ready\\n"; read -r marker; if curl --fail --silent --max-time 3 --cacert cert.pem https://localhost.localdomain:8443/; then exit 42; fi; exit 37'

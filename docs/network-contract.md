@@ -75,10 +75,17 @@ Every session proxy has budgets of 128 processes and 256 MiB memory, enforced
 for each controller (`pids`, `memory`) the rootless engine delegates; a budget
 whose controller is not delegated is not requested and is announced. Without
 `pids`, the process budget falls back to a process rlimit of 128 on engine
-kernels from Linux 5.14, like the agent's. Provider startup verifies configured
-and effective cgroup v2 limits, or the process rlimit under the fallback, plus
-actual proxy hardening before agent execution: an enforced limit must be exact
-and an unenforced one absent. An unknown cgroup layout, an unverifiable controller list
+kernels from Linux 5.14, like the agent's. On that fallback the first process of
+the agent, the proxy and the session engine sets the limit inside the
+container, through a fixed `/bin/sh` step or the engine's entrypoint, and the
+engine applies no process rlimit: one applied at creation counts every
+container of the user. `podman exec` processes get the engine's default
+limits; only trusted host-side checks start them. With the fallback, the
+machine as a whole is bounded only by the user's own process limit. Provider
+startup verifies configured and effective cgroup v2 limits, or under the
+fallback the proxy's step and its effective process rlimit, plus actual proxy
+hardening before agent execution: an enforced limit must be exact and an
+unenforced one absent. An unknown cgroup layout, an unverifiable controller list
 or an ignored delegated limit blocks preparation. Proxy failure or exhaustion
 leaves outbound access closed and retains bounded owned cleanup and primary
 application/signal status. Per-session budgets do not replace multiplex/TLS
@@ -298,7 +305,7 @@ tag and `tools/propagate.py`; see [propagation](propagation.md).
 
 | Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
 | --- | --- | --- | --- | --- |
-| Sandbox (reference) | Reference (`sandbox-ref-33`, shared launcher core) | Guard, qualification and guided setup integrated; session container engine for image toolchains, host Podman delegation removed; Windows entry on a Podman machine (WSL provider) with installer, offline and unrestricted modes; no provider mode (no authentication method); provider mechanics covered by the fixture profile and the fixture agent part | WSL ABI 3: all runner modes passed (2026-11-22); `sandbox-ref-29` to `sandbox-ref-31` runner modes in a nested `cgroupfs` engine passed except the recorded budget and explicit-limit tests, `sandbox-ref-32` and `sandbox-ref-33` modes from a session passed except the nested-engine cases (2026-11-24); Podman machine on Windows: validation script passed on both PowerShell editions (2026-11-21) and on 5.1 with the session engine (2026-11-24) | Not applicable |
+| Sandbox (reference) | Reference (`sandbox-ref-34`, shared launcher core) | Guard, qualification and guided setup integrated; session container engine for image toolchains, host Podman delegation removed; Windows entry on a Podman machine (WSL provider) with installer, offline and unrestricted modes; no provider mode (no authentication method); provider mechanics covered by the fixture profile and the fixture agent part | WSL ABI 3: all runner modes passed (2026-11-22); `sandbox-ref-29` to `sandbox-ref-31` runner modes in a nested `cgroupfs` engine passed except the recorded budget and explicit-limit tests, `sandbox-ref-32` and `sandbox-ref-33` modes from a session passed except the nested-engine cases, `sandbox-ref-34` all modes from a session passed except the nested-engine cases and the tests that need cgroup limits (2026-11-24); Podman machine on Windows: validation script passed on both PowerShell editions (2026-11-21) and on 5.1 with the session engine (2026-11-24) | Not applicable |
 | Claude | Adopted `sandbox-ref-28`: shared launcher core | Shared launcher core, mandatory bootstrap, multiplexed proxy and guided setup integrated; Windows entry on a Podman machine (WSL provider) with installer and every network mode, no delegation | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-22); Podman machine on Windows: setup, account login, a Claude session and the validation script on both PowerShell editions passed (2026-11-22) | Account login, reuse and refresh passed; operator session with tool use passed (2026-11-11, `anthropic-account`); real-key API unavailable |
 | Codex | Adopted `sandbox-ref-28`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; Windows entry on a Podman machine (WSL provider) with installer and every network mode, no delegation | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-22); Podman machine on Windows: setup, device-code login, a Codex session, Codex's own sandbox in `unrestricted` and the validation script on both PowerShell editions passed (2026-11-22) | Operator session with tool use passed (2026-11-11, `openai-account`; 2026-11-22 on Windows); refresh and real-key API checks pending; synthetic Responses API streaming and tool call passed |
 | Antigravity | Adopted `sandbox-ref-28`: shared launcher core | Shared launcher core, guard, multiplexed proxy, qualification and guided setup integrated; keyring removed; Windows entry on a Podman machine (WSL provider) with installer and every network mode, no delegation | WSL ABI 3: all runner modes passed on `sandbox-ref-28` (2026-11-23); Podman machine on Windows: setup, Google sign-in, an `agy` session with tool use, token reuse, the Gemini API key method with a dummy key and the validation script on both PowerShell editions passed (2026-11-23) | Operator session with tool use passed (2026-11-11, `google-account`, policy `antigravity-2026-11-11-v2`; 2026-11-23 on Windows); refresh and real-key Gemini API checks pending; synthetic Gemini streaming and tool call passed |

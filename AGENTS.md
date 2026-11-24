@@ -178,11 +178,15 @@ controllers count as delegated only with the `systemd` cgroup manager
 (`Host.CgroupManager`): a rootless `cgroupfs` engine reports controllers but
 applies no limits, so it delegates none (`delegated()` in
 `network/agent_budgets.py`, mirrored in `launcher/core.sh`). The process
-budget alone falls back to a soft and hard process rlimit (`--ulimit nproc`) when
-the engine kernel (`Host.Kernel`) is Linux 5.14 or later, which counts it per
-container; the mechanism (`cgroup`, `rlimit` or `none`) is one rule in
+budget alone falls back to a soft and hard process rlimit when the engine kernel
+(`Host.Kernel`) is Linux 5.14 or later, which counts it per user namespace; the
+mechanism (`cgroup`, `rlimit` or `none`) is one rule in
 `network/agent_budgets.py` and `launcher/core.sh`, verified and qualified like a
-cgroup budget. Wrapper tests use synthetic
+cgroup budget. Each container's first process sets that limit: a fixed
+`/bin/sh` step for the agent and the proxy, the entrypoint for the engine.
+Never use `--ulimit nproc`: the engine applies it before it creates the
+container's user namespace, so the kernel counts every container of the user
+against it. Wrapper tests use synthetic
 HOME/configuration and fake Podman on executable native temporary storage;
 `SANDBOX_TEST_TMPDIR` overrides the temporary directory. No real credentials or
 remote Git repositories belong in tests.

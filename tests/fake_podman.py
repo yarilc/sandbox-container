@@ -31,6 +31,44 @@ def requested_budgets(args):
     return ' '.join((flag('--memory'), str(int(Decimal(flag('--cpus')) * 10**9)), flag('--pids-limit'),
                      '[' + rlimits + ']'))
 
+# The created command as Podman reports it: .Path, then .Args. --init runs the
+# entry program through the init program; --entrypoint replaces the image's.
+INIT = ['/run/podman-init', '--']
+
+
+def created_command(args, image_index, default_entry):
+    options, command = args[:image_index], args[image_index + 1:]
+    entry = [options[options.index('--entrypoint') + 1]] if '--entrypoint' in options else default_entry
+    return (INIT if '--init' in options else []) + entry + command
+
+
+def report_command(record, override):
+    # inspect {{.Path}} or {{index .Args N}} of a created command record.
+    reported = json.loads(os.environ[override]) if override in os.environ else \
+        json.loads(record.read_text()) if record.exists() else []
+    template = args[args.index('--format') + 1]
+    if template == '{{.Path}}' and reported:
+        print(reported[0])
+        sys.exit(0)
+    index = int(template[len('{{index .Args '):-2]) if template.startswith('{{index .Args ') else -1
+    if 0 <= index < len(reported) - 1:
+        print(reported[index + 1])
+        sys.exit(0)
+    print(f'Error: template: inspect:1:2: executing "inspect" at <{template[2:-2]}>: error calling index: '
+          f'index out of range: {index}', file=sys.stderr)
+    sys.exit(125)
+
+
+agent_command = pathlib.Path(str(log) + '.command')
+engine_command = pathlib.Path(str(log) + '.engine-command')
+proxy_command = pathlib.Path(str(log) + '.proxy-command')
+# The process rlimit fallback sets the limit inside each container: an engine
+# that applies it at creation shares it across every container of the user.
+if command in ('create', 'run') and any(a == '--ulimit' and args[i + 1].startswith('nproc')
+                                        for i, a in enumerate(args[:-1])):
+    print('fake podman: --ulimit nproc is refused', file=sys.stderr)
+    sys.exit(98)
+
 if command in os.environ.get('FAKE_STALL', '').split(',') and (command != 'ps' or '--filter' in args):
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     pathlib.Path(str(log) + '.stalled-' + command).write_text(str(os.getpid()))
@@ -75,6 +113,10 @@ elif args[:2] == ['image', 'exists']:
         sys.exit(int(os.environ.get('FAKE_ENGINE_IMAGE_STATUS', '0')))
     sys.exit(int(os.environ.get('FAKE_IMAGE_STATUS', '0')))
 elif args[:2] == ['image', 'inspect']:
+    if '[{{json .Config.Entrypoint}},{{json .Config.Cmd}}]' in args:
+        # The proxy image's own program.
+        print('[["python3","/opt/sandbox-egress/proxy.py"],null]')
+        sys.exit(0)
     if any('build-inputs-hash' in a for a in args):
         print(os.environ.get('FAKE_LABEL_HASH', ''))
         sys.exit(int(os.environ.get('FAKE_LABEL_STATUS', '0')))
@@ -104,6 +146,11 @@ elif args[0] == 'ps':
         print(os.environ.get('FAKE_NAMES', ''))
 elif args[0] == 'create':
     if os.environ.get('FAKE_NETWORK') and any(a.startswith('io.') and '.egress=' in a for a in args):
+        # The proxy image follows EGRESS_SESSION=<token> and the options after it.
+        image = next(i for i, a in enumerate(args) if a.startswith('EGRESS_SESSION=')) + 1
+        while args[image].startswith('--'):
+            image += 2
+        proxy_command.write_text(json.dumps(created_command(args, image, ['python3', '/opt/sandbox-egress/proxy.py'])))
         pathlib.Path(args[args.index('--cidfile') + 1]).write_text('b' * 64 + '\n')
         print('b' * 64)
         sys.exit(0)
@@ -119,6 +166,10 @@ elif args[0] == 'create':
     token = args[args.index('--label') + 1].split('=', 1)[1]
     state.write_text(token)
     pathlib.Path(str(log) + '.budgets').write_text(requested_budgets(args))
+    # The image follows --env CONTAINER_NAME=<name>; the image's entrypoint is the agent's.
+    image = next(i for i, a in enumerate(args) if a.startswith('CONTAINER_NAME=') and args[i - 1] == '--env') + 1
+    agent_command.write_text(json.dumps(created_command(args, image, [os.environ.get('FAKE_IMAGE_ENTRYPOINT',
+                                                                                   'image-entrypoint')])))
     # The private hosts file a session joined to its engine binds, for start to report.
     hosts = [a.rsplit(':', 2)[0] for a in args if a.endswith(':/etc/hosts:ro')]
     pathlib.Path(str(log) + '.hosts-source').write_text(hosts[0] if hosts else '')
@@ -137,14 +188,29 @@ elif args[0] == 'create':
 elif args[:2] == ['run', '--detach']:
     # The session container engine.
     engine_budgets.write_text(requested_budgets(args))
+    image = next(i for i, a in enumerate(args)
+                 if a.endswith('-engine:latest') or a == os.environ.get('FAKE_ENGINE_IMAGE', '-'))
+    engine_command.write_text(json.dumps(created_command(args, image, ['/usr/local/bin/sandbox-engine'])))
     if os.environ.get('FAKE_ENGINE_STATUS'):
         print('engine failed to start', file=sys.stderr)
         sys.exit(int(os.environ['FAKE_ENGINE_STATUS']))
     print(ENGINE_ID)
+elif args[0] == 'exec' and args[1] == ENGINE_ID and args[2:] == ['grep', '^Max processes ', '/proc/2/limits']:
+    # The entrypoint's limits: the process limit it was given after the port, or
+    # the user's own (FAKE_ENGINE_LIMIT='soft hard', or 'missing').
+    started = json.loads(engine_command.read_text()) if engine_command.exists() else []
+    limit = os.environ.get('FAKE_ENGINE_LIMIT', ' '.join([started[4]] * 2 if len(started) > 4 else ['63948'] * 2))
+    if limit == 'missing':
+        sys.exit(1)
+    print('Max processes             ' + '                 '.join(limit.split()) + '                processes')
 elif args[0] == 'exec' and args[1] == ENGINE_ID:
     print(os.environ.get('FAKE_ENGINE_READY', 'true'))
+elif args[0] == 'inspect' and args[-1] == ENGINE_ID and ('{{.Path}}' in args or '{{index .Args' in args[-2]):
+    report_command(engine_command, 'FAKE_ENGINE_COMMAND')
 elif args[0] == 'inspect' and args[-1] == ENGINE_ID:
     print(os.environ.get('FAKE_ENGINE_BUDGETS', engine_budgets.read_text() if engine_budgets.exists() else ''))
+elif args[0] == 'inspect' and args[-1] == 'a' * 64 and ('{{.Path}}' in args or '{{index .Args' in args[-2]):
+    report_command(agent_command, 'FAKE_AGENT_COMMAND')
 elif args[0] == 'inspect':
     if '{{.HostConfig.Memory}}' in args[-2]:
         # Report the created configuration unless a test overrides it.
@@ -156,6 +222,10 @@ elif args[0] == 'inspect':
         sys.exit(0)
     if os.environ.get('FAKE_NETWORK') and args[-1] == 'b' * 64 and args[-2] == '{{json .HostConfig}}':
         print(os.environ.get('FAKE_PROXY_CONFIG', '{"PidsLimit":128,"Memory":268435456}'))
+        sys.exit(0)
+    if os.environ.get('FAKE_NETWORK') and args[-1] == 'b' * 64 and args[-2] == '[{{json .Path}},{{json .Args}}]':
+        reported = json.loads(proxy_command.read_text()) if proxy_command.exists() else ['']
+        print(json.dumps([reported[0], reported[1:]]))
         sys.exit(0)
     owner = pathlib.Path(str(log) + '.collision-token')
     if os.environ.get('FAKE_NAME_OWNER') == 'self' and owner.exists() and args[-1] != 'a' * 64:

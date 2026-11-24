@@ -1,6 +1,7 @@
 """Session container engine: shared build inputs (session-container-engine, design D3)."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -8,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -113,6 +115,60 @@ class EngineRecipeTests(unittest.TestCase):
         self.assertIn('unix://$socket', entrypoint)
         self.assertNotIn('0.0.0.0', entrypoint)
         self.assertIn('ENV XDG_RUNTIME_DIR=/run/user/1000', self.recipe)
+
+    def test_entrypoint_sets_the_process_limit_after_the_port(self):
+        # set-process-limits-inside-containers, design D2: the limit after the port is
+        # set before the services start; invalid arguments start nothing.
+        import resource
+        hard = resource.getrlimit(resource.RLIMIT_NPROC)[1]
+        if hard != resource.RLIM_INFINITY and hard < 64:
+            self.skipTest('the process rlimit of this test is below 64')
+        chosen = '999' if hard == resource.RLIM_INFINITY else str(hard - 1)
+        # The stub must be executable: SANDBOX_TEST_TMPDIR when /tmp is noexec.
+        with tempfile.TemporaryDirectory(dir=os.environ.get('SANDBOX_TEST_TMPDIR')) as temporary:
+            base = Path(temporary)
+            (base / 'bin').mkdir()
+            podman = base / 'bin/podman'
+            podman.write_text('#!/usr/bin/env python3\nimport os, sys\n'
+                              'row = next(line for line in open("/proc/self/limits") if line.startswith("Max processes"))\n'
+                              'with open(os.environ["LOG"], "a") as log:\n'
+                              '    log.write(" ".join([*row.split()[2:4], *sys.argv[1:]]) + "\\n")\n')
+            podman.chmod(0o700)
+            for shell in ('sh', 'bash'):
+                for arguments, status, limit, port in (
+                        ([], 0, None, '2375'), (['2400'], 0, None, '2400'), (['2375', chosen], 0, chosen, '2375'),
+                        (['2375', '0'], 2, None, None), (['2375', '012'], 2, None, None),
+                        (['2375', '-1'], 2, None, None), (['2375', 'x'], 2, None, None), (['2375', ''], 2, None, None),
+                        (['x'], 2, None, None), (['2375', chosen, 'x'], 2, None, None),
+                        *([] if hard == resource.RLIM_INFINITY else [(['2375', str(hard + 1)], 'failed', None, None)])):
+                    with self.subTest(shell=shell, arguments=arguments):
+                        log = base / 'calls.log'
+                        log.unlink(missing_ok=True)
+                        result = subprocess.run([shell, str(ENGINE / 'entrypoint.sh'), *arguments],
+                                                env={'PATH': f'{base / "bin"}:/usr/bin:/bin', 'LOG': str(log),
+                                                     'XDG_RUNTIME_DIR': str(base / 'run')},
+                                                capture_output=True, text=True, timeout=30)
+                        if status == 'failed':
+                            self.assertNotEqual(result.returncode, 0)
+                        else:
+                            self.assertEqual(result.returncode, status, result.stderr)
+                        if port is None:
+                            self.assertFalse(log.exists())
+                            continue
+                        for _ in range(100):
+                            calls = log.read_text().splitlines() if log.exists() else []
+                            if len(calls) == 2:
+                                break
+                            time.sleep(0.05)
+                        self.assertEqual(sorted(call.split(' ', 2)[2] for call in calls),
+                                         [f'system service --time=0 tcp://127.0.0.1:{port}',
+                                          f'system service --time=0 unix://{base}/run/podman/podman.sock'])
+                        for call in calls:
+                            soft, hard_value = call.split(' ', 2)[:2]
+                            if limit:
+                                self.assertEqual((soft, hard_value), (limit, limit))
+                            else:
+                                self.assertNotEqual((soft, hard_value), (chosen, chosen))
 
     def test_engine_inputs_are_installed(self):
         for path in sorted(ENGINE.iterdir()):

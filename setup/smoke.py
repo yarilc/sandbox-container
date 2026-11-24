@@ -45,6 +45,8 @@ def hardening(memory, nano_cpus, pids, enforced=('cpu', 'memory', 'pids'), root=
 def budgets(memory, nano_cpus, pids, enforced, root, process=None, limits=Path('/proc/self/limits'),
             manager='systemd'):
     # The process budget uses the pids cgroup, the process rlimit fallback or nothing.
+    # On the fallback the container's first process set the limit, so this
+    # container's own limit is counted per container (launcher/core.sh process_step).
     process = process or ('cgroup' if 'pids' in enforced else 'none')
     assert process in ('cgroup', 'rlimit', 'none') and (process == 'cgroup') == ('pids' in enforced), \
         'invalid process budget mechanism'

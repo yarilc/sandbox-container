@@ -158,8 +158,8 @@ capabilities, enables no-new-privileges and receives the memory, CPU and process
 budgets whose cgroup v2 controller the rootless engine delegates (only with the
 systemd cgroup manager; cgroupfs delegates none); a budget whose controller is
 not delegated is not enforced and a notice names why. Without pids, the
-process budget falls back to a per-session process rlimit when the engine kernel
-is Linux 5.14 or later; container startup uses a few of those tasks. Memory and
+process budget falls back to a per-session process rlimit, set by the session's
+first process, when the engine kernel is Linux 5.14 or later. Memory and
 CPU have no fallback. The created configuration is checked before the session
 starts; a delegated limit or fallback that is ignored stops startup. Without
 memory or process budgets a session can exhaust host memory or processes for
@@ -499,9 +499,14 @@ core_engine() {
 }
 
 # Mechanism enforcing a process budget: the pids cgroup controller, the process
-# rlimit (Linux 5.14 and later count it per user namespace, and keep-id gives each
-# container its own), or none. Sets process_budget and, for none, process_reason.
-# network/agent_budgets.py (process_mechanism, fallback_reason) is the same rule.
+# rlimit (Linux 5.14 and later count it per user namespace), or none. Sets
+# process_budget and, for none, process_reason. network/agent_budgets.py
+# (process_mechanism, fallback_reason) is the same rule.
+#
+# The rlimit is set inside each container by its first process
+# (core_process_step), never with --ulimit: a new user namespace records its
+# creator's limit, and every container of the user counts against it one level
+# up, so a limit that the engine applies at creation is shared by all of them.
 process_budget_rule() {
     local controllers=$1 kernel=$2
     local pattern='^([0-9]{1,4})\.([0-9]{1,4})([-.+_~][0-9A-Za-z._+~-]*)?$'
@@ -519,6 +524,45 @@ process_budget_rule() {
         process_budget=none
         process_reason='unrecognized kernel version'
     fi
+}
+
+# The process rlimit step: the container's first process sets its soft and hard
+# process rlimit to the budget, then executes the entry program in its place,
+# or stops the container before the program runs. The script is fixed apart
+# from the validated budget, and calls nothing else. Bash and BusyBox name the
+# limit -u; dash, the /bin/sh of the agent and proxy images, names it -p (in
+# Bash, -p is the read-only pipe size, so it never sets anything there).
+process_step_script() {
+    # shellcheck disable=SC2016 # expanded by the container's shell
+    printf '{ ulimit -u %s 2>/dev/null || ulimit -p %s; } && exec "$0" "$@"' "$1" "$1"
+}
+
+# Podman runs a container created with --init through this program.
+init_program=/run/podman-init
+
+# On the process rlimit fallback, the session's entry program runs through the
+# step: the guard in restricted modes, /bin/bash in an unrestricted shell, and
+# the profile's agent program in place of the image entrypoint otherwise. Sets
+# process_command to the created command that budgets_applied requires.
+core_process_step() {
+    local index entry='' found=0
+    process_command=()
+    [[ "$process_budget" == rlimit ]] || return 0
+    for index in "${!container_args[@]}"; do
+        [[ "${container_args[$index]}" == --entrypoint ]] || continue
+        ((found == 0)) || die 'more than one entrypoint in the session options'
+        found=1
+        entry=${container_args[index + 1]:-}
+        container_args[index + 1]=/bin/sh
+    done
+    if ((found == 0)); then
+        entry=$AGENT_EXEC
+        container_args+=(--entrypoint /bin/sh)
+    fi
+    [[ "$entry" == /* ]] || die "invalid entry program for the process rlimit step: $entry"
+    process_command=(/bin/sh -c "$(process_step_script "$pids_limit")" "$entry")
+    args=("${process_command[@]:1}" "${args[@]}")
+    [[ "$network_mode" != unrestricted ]] || process_command=("$init_program" -- "${process_command[@]}")
 }
 
 core_engine_session() {
@@ -579,8 +623,10 @@ core_engine_session() {
             pids_enforced=1
             ;;
         rlimit)
-            # Override any containers.conf default that would request the missing controller.
-            budget_args+=(--pids-limit=-1 --ulimit "nproc=$pids_limit:$pids_limit")
+            # Override any containers.conf default that would request the missing
+            # controller. The limit itself is set inside the container
+            # (core_process_step), never with --ulimit.
+            budget_args+=(--pids-limit=-1)
             printf '%s: agent process budget enforced through the process rlimit (%s tasks of the session user, threads included): %s\n' "$AGENT_NAME" "$pids_limit" "$(cgroup_reason pids)" >&2
             ;;
         *)
@@ -1363,12 +1409,16 @@ shutdown() {
 }
 # Whether a created container carries exactly the session budgets: every enforced
 # one and no unenforced one (the agent's, and the engine's, design D7). The
-# rlimits are listed by name in brackets, so the field is never empty.
+# rlimits are listed by name in brackets, so the field is never empty. On the
+# process rlimit fallback, the remaining arguments are the start of the created
+# command, which must set the limit inside the container.
 budgets_applied() {
-    local configured_budgets configured_memory configured_cpu configured_pids configured_rlimits extra other_rlimits
+    local id=$1 description=$2 configured_budgets configured_memory configured_cpu configured_pids
+    local configured_rlimits extra entry value
+    shift 2
     capture_response configured_budgets engine inspect --type container \
-        --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}} [{{range .HostConfig.Ulimits}}{{.Name}}={{.Soft}}:{{.Hard}},{{end}}]' "$1" \
-        || die "cannot inspect $2 resource budgets; agent not started"
+        --format '{{.HostConfig.Memory}} {{.HostConfig.NanoCpus}} {{.HostConfig.PidsLimit}} [{{range .HostConfig.Ulimits}}{{.Name}}={{.Soft}}:{{.Hard}},{{end}}]' "$id" \
+        || die "cannot inspect $description resource budgets; agent not started"
     # shellcheck disable=SC2154 # set by capture_response
     read -r configured_memory configured_cpu configured_pids configured_rlimits extra <<< "${configured_budgets%$'\n'}"
     [[ -z "${extra:-}" && "$configured_memory" == "$expected_memory" && "$configured_cpu" == "$expected_cpu" \
@@ -1378,12 +1428,40 @@ budgets_applied() {
         return
     fi
     [[ "$configured_pids" =~ ^(0|-1)$ ]] || return 1
-    # The fallback needs exactly one process rlimit entry at the budget; otherwise
-    # an engine default inherited from the user's own limits is not a budget.
     [[ "$process_budget" == rlimit ]] || return 0
-    [[ "$configured_rlimits" == *"RLIMIT_NPROC=$pids_limit:$pids_limit,"* ]] || return 1
-    other_rlimits=${configured_rlimits/"RLIMIT_NPROC=$pids_limit:$pids_limit,"/}
-    [[ "$other_rlimits" != *RLIMIT_NPROC=* ]]
+    # A process rlimit the engine applies at creation is shared by every
+    # container of the user. One above the budget is the engine's default from
+    # the user's own limits; one at or below it is refused.
+    configured_rlimits=${configured_rlimits#[}
+    while [[ "$configured_rlimits" == *,* ]]; do
+        entry=${configured_rlimits%%,*}
+        configured_rlimits=${configured_rlimits#*,}
+        [[ "$entry" == RLIMIT_NPROC=* ]] || continue
+        entry=${entry#*=}
+        for value in "${entry%:*}" "${entry#*:}"; do
+            # More than 18 digits is above any budget (and outside Bash arithmetic).
+            ((${#value} > 18 || 10#$value > pids_limit)) || return 1
+        done
+    done
+    created_command_starts "$id" "$@"
+}
+
+# Whether a created container's command starts with the given values: .Path,
+# then each .Args entry read alone with index, which reads the same on Podman
+# 4.3 and 6.2. A container created with --init reports the init program.
+created_command_starts() {
+    local id=$1 value expected index=0
+    shift
+    (($#)) || return 1
+    capture_response value engine inspect --type container --format '{{.Path}}' "$id" || return 1
+    # shellcheck disable=SC2154 # set by capture_response
+    [[ "${value%$'\n'}" == "$1" ]] || return 1
+    shift
+    for expected in "$@"; do
+        capture_response value engine inspect --type container --format "{{index .Args $index}}" "$id" || return 1
+        [[ "${value%$'\n'}" == "$expected" ]] || return 1
+        index=$((index + 1))
+    done
 }
 
 # This launcher as <pid>-<start time>: unique while it runs, never reused after.
@@ -1417,7 +1495,7 @@ engine_reconcile() {
 # network namespace (design D1). Shutdown removes it with its storage.
 core_engine_start() {
     local seccomp="$script_dir/launcher/engine/seccomp.json" default_profile index ready='' attempt owner
-    local network_args=() engine_args=()
+    local engine_limit engine_soft engine_hard network_args=() engine_args=() engine_command=()
     engine_reconcile
     if [[ ! -f "$seccomp" ]]; then
         # A checkout has no prepared profile: derive one from the engine host's default.
@@ -1442,10 +1520,14 @@ core_engine_start() {
         --label "sandbox-engine.owner=$owner" >"$session_dir/engine.args" || die 'invalid container engine options'
     mapfile -d '' -t engine_args <"$session_dir/engine.args"
     ((${#engine_args[@]})) || die 'invalid container engine options'
+    # On the process rlimit fallback, the engine's entrypoint sets the limit
+    # given after the port before it starts its services.
+    engine_command=(/usr/local/bin/sandbox-engine 2375)
+    [[ "$process_budget" != rlimit ]] || engine_command+=("$pids_limit")
     engine_id=$(podman run --detach "${engine_args[@]}" "${network_args[@]}" "${budget_args[@]}" \
-        "$engine_image_name" 2375 </dev/null) || die "cannot start the container engine $engine_name"
+        "$engine_image_name" "${engine_command[@]:1}" </dev/null) || die "cannot start the container engine $engine_name"
     [[ "$engine_id" =~ ^[a-f0-9]{64}$ ]] || die 'invalid container engine ID returned by Podman'
-    budgets_applied "$engine_id" 'container engine' \
+    budgets_applied "$engine_id" 'container engine' "$init_program" -- "${engine_command[@]}" \
         || die "container engine resource budgets were not applied as expected; engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; agent not started"
     printf '%s: container engine %s: the session budgets apply to it as well\n' "$AGENT_NAME" "$engine_name" >&2
     for ((attempt = 0; attempt < 30; attempt++)); do
@@ -1455,6 +1537,16 @@ core_engine_start() {
         sleep 1
     done
     [[ "$ready" == true ]] || die "the container engine $engine_name did not answer as a rootless engine within 30 seconds; agent not started"
+    if [[ "$process_budget" == rlimit ]]; then
+        # The entrypoint is PID 2 under --init. A process started with exec gets
+        # the engine-applied limits instead, so only its reading is evidence.
+        capture_response engine_limit engine exec "$engine_id" grep '^Max processes ' /proc/2/limits \
+            || die "cannot read the process rlimit of the container engine $engine_name; agent not started"
+        # shellcheck disable=SC2154 # set by capture_response
+        read -r _ _ engine_soft engine_hard _ <<<"${engine_limit%$'\n'}"
+        [[ "${engine_soft:-}" == "$pids_limit" && "${engine_hard:-}" == "$pids_limit" ]] \
+            || die "the container engine $engine_name does not run with the process rlimit fallback (soft and hard $pids_limit); agent not started"
+    fi
     : >"$session_dir/hosts"
     container_args+=(--network "container:$engine_id" --volume "$session_dir/hosts:/etc/hosts:ro")
 }
@@ -1513,6 +1605,7 @@ core_create_start() {
         container_args+=("${restricted[@]:1:${restricted[0]}}")
         args=("${restricted[@]:$((1 + restricted[0]))}")
     fi
+    core_process_step
     [[ -z "$engine_store" ]] || core_engine_start
     # Measure the session from just before the container is created, so the
     # engine's lifetime limit cannot have started earlier, with a monotonic clock:
@@ -1580,11 +1673,12 @@ core_create_start() {
     fi
 
     # Engine flags alone are not evidence: require the created configuration to
-    # carry every enforced budget and no unenforced one. Setup smoke and
-    # qualification measure the effective cgroups.
-    if ! budgets_applied "$container_id" agent; then
+    # carry every enforced budget and no unenforced one, and on the process
+    # rlimit fallback the step that sets it. Setup smoke and qualification
+    # measure the effective limits.
+    if ! budgets_applied "$container_id" agent "${process_command[@]}"; then
         [[ "$process_budget" != rlimit ]] \
-            || die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu process rlimit fallback nproc=$pids_limit:$pids_limit); engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; check the process rlimit fallback and rootless cgroup v2 controller delegation; agent not started"
+            || die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu process rlimit fallback: the container must start with the step that sets the process rlimit to $pids_limit, and no engine process rlimit at or below it); engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; check the process rlimit fallback and rootless cgroup v2 controller delegation; agent not started"
         die "agent resource budgets were not applied as expected (memory=$expected_memory nano_cpus=$expected_cpu pids=$( ((pids_enforced)) && printf '%s' "$pids_limit" || printf 'unenforced')); engine reports controllers $cgroup_controllers with the $cgroup_manager cgroup manager; check rootless cgroup v2 controller delegation; agent not started"
     fi
 

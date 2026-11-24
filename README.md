@@ -341,9 +341,12 @@ with its storage when the session ends. Without images in the library, or with
   launch that was killed.
 - **Budgets:** the engine gets the session's memory, CPU and process budgets,
   checked like the agent's; together the session can therefore use twice the
-  agent's budget, and the launch says so. Explicit `--memory` or `--pids-limit`
-  limits on nested containers are not guaranteed: on an engine without
-  delegated cgroup controllers they fail.
+  agent's budget, and the launch says so. On the process rlimit fallback the
+  engine's entrypoint sets the limit before its services start, and the launch
+  reads it from that process before the session starts; the engine and
+  everything it runs share that one limit. Explicit `--memory` or
+  `--pids-limit` limits on nested containers are not guaranteed: on an engine
+  without delegated cgroup controllers they fail.
 - **Hardening exceptions:** the engine container is the one container that
   relaxes the standard policy, only as nested rootless containers and image
   operations need: the `SETUID` and `SETGID` capabilities for the
@@ -845,16 +848,31 @@ cgroup manager, which applies no cgroup limits` and the matching CPU line, and
 the process budget uses the fallback below.
 
 The process budget has a fallback. Without the `pids` controller, the shell
-container gets a soft and hard process rlimit (`--ulimit nproc=N:N`) at the
+container's first process sets its soft and hard process rlimit to the
 selected budget, and the notice reads `agent process budget enforced through the
-process rlimit (512 tasks of the session user, threads included)`. The limit is
-per session: Linux 5.14 and later count it per user namespace, and every
-container has its own. The session cannot raise it, because it has no
-capabilities. Container startup uses a few of these tasks (about 13 were
-measured), so slightly fewer than `N` processes are available. Through a Podman
-API service more of them can be taken: in the runtime suite on Podman machine
-6.1.4, a budget of 32 left too few to start the container. The fallback
-applies only when the engine reports kernel 5.14 or later
+process rlimit (512 tasks of the session user, threads included)`:
+- **Where it is set.** The container starts with a fixed `/bin/sh` step,
+  `{ ulimit -u N 2>/dev/null || ulimit -p N; } && exec <program>`, before the
+  shell or, in restricted modes, the guard runs (dash names the limit `-p`). If
+  the limit cannot be set, the container stops before anything else runs, and
+  each launch checks that the created container starts with this step.
+- **Per session.** Linux 5.14 and later count the limit per user namespace, and
+  the step sets it inside the container's own. The wrapper never uses
+  `--ulimit nproc`: the engine applies that limit before it creates the
+  container's user namespace, and the kernel then checks every fork against
+  the processes of all your containers together (see `docs/validation.md`).
+- **Not raisable.** The session cannot raise the limit, because it has no
+  capabilities. Its own shell and init process count against it, so slightly
+  fewer than `N` processes are left for commands.
+- **Exceptions.** A process that host tools start in the container with
+  `podman exec` gets the engine's default limits instead. Only the launcher's
+  checks and the validation script do that; a session has no engine access to
+  its own container.
+- **The machine as a whole.** Each session, proxy and engine is bounded
+  separately; together they are bounded only by your user's own process
+  limit.
+
+The fallback applies only when the engine reports kernel 5.14 or later
 (`podman info --format '{{.Host.Kernel}}'`). Older or unrecognized kernels may
 count every process of your user, so the process budget then stays unenforced,
 and the notice names the reason. The memory and CPU budgets have no fallback.
