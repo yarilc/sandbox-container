@@ -96,7 +96,10 @@ as in the spike.
 ### D3. Engine image: our own Containerfile on a pinned base
 
 A shared Containerfile in `launcher/engine/` builds
-`FROM quay.io/podman/stable@sha256:<digest>`. It
+`FROM quay.io/podman/stable:<version>-immutable@sha256:<digest>`. Only the
+`-immutable` tags keep their manifests: quay.io rebuilds the other tags daily
+and deletes the manifests they pointed to, so a digest taken from `v6.2` or
+`latest` stops resolving within a day (task 2.6). It
 replaces the image's configuration rather than overriding it at run time,
 because the spike found the image's defaults at four configuration layers:
 - `containers.conf`: no host namespaces, cgroups enabled, `cgroupfs`, `crun`,

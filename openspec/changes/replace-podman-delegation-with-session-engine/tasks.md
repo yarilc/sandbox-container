@@ -30,6 +30,13 @@
     - the qualification probe expects the bounding set `0x400c0`;
     - `SessionEngineTests` builds, saves, removes and loads an image in a session.
   - **Record:** `docs/validation.md`, under `sandbox-ref-30`.
+- [x] 2.6 Pin the engine base to an `-immutable` tag (design D3). Found after `sandbox-ref-30`: a clean pull of the pinned `quay.io/podman/stable@sha256:3e54de04…` failed with `manifest unknown`, because quay.io had rebuilt `v6.2` and deleted that manifest. Installations that already had the base built the engine; a new one could not.
+  - **Verify:**
+    - the base resolves from quay.io by its pinned index digest;
+    - Podman, crun and fuse-overlayfs keep the measured versions, and the files the recipe removes or empties exist;
+    - `tests/test_engine.py` refuses a base without an `-immutable` tag;
+    - the engine built on it passes the `session-engine` qualification case and `SessionEngineTests`.
+  - **Record:** `docs/validation.md`, under `sandbox-ref-31`.
 - [x] 2.4 Document the engine image in `docs/setup.md`: what setup builds, the seccomp derivation and when it is regenerated.
   - **Verify:** every documented command runs as written in a scratch installation.
 

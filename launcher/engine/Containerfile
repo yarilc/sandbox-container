@@ -1,7 +1,10 @@
 # Private per-session container engine (session-container-engine, design D3).
 # The base image's own defaults target other uses; each one the spike measured
 # is replaced here rather than overridden when the engine starts.
-FROM quay.io/podman/stable@sha256:3e54de04de1895b6e9c8285e42b385aa4fa68c328a2a0b4601958357a08324bb
+# Pin an -immutable tag: quay.io rebuilds the other podman/stable tags daily and
+# deletes their earlier manifests, so a digest taken from them stops resolving.
+# The digest is the multi-architecture index.
+FROM quay.io/podman/stable:v6.2.0-immutable@sha256:e0da0a3aba6b332587c693dc206efa2dd2888dde286c280ef852cbad72c0e701
 
 # Rootless engine defaults with private namespaces for nested containers.
 COPY containers.conf /etc/containers/containers.conf
