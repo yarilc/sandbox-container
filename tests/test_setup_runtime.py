@@ -57,7 +57,6 @@ class SetupRuntime(unittest.TestCase):
         answers = [('Protected native installation directory', str(self.root)), ('Network mode', mode)]
         # The reference profile has no authentication method or permission bypass.
         answers += [('State mode', 'isolated'), ('Private isolated state directory', str(self.base / 'state')),
-                    ('Delegate the host Podman API', 'no'),
                     ('Use parent-directory worktree scope', 'no'), ('Agent memory limit', ''),
                     ('Agent CPU limit', ''), ('Agent process limit', ''), ('Session lifetime in seconds', ''),
                     ('Trust a host CA bundle', 'yes' if ca else 'no')]

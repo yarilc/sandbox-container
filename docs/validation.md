@@ -1,6 +1,195 @@
 # Validation record
 
-## Toolchain provisioning (`simplify-toolchain-provisioning`, no tag yet): 2026-11-23
+## Reference tag `sandbox-ref-29`: 2026-11-24
+
+Container tests through a private session engine instead of host Podman
+delegation. The tag holds these changes, recorded in the two sections below:
+- `simplify-toolchain-provisioning` (archived);
+- `replace-podman-delegation-with-session-engine` (active until its native
+  Linux check, task 8.2, and its archive).
+
+Shared files changed since `sandbox-ref-28`:
+- `launcher/core.sh`, `launcher/windows/bootstrap.sh`,
+  `launcher/windows/core.ps1` and the new `launcher/engine/` files;
+- `network/agent_profile.py`, `network/qualification_records.py` and
+  `network/qualify.py`;
+- `setup/common.py`, `setup/launch.py`, `setup/setup.py`,
+  `setup/toolchains.py`, the new `setup/engine.py` and
+  `setup/toolchain-catalog/`;
+- the shared tests `fake_podman.py`, `test_alignment.py`, `test_engine.py`
+  (new), `test_launcher.py`, `test_qualification.py`, `test_setup.py`,
+  `test_toolchains.py`, `test_windows_bootstrap.py` and
+  `tests/windows/shim_tests.ps1`.
+
+**Runner modes on the final tree.** Every mode that `docs/propagation.md`
+requires for these files ran, `--wrapper` because `network/agent_profile.py`
+changed, `--qualification` because `launcher/core.sh`, `setup/engine.py` and
+the engine files are in `SHARED_CODE`. The runner was the spike engine of the
+session container engine change: Podman 6.2.0 (`quay.io/podman/stable`),
+rootless with the `cgroupfs` manager, nested in a restricted session on the
+Windows Podman machine (Podman 6.1.4, WSL kernel 6.18.58.1). Tests ran from a
+native copy of the checkout, with the runtime image
+`localhost/sandbox-container:setup-fc9eba86d7d7406ea869cc7f2e60fe7c` through
+`SANDBOX_CONTAINER_IMAGE`.
+
+| Mode | Result |
+| --- | --- |
+| `--shared` (unit discovery, with `test_agent_profile.py` and `test_alignment.py`) | Passed: 559 tests, 78 skipped |
+| `--setup` | Passed: 93 tests |
+| `--setup-runtime` | Passed: 2 tests in 179 s |
+| `--qualification` | Passed: 34 tests, 1 skipped (no authentication method in the profile) |
+| `--wrapper` | Passed: 114 tests, 1 skipped |
+| runtime (default mode) | Passed: 21 tests |
+| `--network-feasibility`, `--network-policy`, `--mux` | Passed: 1, 15 and 26 tests |
+| `--network` | 18 tests, 1 skipped. Only the 5 budget subtests that fail under `cgroupfs` on this machine, as for `simplify-toolchain-provisioning`. Two more failed under load in the full run and passed alone |
+| `--guard` | 25 tests, 1 skipped. The AF_VSOCK control failed, as on this machine. The 3 multiplex tests that request explicit `--memory` limits failed because the nested engine has no writable cgroup (session engine, design Open Questions) |
+| `bash tools/shellcheck.sh .`, `bash tools/powershell.sh .`, `git diff --check`, `openspec validate --strict` | Passed: no finding, 62 shim cases |
+| `tools/windows-validate.ps1 -SavedDelegation`, Windows PowerShell 5.1, offline setup of this tree | 53 passed, 0 failed, 4 skipped |
+
+The `--network` and `--guard` failures come from the runner, not from the
+change: a `cgroupfs` engine applies no cgroup limits, and these tests passed
+with the `systemd` manager for `sandbox-ref-27`. A native Linux host with
+`systemd` (task 8.2) has not run them on this tree.
+
+## Session container engine (`sandbox-ref-29`): 2026-11-23 to 2026-11-24
+
+Change: `openspec/changes/replace-podman-delegation-with-session-engine/`.
+Sessions get a private nested Podman engine instead of host Podman delegation.
+
+**Spike.** A nested engine was measured beside the restricted session
+`yarilc-github-0` on the Windows Podman machine. That machine runs Podman
+6.1.4, the WSL kernel `6.18.58.1-microsoft-standard-WSL2` and the `cgroupfs`
+manager. The engine was `quay.io/podman/stable` (Podman 6.2.0, crun 1.31,
+fuse-overlayfs 1.17), joined to the session's network namespace. Each
+configuration problem found, and its fix:
+
+| Finding | Fix (design D3/D4) |
+| --- | --- |
+| Zombie `fuse-overlayfs` and `conmon` children of the API service exhausted `RLIMIT_NPROC`; the proxy failed with `crun: clone: Resource temporarily unavailable` | `--init` |
+| `containers.rootless.conf.d/20-image_build.conf` adds `volumes = ["/proc:/proc"]`: nested containers saw the engine's procfs (same superblock, 493 processes) | file deleted; nested PID 1 is the container's own |
+| `containers.conf.d/00-vendor.conf` selects journald: `podman logs` was empty | file deleted; `k8s-file` |
+| `mounts.conf` passes `/run/secrets/rhsm` through, which the guard's mount check refused | empty `mounts.conf` |
+| The default seccomp profile allows `sethostname` only with `CAP_SYS_ADMIN`: private UTS failed (`crun: sethostname: Operation not permitted`) | profile derived from the default with both hostname calls allowed; nested host name is the container ID |
+| `cgroups="disabled"` in the base configuration: `cannot set limits without cgroups` | the engine's own `containers.conf` |
+
+A read-only additional image store, written by a helper container of the same
+image, served images offline. Both the index and the platform digest resolved,
+and an image added while the API service was running was listed and ran
+without a restart. The engine refused to remove store images
+(`cannot remove read-only image`). A tag copied the record into session storage
+with its original names.
+
+All suites ran from the session through the engine, with `tests/run-runtime.sh`
+unchanged on a native copy of the checkout:
+
+| Suite | Result |
+| --- | --- |
+| unit discovery (531 tests) | passed, except the `test_term_forwarding` race (2 of 8 isolated runs), since fixed (task 7.2) |
+| runtime (19), `--setup` (92), `--setup-runtime` (2), `--wrapper` (117), `--qualification` (31), `--network-feasibility` (1), `--network-policy` (15), `--mux` (26), `tools/shellcheck.sh`, `tools/powershell.sh` (62 cases) | passed |
+| `--network` (16) | 5 budget subtests failed, as on the machine itself under `cgroupfs` |
+| `--guard` (25) | the AF_VSOCK control failed, as on the machine; 3 multiplex tests that request explicit `--memory` limits failed: the nested engine has no writable cgroup |
+
+**Session topology (task 1.1).** The network runtime suite ran with every
+restricted session joined to the network namespace of a separate
+`--network=none` container (`--network=container:<owner>`), including the
+qualification probe and the provider harness. Only the 5 cgroupfs budget
+subtests failed, as in the baseline. Readiness, hardening identity, the guard,
+TLS binding, proxy death, the tampered bootstrap and qualification all passed.
+`/etc/resolv.conf` and the interfaces (`lo` only) were identical.
+
+`/etc/hosts` differed in one line: a joined container gets no
+`127.0.0.1 <short ID> <name>` entry, and Podman refuses `--add-host` in that
+mode. A read-only `/etc/hosts` written by the launcher (localhost entries and
+that line) restored resolution of the session's host name. Design D1 therefore
+keeps the engine as the network namespace owner, and adds that hosts file.
+
+**Engine capabilities (task 2.3).** The engine image ran inside the spike
+engine, with the options of design D4. The spike engine's subordinate range had
+to grow from 64535 to 200000 IDs, because nested containers of a nested engine
+need a full 65536-ID range; on a host, the caller's own subordinate range
+provides it. Each case ran one nested container from the probe root file system:
+
+| Engine capabilities | Nested container |
+| --- | --- |
+| engine defaults | ran; private procfs (4 processes), own host name |
+| `--cap-drop=all --cap-add=SETUID,SETGID` | ran; nested `uid_map` `0 1000 1; 1 1 999; 1000 1001 64535` |
+| `--cap-drop=all` | `newuidmap: write to uid_map failed: Operation not permitted` |
+| `--cap-drop=all --cap-add=SETUID` or `SETGID` alone | refused the same way |
+| `--cap-drop=all --cap-add=SETUID,SETGID --security-opt=no-new-privileges` | ran with the same full map |
+
+With no-new-privileges, the engine's API service processes had
+`CapEff`, `CapAmb` and `CapBnd` equal to `0xc0` (`cap_setgid,cap_setuid`) and
+`NoNewPrivs: 1`: Podman passes added capabilities to the non-root `podman` user
+as ambient capabilities, so `newuidmap` and `newgidmap` need no file
+capabilities. The engine therefore keeps no-new-privileges on.
+
+**Engine user namespace (task 2.3).** With the default user namespace, the
+engine's `podman` user is a subordinate ID: a nested container's root could not
+write a directory owned by the caller (`touch: cannot touch '/work/...':
+Permission denied`). A mapping that makes the engine's `podman` user the caller,
+`--uidmap 0:100000:1 --uidmap 1:1:999 --uidmap 1000:0:1 --uidmap 1001:1001:65535`
+and the same for groups, let the nested root write there, and the file belonged
+to the caller (`1000:1000` in the caller's view), with no-new-privileges and with
+or without file capabilities on `newuidmap`. That mapping is what
+`--userns=keep-id:uid=1000,gid=1000` produces from a contiguous subordinate
+range. In the spike engine, whose range was split at its own UID, keep-id split
+the engine's IDs 0-999 across two parent extents, and `newuidmap` failed for
+`1 1 999` only: each mapped range must lie in one parent extent.
+After the spike engine was recreated with one contiguous subordinate range
+(`podman:1001:300000`, uid map `[{0 1000 1} {1 1001 300000}]`), the engine image
+with `--userns=keep-id:uid=1000,gid=1000`, `--cap-drop=all --cap-add=SETUID,SETGID`
+and no-new-privileges ran a nested container whose root wrote into a
+caller-owned `0755` directory; the file belonged to the caller (`1000:1000`).
+
+**Rollback compatibility (task 3.7).** The previous release (`e371296`, exported
+with `git archive`) read a library written by this change: an image-only
+toolchain `db` whose manifest and index entry carry the new `images` field, and
+an `.images` store directory. Its `--container-toolchain list` exited 0 and
+listed `db 16 default=no` with the catalog recipes; its `launch-env` exited 0 and
+printed only the `library` line. The index schema stayed 1, so a rollback keeps
+the library readable; the previous release ignores the images.
+
+**Image removal while in use (task 3.6).** An engine ran a nested container
+(`sleep 300`) from an image of its read-only store; a store helper then removed
+that image (`rmi -f`, `Deleted: bf8527eb54c3…`). The engine no longer listed it,
+and the running container broke: `sh` and `/bin/busybox` were not found by a
+new `exec`, and the engine could neither inspect nor remove the container
+(`image not known`) until the engine itself was removed. A new container from
+that image failed with a registry lookup. Deleting a store image while any
+session engine runs is therefore refused (design D8); nothing relaxes that rule.
+
+**Implementation suites (tasks 6.4, 8.4): 2026-11-24.** The implementation ran
+in the spike engine, from a native copy of the checkout, with the same
+`tests/run-runtime.sh` modes. It has not yet run in a session engine started by
+the launcher (task 8.1).
+
+| Suite | Result |
+| --- | --- |
+| unit discovery (559 tests, 78 skipped without an engine), `openspec validate --strict`, ShellCheck (13 files), PSScriptAnalyzer and shim tests (62 cases), `git diff --check` | passed |
+| runtime (21, including the 3 session engine cases), `--setup` (93), `--setup-runtime` (2), `--wrapper` (114), `--qualification` (34, including `session-engine`), `--network-feasibility` (1), `--network-policy` (15), `--mux` (26) | passed |
+| `--network` (18, including the offline engine and the image recipe check without network) | the 5 cgroupfs budget subtests failed, as in the baseline. Two further tests failed under load; they passed when rerun alone |
+| `--guard` (25) | the AF_VSOCK control and the 3 multiplex tests with explicit `--memory` limits failed, as in the spike |
+
+**Windows (task 8.3): 2026-11-24.** After an offline setup of this change from
+Windows, `tools/windows-validate.ps1 -SavedDelegation` ran on Windows
+PowerShell 5.1.26100.9711. The machine was `podman-machine-default` (WSL
+3.0.5.0, kernel 6.18.58.1), with Ubuntu also running. Result: 53 passed,
+0 failed, 4 skipped. The skipped cases were the unrestricted-only refusal, the
+worktree scope, `-Install` and `-StopMachine`. The cases of this change:
+
+| Case | Result |
+| --- | --- |
+| Delegation requested (`SANDBOX_CONTAINER_PODMAN=1`) | status 1 with the removal message and image toolchain guidance |
+| Image toolchain: a digest-pinned alpine recipe added to a validation library | pulled into the image store |
+| Session with library images: an offline session with that library | `CONTAINER_HOST=tcp://127.0.0.1:2375`; the image ran without a pull, and its container reached no external address |
+| Image toolchain removed after the session | `Removed toolchain validate-image` |
+| Saved delegation: the release's preferences rewritten as schema 2 with `podman` set | the launch stopped with the bootstrap's refusal before any Podman command |
+| Setup rerun over saved delegation, from Windows | status 0; the new release saved schema 3 preferences without the setting, and a launch then succeeded |
+
+The other cases passed as in earlier rounds; under `cgroupfs` the launches
+announced the agent memory budget as not enforced.
+
+## Toolchain provisioning (`sandbox-ref-29`): 2026-11-23
 
 Change: `openspec/changes/simplify-toolchain-provisioning/`, on the branch of
 the same name.

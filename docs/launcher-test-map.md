@@ -32,7 +32,7 @@ against the new core, and every lost behavior becomes a shared case through the 
 | S | `test_maintenance_is_separate_from_runtime_mode` | 5 | shared |  | `test_maintenance_is_separate_from_runtime_mode` |
 | S | `test_restricted_unprotected_installation_fails_before_image_operations` | 7 | shared |  | `test_restricted_unprotected_installation_fails_before_image_operations` |
 | S | `test_argument_forwarding_and_defaults` | 6 | shared |  | `test_argument_forwarding_and_defaults` |
-| S | `test_delegation_only_follows_the_exact_opt_in` | 3-4 | shared |  | `test_delegation_only_follows_the_exact_opt_in` |
+| S | `test_delegation_only_follows_the_exact_opt_in` | 3-4 | shared |  | `test_leftover_delegation_opt_in_is_refused` |
 | S | `test_boolean_forms_and_invalid_values` | 1-2 | shared |  | `test_boolean_forms_and_invalid_values` |
 | S | `test_shell_option_is_equivalent` | 1-2 | shared |  | `test_shell_option_is_equivalent` |
 | S | `test_workspace_worktree_and_symlink` | 3-4 | shared |  | `test_workspace_worktree_and_symlink` |
@@ -56,8 +56,8 @@ against the new core, and every lost behavior becomes a shared case through the 
 | S | `test_wsl_drive_roots_refused_but_subdirectories_accepted` | 3-4 | shared |  | `test_wsl_drive_roots_refused_but_subdirectories_accepted` |
 | S | `test_insecure_existing_state_rejected` | 3-4 | shared |  | `test_insecure_existing_state_rejected` |
 | S | `test_tty_allocated_for_terminal` | 6 | shared |  | `test_tty_allocated_for_terminal` |
-| S | `test_socket_only_required_when_enabled` | 3-4 | shared |  | `test_socket_only_required_when_enabled` |
-| S | `test_socket_engine_must_be_rootless` | 3-4 | shared |  | `test_socket_engine_must_be_rootless` |
+| S | `test_socket_only_required_when_enabled` | 3-4 | shared |  | `test_former_socket_override_is_ignored` |
+| S | `test_socket_engine_must_be_rootless` | 3-4 | shared |  | removed with host Podman delegation |
 | S | `test_rootful_and_remote_rejected_local_unix_accepted` | 3-4 | shared |  | `test_rootful_and_remote_rejected_local_unix_accepted` |
 | S | `test_build_location_refresh_and_missing_image` | 5 | shared (rewrite) | decision U3, U8 | `test_build_location_refresh_and_missing_image` |
 | S | `test_runtime_build_receives_host_ca_only_when_trusted` | 5 | shared |  | `test_runtime_build_receives_host_ca_only_when_trusted` |
@@ -80,9 +80,9 @@ against the new core, and every lost behavior becomes a shared case through the 
 | S | `test_term_forwarding` | 7 | shared |  | `test_term_forwarding` |
 | S | `test_launch_verification_fails_before_image_operations` | 5 | shared |  | `test_launch_verification_fails_before_image_operations` |
 | S | `test_verification_preserves_exact_record_boundaries_and_status` | 6 | shared (rewrite) | decision U16, U17 | `test_verification_preserves_exact_record_boundaries_and_status` |
-| S | `test_delegated_response_rejects_carriage_returns_before_image_operations` | 5 | shared |  | `test_delegated_response_rejects_carriage_returns_before_image_operations` |
+| S | `test_delegated_response_rejects_carriage_returns_before_image_operations` | 5 | shared |  | removed with host Podman delegation |
 | S | `test_response_validation_composes_with_launch_modes` | 3-4 | shared |  | `test_response_validation_composes_with_launch_modes` |
-| S | `test_delegated_cr_response_preserves_query_failure_and_disabled_access` | 3-4 | shared |  | `test_delegated_cr_response_preserves_query_failure_and_disabled_access` |
+| S | `test_delegated_cr_response_preserves_query_failure_and_disabled_access` | 3-4 | shared |  | removed with host Podman delegation |
 | S | `test_pathless_or_relative_unix_launch_endpoint_rejected_before_query` | 3-4 | shared |  | `test_pathless_or_relative_unix_launch_endpoint_rejected_before_query` |
 | S | `test_help_with_pathless_launch_endpoint` | 3-4 | shared |  | `test_help_with_pathless_launch_endpoint` |
 | S | `test_shared_state_default_and_override` | 3-4 | shared |  | `test_shared_state_default_and_override` |
@@ -93,13 +93,13 @@ against the new core, and every lost behavior becomes a shared case through the 
 | S | `test_state_alias_and_configuration_escape` | 3-4 | shared |  | `test_state_alias_and_configuration_escape` |
 | S | `test_private_existing_configuration_and_wrong_owner` | 3-4 | shared |  | `test_private_existing_configuration_and_wrong_owner` |
 | S | `test_inaccessible_state_and_ignored_permissions` | 3-4 | shared |  | `test_inaccessible_state_and_ignored_permissions` |
-| S | `test_socket_disabled_values_skip_delegation_checks` | 3-4 | shared |  | `test_socket_disabled_values_skip_delegation_checks` |
-| S | `test_socket_precedence_and_remapping` | 3-4 | shared |  | `test_socket_precedence_and_remapping` |
-| S | `test_podman5_unix_url_host_socket_is_bound_as_path` | 3-4 | shared |  | `test_podman5_unix_url_host_socket_is_bound_as_path` |
-| S | `test_socket_fallback_and_invalid_sources` | 3-4 | shared (rewrite) | decision U16 | `test_socket_fallback_and_invalid_sources` |
-| S | `test_invalid_delegation_results_gate_explicit_build` | 5 | shared (rewrite) | decision U16 | `test_invalid_delegation_results_gate_explicit_build` |
+| S | `test_socket_disabled_values_skip_delegation_checks` | 3-4 | shared |  | `test_leftover_delegation_opt_in_is_refused` |
+| S | `test_socket_precedence_and_remapping` | 3-4 | shared |  | removed with host Podman delegation |
+| S | `test_podman5_unix_url_host_socket_is_bound_as_path` | 3-4 | shared |  | removed with host Podman delegation |
+| S | `test_socket_fallback_and_invalid_sources` | 3-4 | shared (rewrite) | decision U16 | removed with host Podman delegation |
+| S | `test_invalid_delegation_results_gate_explicit_build` | 5 | shared (rewrite) | decision U16 | removed with host Podman delegation |
 | S | `test_composition_and_independence_in_both_state_modes` | 3-4 | shared (rewrite) | decision U7 | `test_composition_and_independence_in_both_state_modes` |
-| S | `test_disabled_delegation_preserves_host_launch_endpoint` | 3-4 | shared (rewrite) | decision U16, U17 | `test_disabled_delegation_preserves_host_launch_endpoint` |
+| S | `test_disabled_delegation_preserves_host_launch_endpoint` | 3-4 | shared (rewrite) | decision U16, U17 | `test_host_launch_endpoint_is_not_forwarded` |
 | S | `test_ca_mount_and_security_policy` | 5 | shared (rewrite) | decision U7 | `test_ca_mount_and_security_policy` |
 | S | `test_symlink_invocation_and_native_permissions` | 3-4 | shared |  | `test_symlink_invocation_and_native_permissions` |
 | S | `test_collision_exhaustion_and_diagnostic_cleanup` | 7 | shared |  | `test_collision_exhaustion_and_diagnostic_cleanup` |
@@ -179,17 +179,17 @@ against the new core, and every lost behavior becomes a shared case through the 
 | C | `test_socket_disabled_values_skip_delegation_checks` | 3-4 | shared (duplicate) | duplicate of S | as the duplicated case |
 | C | `test_socket_precedence_and_remapping` | 3-4 | shared (duplicate) | duplicate of S | as the duplicated case |
 | C | `test_podman5_unix_url_host_socket_is_bound_as_path` | 3-4 | shared (duplicate) | duplicate of S | as the duplicated case |
-| C | `test_socket_fallback_and_invalid_sources` | 3-4 | shared (rewrite) | decision U16 | `test_socket_fallback_and_invalid_sources` |
-| C | `test_invalid_delegation_results_gate_explicit_build` | 5 | shared (rewrite) | decision U16 | `test_invalid_delegation_results_gate_explicit_build` |
+| C | `test_socket_fallback_and_invalid_sources` | 3-4 | shared (rewrite) | decision U16 | removed with host Podman delegation |
+| C | `test_invalid_delegation_results_gate_explicit_build` | 5 | shared (rewrite) | decision U16 | removed with host Podman delegation |
 | C | `test_composition_and_independence_in_both_state_modes` | 3-4 | shared (rewrite) | decision U7 | `test_composition_and_independence_in_both_state_modes` |
-| C | `test_disabled_delegation_preserves_host_launch_endpoint` | 3-4 | shared (rewrite) | decision U16, U17 | `test_disabled_delegation_preserves_host_launch_endpoint` |
+| C | `test_disabled_delegation_preserves_host_launch_endpoint` | 3-4 | shared (rewrite) | decision U16, U17 | `test_host_launch_endpoint_is_not_forwarded` |
 | C | `test_ca_mount_and_security_policy` | 5 | shared (rewrite) | decision U7 | `test_ca_mount_and_security_policy` |
 | C | `test_symlink_invocation_and_native_permissions` | 3-4 | shared (duplicate) | duplicate of S | as the duplicated case |
 | C | `test_collision_exhaustion_and_diagnostic_cleanup` | 7 | shared (duplicate) | duplicate of S | as the duplicated case |
 | C | `test_int_and_hup_forwarding` | 7 | shared (duplicate) | duplicate of S | as the duplicated case |
 | X | `test_help_without_engine_or_state` | 3-4 | shared |  | `test_state_paths_are_checked_before_the_engine` (to verify at adoption) |
 | X | `test_help_without_podman_installed` | 7 | shared |  | `test_help_without_podman_or_side_effects` (to verify at adoption) |
-| X | `test_valid_launch_engine_without_delegation` | 3-4 | shared |  | `test_disabled_delegation_preserves_host_launch_endpoint` (to verify at adoption) |
+| X | `test_valid_launch_engine_without_delegation` | 3-4 | shared |  | `test_host_launch_endpoint_is_not_forwarded` (to verify at adoption) |
 | X | `test_explicit_build_and_image_override` | 5 | shared (rewrite) | decision U3 | `test_image_freshness_and_build_arguments` (to verify at adoption) |
 | X | `test_builds_receive_the_host_ca_only_when_trusted` | 5 | shared |  | `test_runtime_build_receives_host_ca_only_when_trusted` (to verify at adoption) |
 | X | `test_engine_failure_matrix_before_image_operations` | 5 | shared |  | `test_launch_verification_fails_before_image_operations` (to verify at adoption) |
@@ -228,10 +228,10 @@ against the new core, and every lost behavior becomes a shared case through the 
 | X | `test_non_enforcing_modes_controlled_fixture` | 1-2 | shared |  | to verify at adoption |
 | X | `test_default_state_and_help_with_invalid_state` | 3-4 | shared |  | `test_shared_state_default_and_override` (to verify at adoption) |
 | X | `test_socket_override_and_remapped_source` | 3-4 | shared |  | to verify at adoption |
-| X | `test_podman5_socket_url_is_reduced_to_its_path` | 3-4 | shared |  | `test_podman5_unix_url_host_socket_is_bound_as_path` (to verify at adoption) |
+| X | `test_podman5_socket_url_is_reduced_to_its_path` | 3-4 | shared |  | removed with host Podman delegation |
 | X | `test_socket_fallbacks_and_symlink` | 3-4 | shared |  | `test_workspace_worktree_and_symlink` (to verify at adoption) |
-| X | `test_invalid_socket_paths` | 3-4 | shared |  | `test_socket_fallback_and_invalid_sources` (to verify at adoption) |
-| X | `test_inaccessible_socket` | 3-4 | shared |  | `test_socket_precedence_and_remapping` (to verify at adoption) |
+| X | `test_invalid_socket_paths` | 3-4 | shared |  | removed with host Podman delegation |
+| X | `test_inaccessible_socket` | 3-4 | shared |  | removed with host Podman delegation |
 | X | `test_service_failures_before_image_operations` | 5 | shared |  | `test_launch_verification_fails_before_image_operations` (to verify at adoption) |
 | X | `test_permissions_independent_and_exact_opt_in` | 3-4 | hook |  | - |
 | X | `test_workspace_parent_symlink_and_mount_boundary` | 5 | shared |  | `test_workspace_worktree_and_symlink` (to verify at adoption) |
@@ -282,18 +282,18 @@ against the new core, and every lost behavior becomes a shared case through the 
 | A | `test_insecure_existing_state_rejected` | 3-4 | shared (duplicate) | duplicate of S | as the duplicated case |
 | A | `test_state_preflight_failures_before_images` | 5 | shared |  | to verify at adoption |
 | A | `test_private_state_symlink_and_scoped_umask` | 3-4 | shared |  | `test_private_creation_does_not_change_host_command_umask` (to verify at adoption) |
-| A | `test_delegation_does_not_retarget_launch_connection` | 3-4 | shared |  | `test_disabled_delegation_preserves_host_launch_endpoint` (to verify at adoption) |
+| A | `test_delegation_does_not_retarget_launch_connection` | 3-4 | shared |  | `test_host_launch_endpoint_is_not_forwarded` (to verify at adoption) |
 | A | `test_explicit_temporary_mount_arguments` | 5 | shared |  | to verify at adoption |
 | A | `test_device_and_secret_mounts_in_every_unrestricted_mode` | 5 | shared (duplicate) | duplicate of X | as the duplicated case |
 | A | `test_tty_allocated_for_terminal` | 6 | shared (duplicate) | duplicate of S | as the duplicated case |
 | A | `test_socket_only_required_when_enabled` | 3-4 | shared (duplicate) | duplicate of S | as the duplicated case |
 | A | `test_socket_engine_must_be_rootless` | 3-4 | shared (duplicate) | duplicate of S | as the duplicated case |
 | A | `test_rootful_and_remote_rejected_local_unix_accepted` | 3-4 | shared (duplicate) | duplicate of S | as the duplicated case |
-| A | `test_exact_delegation_cli_and_shell` | 3-4 | shared |  | `test_delegation_only_follows_the_exact_opt_in` (to verify at adoption) |
-| A | `test_complete_socket_response_required` | 3-4 | shared | slash-only host path: lost behavior, fixed in `verify-delegated-socket-path` | `test_socket_only_required_when_enabled`, `test_reported_host_socket_must_be_a_socket_when_visible` |
-| A | `test_inaccessible_socket_rejected` | 3-4 | shared |  | `test_socket_precedence_and_remapping` (to verify at adoption) |
+| A | `test_exact_delegation_cli_and_shell` | 3-4 | shared |  | `test_leftover_delegation_opt_in_is_refused` (to verify at adoption) |
+| A | `test_complete_socket_response_required` | 3-4 | shared | slash-only host path: lost behavior, fixed in `verify-delegated-socket-path` | `test_former_socket_override_is_ignored`, removed with host Podman delegation |
+| A | `test_inaccessible_socket_rejected` | 3-4 | shared |  | removed with host Podman delegation |
 | A | `test_podman5_socket_url_is_reduced_to_its_path` | 3-4 | shared (duplicate) | duplicate of X | as the duplicated case |
-| A | `test_socket_selection_canonicalization_and_host_remapping` | 3-4 | shared |  | `test_socket_precedence_and_remapping` (to verify at adoption) |
+| A | `test_socket_selection_canonicalization_and_host_remapping` | 3-4 | shared |  | removed with host Podman delegation |
 | A | `test_relative_existing_and_missing_socket_rejected_before_delegation_query` | 3-4 | shared |  | `test_pathless_or_relative_unix_launch_endpoint_rejected_before_query` (to verify at adoption) |
 | A | `test_complete_launch_response_required` | 3-4 | shared |  | `test_response_validation_composes_with_launch_modes` (to verify at adoption) |
 | A | `test_launch_endpoint_rejected_before_query` | 3-4 | shared |  | `test_pathless_or_relative_unix_launch_endpoint_rejected_before_query` (to verify at adoption) |
@@ -356,9 +356,9 @@ against the new core, and every lost behavior becomes a shared case through the 
 | O | `test_help_and_arguments` | 1-2 | shared |  | `test_timeout_prerequisite_and_independent_help` (to verify at adoption) |
 | O | `test_modes` | 1-2 | shared |  | `test_response_validation_composes_with_launch_modes` (to verify at adoption) |
 | O | `test_launch_validation` | 3-4 | shared |  | `test_response_validation_composes_with_launch_modes` (to verify at adoption) |
-| O | `test_exact_delegation_and_remapping` | 3-4 | shared |  | `test_delegation_only_follows_the_exact_opt_in` (to verify at adoption) |
+| O | `test_exact_delegation_and_remapping` | 3-4 | shared |  | `test_leftover_delegation_opt_in_is_refused` (to verify at adoption) |
 | O | `test_podman5_socket_url_is_reduced_to_its_path` | 3-4 | shared (duplicate) | duplicate of X | as the duplicated case |
-| O | `test_socket_validation_and_precedence` | 3-4 | shared |  | `test_socket_precedence_and_remapping` (to verify at adoption) |
+| O | `test_socket_validation_and_precedence` | 3-4 | shared |  | removed with host Podman delegation |
 | O | `test_private_xdg_and_umask` | 5 | hook |  | - |
 | O | `test_state_files_broken_links_and_resolution` | 3-4 | shared |  | to verify at adoption |
 | O | `test_host_xdg_variables_do_not_relocate_state` | 5 | hook |  | - |
@@ -462,7 +462,7 @@ against the new core, and every lost behavior becomes a shared case through the 
 | P | `test_service_failures_before_image_operations` | 5 | shared (duplicate) | duplicate of X | as the duplicated case |
 | P | `test_modes_image_override_and_native_help` | 5 | shared |  | to verify at adoption |
 | P | `test_help_missing_version_and_runtime` | 1-2 | hook |  | - |
-| P | `test_exact_delegation_and_connection_forwarding` | 7 | shared |  | `test_delegation_only_follows_the_exact_opt_in` (to verify at adoption) |
+| P | `test_exact_delegation_and_connection_forwarding` | 7 | shared |  | `test_leftover_delegation_opt_in_is_refused` (to verify at adoption) |
 | P | `test_physical_state_both_directories_and_readonly` | 3-4 | shared |  | `test_composition_and_independence_in_both_state_modes` (to verify at adoption) |
 | P | `test_workspace_parent_identity_tmpfs_and_controls` | 5 | shared |  | to verify at adoption |
 | P | `test_hash_inspection_build_inputs_and_failures` | 5 | shared |  | `test_agent_build_inputs_join_the_hash` (to verify at adoption) |
@@ -551,7 +551,24 @@ Shared cases added for Windows support, with the requirement each one covers.
 | `tests/test_setup.py` | `test_windows_entry_marker_replaces_linux_guidance` | Setup started by the Windows entry |
 | `tests/test_setup.py` | `test_candidate_tags_are_recorded`, `test_abandoned_candidate_tags_are_removed_and_others_kept`, `test_main_removes_only_the_tags_of_a_candidate_it_did_not_activate` | Repeatable setup with owned recovery (abandoned candidate tags) |
 | `tests/test_setup.py` | `test_manifest_mode_prints_the_installation_inputs` | Self-contained installed copy (payload list from setup's manifest) |
-| `tests/test_setup.py` | `test_unreadable_socket_candidate_is_not_a_service`, `test_saved_delegation_without_a_service_is_announced` | Setup without a launch service offers only unrestricted networking (probe errors, saved delegation) |
+| `tests/test_setup.py` | `test_unreadable_socket_candidate_is_not_a_service`, `test_saved_delegation_is_migrated_by_setup_with_a_notice` | Setup without a launch service offers only unrestricted networking (probe errors); saved delegation migrated |
 | `tests/test_setup.py` | `test_manifest_copies_complete_native_inputs_without_credentials` (bootstrap and namespace helper in the release) | Ordinary launches run the managed installation in the machine distribution |
 | `tests/test_alignment.py` | `test_powershell_entry_is_the_fixed_thin_entry`, `test_powershell_files_are_ascii`, `test_scan_detects_an_injected_identifier` (shim, bootstrap, namespace helper, shim tests) | Thin PowerShell entry script; Shared Windows shim and bootstrap; Supported PowerShell versions |
 | `tests/windows/shim_tests.ps1` | 62 cases, each named after its `windows-launcher` or `windows-installation` requirement and scenario: launches and selection, missing distribution, user and installation, stopped machine and a distribution started by WSL alone, arguments and their limit, forwarded, reserved, invalid and empty variables, the key variables of the authentication methods (forwarded when set, named in the help, none for a profile without methods), a Windows configuration path, restoration, location, modes, pipeline input and 5.1 redirected input, exit status, help, setup routing through the namespace helper and a checkout without it, the CRLF refusal, the user `PATH` strings, and install, update, interrupted and concurrent installs, install checks and uninstall | `windows-launcher` scenarios that need no Windows host |
+
+## Session container engine
+
+Shared and per-wrapper cases of the `session-container-engine` capability and of
+the leftover delegation refusal (change `replace-podman-delegation-with-session-engine`).
+
+| File | Cases | Requirement |
+| --- | --- | --- |
+| `tests/test_launcher.py` | `test_session_engine_owns_the_network_and_joins_the_session` | Engine for sessions with library images; Loopback endpoint; Engine mounts only the workspace and the image store; Engine lifecycle follows the session; the private `/etc/hosts` (design D1) |
+| `tests/test_launcher.py` | `test_no_engine_without_images_or_without_the_library` | Engine for sessions with library images (no images, mount disabled) |
+| `tests/test_launcher.py` | `test_engine_failures_stop_the_launch_before_the_session`, `test_signal_removes_the_engine_with_the_session`, `test_engines_of_launchers_that_no_longer_run_are_removed` | Engine lifecycle follows the session; Session-owned engine storage |
+| `tests/test_launcher.py` | `test_engine_budgets_follow_the_agent_rules` | Engine budgets |
+| `tests/test_launcher.py` | `test_leftover_delegation_opt_in_is_refused`, `test_former_socket_override_is_ignored` | Leftover delegation opt-in is refused |
+| `tests/test_engine.py` | `test_recipe_is_pinned_offline_and_replaces_base_defaults`, `test_configuration_keeps_private_namespaces`, `test_options_hold_exactly_the_documented_exceptions`, `test_mounts_are_storage_store_workspace_and_ca_only` | Fixed engine hardening exceptions; Engine carries no secrets; Engine mounts only the workspace and the image store |
+| `tests/test_toolchains.py` | `test_image_recipe_validation`, `test_image_recipe_pulls_into_the_store_through_an_engine_helper`, `test_local_image_is_copied_by_id_and_checked`, `test_shared_image_stays_until_its_last_toolchain_is_removed`, `test_image_removal_waits_for_idle_engines`, `test_image_check_runs_against_a_temporary_engine_without_network`, `test_images_are_listed_for_the_agent_and_reported_to_the_launcher` | toolchain-library image requirements |
+| `tests/test_runtime.py` (`run-runtime.sh`) | `SessionEngineTests` | Library images run offline from a read-only store; Nested containers have private process and host-name views; Two sessions; Image added during a session |
+| `tests/test_network_runtime.py` (`--network`) | `test_offline_session_engine_has_no_external_path` | Engine shares the session network boundary |

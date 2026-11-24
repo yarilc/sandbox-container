@@ -17,8 +17,7 @@ Antigravity wrappers:
   the managed installation inside a Podman machine's WSL distribution through
   `launcher/windows/bootstrap.sh`, and runs sessions and setup in the machine's
   systemd namespaces through `launcher/windows/enter.sh`. Windows supports
-  every network mode that setup prepared, without Podman delegation; see the
-  README's Windows section.
+  every network mode that setup prepared; see the README's Windows section.
 - `Containerfile` defines the shell image on the same pinned base and package
   baseline as the agent wrappers, with the pinned OpenSpec CLI and no agent CLI,
   including `nano` with `EDITOR` and `VISUAL` set to it. The image disables
@@ -112,14 +111,15 @@ shim stay ASCII and run on Windows PowerShell 5.1 and PowerShell 7; Windows
 PowerShell 5.1 itself is validated on a Windows host.
 
 Configured launches require host Podman and its launch engine must verify as
-Linux and rootless. Unrestricted local use requires no API socket with delegation off; explicit same-host
-Unix `CONTAINER_HOST` use verifies that launch service regardless of delegation.
-Reject named connections and TCP/SSH contexts. Delegation requires the exact value
-`SANDBOX_CONTAINER_PODMAN=1`. Select its endpoint by explicit
-`SANDBOX_CONTAINER_PODMAN_SOCKET`, Unix `CONTAINER_HOST`, then
-`${XDG_RUNTIME_DIR:-/run/user/<uid>}/podman/podman.sock`. Verify that exact endpoint
-before image operations, requiring rootless `true` and an absolute reported host
-socket path; bind the latter when the wrapper sees a remapped socket.
+Linux and rootless. Unrestricted local use requires no API socket; explicit same-host
+Unix `CONTAINER_HOST` use verifies that launch service, which never reaches the
+session. Reject named connections and TCP/SSH contexts. Host Podman delegation was
+removed: an exact `SANDBOX_CONTAINER_PODMAN=1` stops every launch with migration
+guidance before any engine query. Container-based tests use the session container
+engine instead: a private rootless engine started with the session when the
+toolchain library holds image toolchains (`launcher/engine/`, the
+`session-container-engine` capability). Never mount a host Podman socket into a
+session or into the engine.
 
 Setup is the mandatory first step for offline use. An unset or empty
 `SANDBOX_CONTAINER_NETWORK` selects `offline`; `unrestricted` must be explicit
@@ -191,11 +191,10 @@ With a built image and rootless engine, run `SANDBOX_RUNTIME_TESTS=1 python3 -m
 unittest discover -s tests -p test_runtime.py -v` or `bash tests/run-runtime.sh`.
 The latter uses disposable native state and same-host Unix service access;
 `--wrapper` runs wrapper tests there if host Python is unavailable. Verify both
-state modes, privacy failures, escaped symlinks, exact disabled socket values,
-endpoint precedence/remapping, shell/build/worktree composition, the socket
-opt-in in both state modes, engine errors, argument/stdin forwarding, name races,
-exit codes, signals, and owned cleanup. Disabled delegation skips separate
-endpoint checks, not mandatory launch-engine verification. Record runtime and
+state modes, privacy failures, escaped symlinks, the leftover delegation refusal,
+shell/build/worktree composition, the session container engine and its
+containment in both state modes, engine errors, argument/stdin forwarding, name
+races, exit codes, signals, and owned cleanup. Record runtime and
 internal sandbox checks as passed, failed, or unavailable with versions.
 
 Run `bash tests/run-runtime.sh --network-feasibility`, `--network-policy`, and
@@ -256,11 +255,11 @@ the host workspace's absolute path so containers launched by the host Podman
 service can resolve child bind mounts correctly. The shell configuration
 directory is intentionally writable because it holds the session history.
 
-Expose the host Podman API socket only with `SANDBOX_CONTAINER_PODMAN=1` and
-explicit `SANDBOX_CONTAINER_NETWORK=unrestricted`. Reject exact socket opt-in
-in offline mode, including the default, before image/resource operations.
-This grants control over containers, volumes, and additional host bind mounts
-available to the service user, beyond the selected workspace.
+Never expose the host Podman API socket to a session. The session container
+engine shares the session's network namespace, mounts only the workspace and the
+library's read-only image store, holds no secrets, and keeps only its documented
+hardening exceptions (design D4 of the session engine change); never widen them
+to make a nested tool work.
 
 Host CA trust is opt-in. Mount only the selected CA bundle file, read-only, at
 `/sandbox-home/ca/bundle.pem`. Never mount the host certificate directory

@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import ssl
 import stat
@@ -73,15 +74,56 @@ class Engine:
         self.check_status = check_status
         self.exists = exists
         self.pull_status = 0
+        # The library's image store, as helper containers of the engine image see it.
+        self.store = {}
+        self.local_images = {}
+        self.pipelines = []
+        # Running session engines as (name, store path), of any wrapper.
+        self.engines = []
+        # The check engine: readiness answer, and the default seccomp profile path.
+        self.engine_ready = 'true'
+        self.seccomp = ''
+
+    def helper(self, inner):
+        """podman inside a store helper container."""
+        if inner[:2] == ['image', 'inspect']:
+            return (0, self.store[inner[-1]] + '\n', '') if inner[-1] in self.store else (125, '', 'no such image')
+        if inner[:1] == ['pull']:
+            if self.pull_status:
+                return self.pull_status, '', 'Error: initializing source: manifest unknown\n'
+            self.store[inner[-1]] = 'd' * 64
+        elif inner[:1] == ['tag']:
+            self.store[inner[2]] = inner[1]
+        elif inner[:1] == ['rmi']:
+            self.store.pop(inner[1], None)
+        return 0, '', ''
+
+    def pipeline(self, producer, consumer):
+        self.pipelines.append((list(producer), list(consumer)))
+        return 0, 0, ''
 
     def run(self, args, timeout=None):
         self.calls.append(list(args))
         output = error = ''
         status = 0
-        if args[:2] == ['image', 'exists']:
+        if args[:2] == ['unshare', 'chown']:
+            pass
+        elif args[:1] == ['ps']:
+            output = ''.join(f'{name}\t{store}\n' for name, store in self.engines)
+        elif args[:1] == ['info']:
+            output = self.seccomp + '\n'
+        elif args[:1] == ['volume'] or args[:1] == ['rm']:
+            pass
+        elif args[:2] == ['run', '--detach']:
+            output = 'e' * 64 + '\n'
+        elif args[:1] == ['exec']:
+            output = self.engine_ready + '\n'
+        elif args[:1] == ['run'] and '--entrypoint' in args and args[args.index('--entrypoint') + 1] == 'podman':
+            status, output, error = self.helper(args[args.index('--entrypoint') + 3:])
+        elif args[:2] == ['image', 'exists']:
             status = 0 if self.exists else 1
         elif args[:2] == ['image', 'inspect']:
-            output = 'sha256:' + 'b' * 64 + '\n'
+            output = self.local_images.get(args[-1], 'sha256:' + 'b' * 64) + '\n'
         elif args[:1] == ['pull']:
             status = self.pull_status
             if status:
@@ -163,7 +205,12 @@ class ToolchainTests(unittest.TestCase):
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(self.cwd)
         self.engine = Engine()
-        for target, value in (('run', self.engine.run), ('stream', self.engine.stream)):
+        # The engine host's default seccomp profile, for the temporary check engines.
+        default = self.base / 'default-seccomp.json'
+        default.write_text(json.dumps({'syscalls': [{'names': ['read'], 'action': 'SCMP_ACT_ALLOW'}]}))
+        self.engine.seccomp = str(default)
+        for target, value in (('run', self.engine.run), ('stream', self.engine.stream),
+                              ('pipeline', self.engine.pipeline)):
             patcher = patch.object(toolchains, target, side_effect=value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -365,6 +412,234 @@ class ToolchainTests(unittest.TestCase):
         for label, (values, message) in cases.items():
             with self.subTest(label=label):
                 self.assert_rejected(message, **values)
+
+    def test_image_recipe_validation(self):
+        # Images for the session container engine: digest-pinned references or
+        # local images by full ID; an image-only toolchain has no files.
+        local = {'local': 'sha256:' + 'b' * 64, 'name': 'localhost/runtime:dev'}
+        image_only = {'schema': 2, 'name': 'db', 'version': '16', 'images': [DIGEST],
+                      'check': ['podman', 'run', '--rm', DIGEST, 'true'], 'default': False}
+        recipe = toolchains.validate_recipe(image_only)
+        self.assertEqual(recipe['images'], [{'image': DIGEST}])
+        self.assertEqual((recipe['sources'], recipe['path'], recipe['env']), ([], [], {}))
+        mixed = toolchains.validate_recipe({**image_only, 'images': [DIGEST, local], 'path': ['bin'],
+                                            'sources': [{'image': DIGEST, 'path': '/opt/tool'}]})
+        self.assertEqual(mixed['images'], [{'image': DIGEST}, local])
+        self.assertEqual(mixed['path'], ['bin'])
+        files_only = {key: item for key, item in image_only.items() if key != 'images'}
+        files_only['sources'] = [{'image': DIGEST, 'path': '/opt/tool'}]
+        self.assertNotIn('images', toolchains.validate_recipe(files_only))
+        cases = {
+            'tag only': ({'images': ['docker.io/library/postgres:16']}, '@sha256: digest'),
+            'images in schema 1': ({'schema': 1, 'source': {'image': DIGEST, 'path': '/opt'}}, 'unknown key images'),
+            'empty images': ({'images': []}, 'images must be a list'),
+            'too many images': ({'images': [f'docker.io/x/i{n}@sha256:' + 'a' * 64 for n in range(17)]},
+                                'images must be a list'),
+            'duplicate image': ({'images': [DIGEST, DIGEST]}, 'each image once'),
+            'short local ID': ({'images': [{**local, 'local': 'b' * 64}]}, 'full ID'),
+            'local name outside localhost': ({'images': [{**local, 'name': 'docker.io/library/runtime:dev'}]},
+                                             'localhost/ name'),
+            'local with extra key': ({'images': [{**local, 'pull': True}]}, 'digest-pinned reference'),
+            'path without files': ({'path': ['bin']}, 'path needs file sources'),
+            'env without files': ({'env': {'DB_HOME': {'value': '/x'}}}, 'env needs file sources'),
+            'default without files': ({'default': True}, 'default needs file sources'),
+            'neither files nor images': ({'images': None}, 'missing key sources'),
+        }
+        for label, (values, message) in cases.items():
+            with self.subTest(label=label):
+                value = {key: item for key, item in (image_only | values).items() if item is not None}
+                with self.assertRaises(common.SetupError) as raised:
+                    toolchains.validate_recipe(value)
+                self.assertIn(message, str(raised.exception))
+
+    def image_recipe(self, **values):
+        recipe = {'schema': 2, 'name': 'db', 'version': '16', 'images': [DIGEST],
+                  'check': ['podman', 'run', '--rm', DIGEST, 'true'], 'default': False} | values
+        path = self.base / 'db.json'
+        path.write_text(json.dumps(recipe))
+        return path
+
+    def store_helpers(self):
+        return [call for call in self.engine.calls if call[:1] == ['run'] and '--entrypoint' in call
+                and call[call.index('--entrypoint') + 1] == 'podman']
+
+    def test_image_recipe_pulls_into_the_store_through_an_engine_helper(self):
+        # toolchain-library: Read-only image store in the library / Helper container scope.
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            toolchains.add(self.library, self.image_recipe(), self.env)
+        store = self.library / '.images'
+        self.assertTrue(store.is_dir())
+        self.assertEqual(stat.S_IMODE(store.stat().st_mode), 0o700)
+        self.assertFalse([call for call in self.engine.calls if call[:1] == ['unshare']])
+        self.assertIn('Pulling ' + DIGEST + ' into the image store', output.getvalue())
+        helpers = self.store_helpers()
+        self.assertTrue(helpers)
+        for call in helpers:
+            volumes = [call[i + 1] for i, arg in enumerate(call) if arg == '--volume']
+            self.assertEqual(volumes, [str(store) + ':' + toolchains.ENGINE_STORAGE])
+            self.assertEqual(call[call.index('--user') + 1:call.index('--user') + 3],
+                             ['podman', '--userns=keep-id:uid=1000,gid=1000'])
+            self.assertEqual(call[call.index('--entrypoint') + 2], PROFILE.image('engine', 'latest'))
+        self.assertIn(['pull', '--quiet', DIGEST], [call[call.index('--entrypoint') + 3:] for call in helpers])
+        manifest = json.loads((self.library / 'db/toolchain.json').read_text())
+        self.assertEqual(manifest['images'], [{'image': DIGEST, 'image_id': 'd' * 64}])
+        self.assertEqual((manifest['source'], manifest['commands'], manifest['path']), ([], [], []))
+        self.assertEqual(self.index()['schema'], toolchains.SCHEMA)
+        # A second toolchain with the same image finds it in the store and pulls nothing.
+        before = len(self.store_helpers())
+        toolchains.add(self.library, self.image_recipe(name='db2'), self.env)
+        pulls = [call for call in self.store_helpers()[before:] if 'pull' in call]
+        self.assertEqual(pulls, [])
+
+    def test_store_helper_trusts_the_saved_host_ca(self):
+        bundle = self.base / 'bundle.pem'
+        bundle.write_text('synthetic bundle')
+        env = self.env | {name('TRUST_HOST_CA'): '1', name('CA_BUNDLE'): str(bundle)}
+        toolchains.add(self.library, self.image_recipe(), env)
+        for call in self.store_helpers():
+            volumes = [call[i + 1] for i, arg in enumerate(call) if arg == '--volume']
+            self.assertEqual(volumes, [str(self.library / '.images') + ':' + toolchains.ENGINE_STORAGE,
+                                       str(bundle) + ':' + toolchains.ENGINE_CA + ':ro'])
+
+    def test_local_image_is_copied_by_id_and_checked(self):
+        identity = 'sha256:' + 'e' * 64
+        recipe = self.image_recipe(images=[{'local': identity, 'name': 'localhost/runtime:dev'}])
+        # The host engine has another image under that ID: nothing is copied.
+        with self.assertRaisesRegex(common.SetupError, 'has no local image ' + identity):
+            toolchains.add(self.library, recipe, self.env)
+        self.assertEqual(self.engine.pipelines, [])
+        self.assertFalse((self.library / 'db').exists())
+        self.engine.local_images[identity] = 'e' * 64
+        toolchains.add(self.library, recipe, self.env)
+        (producer, consumer), = self.engine.pipelines
+        self.assertEqual(producer, ['save', identity])
+        self.assertEqual(consumer[consumer.index('--entrypoint') + 3:], ['load', '--quiet'])
+        self.assertIn('--interactive', consumer)
+        self.assertEqual(self.engine.store['localhost/runtime:dev'], 'e' * 64)
+        manifest = json.loads((self.library / 'db/toolchain.json').read_text())
+        self.assertEqual(manifest['images'], [{'local': identity, 'name': 'localhost/runtime:dev',
+                                               'image_id': 'e' * 64}])
+
+    def test_failed_pull_or_check_leaves_the_library_unchanged(self):
+        self.engine.pull_status = 125
+        with self.assertRaisesRegex(common.SetupError, 'Cannot pull ' + re.escape(DIGEST)):
+            toolchains.add(self.library, self.image_recipe(), self.env)
+        self.assertEqual(self.engine.store, {})
+        self.assertFalse((self.library / 'db').exists())
+        self.engine.pull_status = 0
+        self.engine.check_status = 1
+        with self.assertRaisesRegex(common.SetupError, 'toolchain check failed'):
+            toolchains.add(self.library, self.image_recipe(), self.env)
+        # The image pulled for the failed add is taken out of the store again.
+        self.assertEqual(self.engine.store, {})
+        self.assertIn(['rmi', DIGEST], [call[call.index('--entrypoint') + 3:] for call in self.store_helpers()])
+        self.assertFalse((self.library / 'db').exists())
+
+    def test_shared_image_stays_until_its_last_toolchain_is_removed(self):
+        # toolchain-library: Read-only image store in the library / Shared image.
+        toolchains.add(self.library, self.image_recipe(), self.env)
+        toolchains.add(self.library, self.image_recipe(name='db2'), self.env)
+        toolchains.remove(self.library, 'db', self.env)
+        self.assertIn(DIGEST, self.engine.store)
+        self.assertNotIn(['rmi', DIGEST], [c[c.index('--entrypoint') + 3:] for c in self.store_helpers()])
+        toolchains.remove(self.library, 'db2', self.env)
+        self.assertEqual(self.engine.store, {})
+        self.assertEqual(self.index()['toolchains'], [])
+
+    def test_image_removal_waits_for_idle_engines(self):
+        # toolchain-library: Image removal waits for idle engines.
+        toolchains.add(self.library, self.image_recipe(), self.env)
+        store = str(self.library / '.images')
+        self.engine.engines = [('other-library-engine', str(self.base / 'elsewhere/.images')),
+                               ('project-0-engine', store)]
+        with self.assertRaisesRegex(common.SetupError, 'while session engines run: project-0-engine'):
+            toolchains.remove(self.library, 'db', self.env)
+        self.assertTrue((self.library / 'db').is_dir())
+        self.assertIn(DIGEST, self.engine.store)
+        # A replacement that drops the image is refused the same way, before any change.
+        other = 'docker.io/library/other@sha256:' + 'c' * 64
+        with self.assertRaisesRegex(common.SetupError, 'project-0-engine'):
+            toolchains.add(self.library, self.image_recipe(images=[other]), self.env)
+        self.assertNotIn(other, self.engine.store)
+        # Adding images, or replacing a toolchain that keeps its images, proceeds while engines run.
+        toolchains.add(self.library, self.image_recipe(name='cache', images=[other]), self.env)
+        toolchains.add(self.library, self.image_recipe(version='16.1'), self.env)
+        self.assertEqual(sorted(self.engine.store), sorted([DIGEST, other]))
+        self.engine.engines = []
+        toolchains.remove(self.library, 'db', self.env)
+        self.assertEqual(sorted(self.engine.store), [other])
+
+    def test_image_check_runs_against_a_temporary_engine_without_network(self):
+        # toolchain-library: Verified against the runtime image / Image check without network.
+        default = self.base / 'default-seccomp.json'
+        default.write_text(json.dumps({'syscalls': [{'names': ['read'], 'action': 'SCMP_ACT_ALLOW'}]}))
+        self.engine.seccomp = str(default)
+        toolchains.add(self.library, self.image_recipe(), self.env)
+        started = next(call for call in self.engine.calls if call[:2] == ['run', '--detach'])
+        name = started[started.index('--name') + 1]
+        self.assertIn('--network=none', started)
+        self.assertEqual(started[-2:], [PROFILE.image('engine', 'latest'), '2375'])
+        volumes = [started[i + 1] for i, arg in enumerate(started) if arg == '--volume']
+        self.assertEqual(volumes, [toolchains.ENGINE_STORAGE, str(self.library / '.images/storage') + ':/var/lib/shared:ro'])
+        self.assertIn('--rm', started)
+        check = next(call for call in self.engine.calls if call[:2] == ['run', '--rm'] and '/bin/sh' in call)
+        self.assertIn('--network=container:' + name, check)
+        self.assertNotIn('--network=none', check)
+        for variable in ('CONTAINER_HOST', 'DOCKER_HOST'):
+            self.assertIn(variable + '=tcp://127.0.0.1:2375', check)
+        self.assertIn(['rm', '--force', '--volumes', '--time', '0', name], self.engine.calls)
+        # A toolchain without images is checked without network and without an engine.
+        self.engine.calls.clear()
+        toolchains.add(self.library, self.recipe(), self.env)
+        self.assertFalse([call for call in self.engine.calls if call[:2] == ['run', '--detach']])
+        check = next(call for call in self.engine.calls if call[:2] == ['run', '--rm'] and '/bin/sh' in call)
+        self.assertIn('--network=none', check)
+
+    def test_unready_check_engine_fails_and_is_removed(self):
+        default = self.base / 'default-seccomp.json'
+        default.write_text(json.dumps({'syscalls': []}))
+        self.engine.seccomp = str(default)
+        self.engine.engine_ready = 'false'
+        with patch.object(toolchains.engine, 'READY_SECONDS', 2), patch.object(toolchains.time, 'sleep'):
+            with self.assertRaisesRegex(common.SetupError, 'did not answer'):
+                toolchains.add(self.library, self.image_recipe(), self.env)
+        self.assertTrue([call for call in self.engine.calls if call[:3] == ['rm', '--force', '--volumes']])
+        self.assertFalse((self.library / 'db').exists())
+        self.assertEqual(self.engine.store, {})
+
+    def test_images_are_listed_for_the_agent_and_reported_to_the_launcher(self):
+        # toolchain-library: Self-describing library for the agent / Images listed for the agent.
+        toolchains.add(self.library, self.recipe(), self.env)
+        lines, _ = toolchains.launch_env(self.library, toolchains.base_reference(toolchains.INSTALLATION))
+        self.assertNotIn('store', [line[0] for line in lines])
+        toolchains.add(self.library, self.image_recipe(), self.env)
+        mixed = self.image_recipe(name='mixed', sources=[{'image': DIGEST, 'path': '/opt/tool'}], path=['bin'])
+        self.engine.image_tar = tool_archive(prefix='tool')
+        toolchains.add(self.library, mixed, self.env)
+        guide = (self.library / 'toolchains.md').read_text()
+        self.assertIn('podman (CONTAINER_HOST) or a Docker-API client (DOCKER_HOST)', guide)
+        self.assertEqual(guide.count('- Image: `' + DIGEST + '`, for example `podman run --rm ' + DIGEST + '`'), 2)
+        items = {item['name']: item for item in self.index()['toolchains']}
+        self.assertEqual(items['db']['images'], [{'reference': DIGEST, 'image_id': 'd' * 64}])
+        self.assertNotIn('images', items['tool'])
+        self.assertEqual(self.index()['schema'], toolchains.SCHEMA)
+        # session-container-engine: Engine for sessions with library images.
+        lines, _ = toolchains.launch_env(self.library, toolchains.base_reference(toolchains.INSTALLATION))
+        self.assertIn(('store', str(self.library / '.images')), lines)
+
+    def test_catalog_refuses_local_images(self):
+        catalog = self.base / 'catalog'
+        catalog.mkdir()
+        (catalog / 'db.json').write_text(json.dumps({
+            'schema': 2, 'name': 'db', 'version': '1', 'check': ['true'], 'default': False,
+            'images': [{'local': 'sha256:' + 'c' * 64, 'name': 'localhost/db:1'}]}))
+        with self.assertRaises(common.SetupError) as raised:
+            toolchains.catalog(catalog)
+        self.assertIn('names a local image', str(raised.exception))
+        (catalog / 'db.json').write_text(json.dumps({
+            'schema': 2, 'name': 'db', 'version': '1', 'check': ['true'], 'default': False, 'images': [DIGEST]}))
+        self.assertEqual(toolchains.catalog(catalog)['db']['images'], [{'image': DIGEST}])
 
     def test_schema_two_recipe_with_target(self):
         source = self.archive_source(tool_archive(), strip_components=1, target='opt/tool')

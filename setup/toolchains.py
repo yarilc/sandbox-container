@@ -24,10 +24,12 @@ import time
 import urllib.error
 from urllib.parse import urlsplit
 import urllib.request
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import PROFILE, WINDOWS_ENTRY, SetupError, absolute, overlap, private  # noqa: E402
 import agent_profile  # noqa: E402  (on the path through common)
+import engine  # noqa: E402
 
 INSTALLATION = Path(__file__).resolve().parents[1]
 # Reviewed recipes installed with the release; `add <name>` reads them.
@@ -40,16 +42,23 @@ SCHEMA = 1
 RECIPE_SCHEMAS = (1, 2)
 RECIPE_SCHEMA = 2
 MAX_SOURCES = 16
+MAX_IMAGES = 16
 NAME = re.compile(r'[a-z0-9][a-z0-9._-]{0,63}')
 VERSION = re.compile(r'[A-Za-z0-9][A-Za-z0-9._+-]{0,63}')
 ENV_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,63}')
 RELATIVE = re.compile(r'(?:[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*)?')
 IMAGE = re.compile(r'[a-z0-9][a-z0-9._/:-]*@sha256:[a-f0-9]{64}')
 SHA256 = re.compile(r'[a-f0-9]{64}')
+IMAGE_ID = re.compile(r'sha256:[a-f0-9]{64}')
+# The store name of a local image: always under localhost/, optionally tagged.
+LOCAL_NAME = re.compile(r'localhost(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?')
 FROM = re.compile(r'^\s*FROM\s+(\S+)', re.IGNORECASE | re.MULTILINE)
 BASE = re.compile(r'\S+@sha256:[a-f0-9]{64}')
 RECIPE_REQUIRED = {'schema', 'name', 'version', 'check', 'default'}
 RECIPE_OPTIONAL = {'path', 'env', 'requires', 'notes'}
+# Schema 2 recipes may list images for the session container engine, and then
+# need no file sources (session-container-engine).
+RECIPE_OPTIONAL_V2 = {'images'}
 # Required and optional keys of each source kind in schema 2; schema 1 has no
 # URL source, no member path and no target.
 SOURCE_KEYS = {'image': ({'image', 'path'}, {'target'}),
@@ -270,6 +279,23 @@ def validate_source(source, schema, where):
     return {**source, 'target': target}
 
 
+def validate_image(item, where):
+    """One normalized recipe image: a digest-pinned reference or a local image by ID."""
+    def fail(text):
+        raise SetupError('toolchain recipe: ' + where + ': ' + text)
+    if isinstance(item, str):
+        if not IMAGE.fullmatch(item):
+            fail('an image must be referenced by @sha256: digest')
+        return {'image': item}
+    if not isinstance(item, dict) or set(item) != {'local', 'name'}:
+        fail('use a digest-pinned reference, or {"local": "sha256:<image ID>", "name": "localhost/<name>"}')
+    if not isinstance(item['local'], str) or not IMAGE_ID.fullmatch(item['local']):
+        fail('a local image is named by its full ID, sha256: and 64 lowercase hex digits')
+    if not isinstance(item['name'], str) or not LOCAL_NAME.fullmatch(item['name']) or len(item['name']) > 255:
+        fail('a local image needs a localhost/ name')
+    return {'local': item['local'], 'name': item['name']}
+
+
 def validate_recipe(value):
     if not isinstance(value, dict):
         raise SetupError('toolchain recipe must be a JSON object')
@@ -280,7 +306,12 @@ def validate_recipe(value):
         raise SetupError('toolchain recipe: schema must be 1 or 2')
     source_key = 'source' if schema == 1 else 'sources'
     required = RECIPE_REQUIRED | {source_key}
-    unknown = set(value) - required - RECIPE_OPTIONAL
+    optional = RECIPE_OPTIONAL | (RECIPE_OPTIONAL_V2 if schema > 1 else set())
+    if schema > 1 and 'images' in value:
+        # An image toolchain may have no file sources.
+        required = required - {'sources'}
+        optional = optional | {'sources'}
+    unknown = set(value) - required - optional
     if unknown:
         raise SetupError('toolchain recipe: unknown key ' + ', '.join(sorted(unknown)))
     missing = required - set(value)
@@ -292,12 +323,30 @@ def validate_recipe(value):
         raise SetupError('toolchain recipe: invalid version')
     if schema == 1:
         sources = [validate_source(value['source'], 1, 'source')]
-    else:
+    elif 'sources' in value:
         listed = value['sources']
         if not isinstance(listed, list) or not 0 < len(listed) <= MAX_SOURCES:
             raise SetupError(f'toolchain recipe: sources must be a list of 1 to {MAX_SOURCES} sources')
         sources = [validate_source(item, 2, f'sources[{index}]') for index, item in enumerate(listed)]
-    paths = value.get('path', ['bin'])
+    else:
+        sources = []
+    images = []
+    if 'images' in value:
+        listed = value['images']
+        if not isinstance(listed, list) or not 0 < len(listed) <= MAX_IMAGES:
+            raise SetupError(f'toolchain recipe: images must be a list of 1 to {MAX_IMAGES} images')
+        images = [validate_image(item, f'images[{index}]') for index, item in enumerate(listed)]
+        keys = [image.get('image') or image['name'] for image in images]
+        if len(set(keys)) != len(keys):
+            raise SetupError('toolchain recipe: images must list each image once')
+    if not sources:
+        # Nothing reaches a session's PATH or environment without files.
+        for key, empty in (('path', []), ('env', {})):
+            if key in value and value[key] != empty:
+                raise SetupError('toolchain recipe: ' + key + ' needs file sources; an image-only toolchain has none')
+        if value.get('default') is True:
+            raise SetupError('toolchain recipe: default needs file sources; an image-only toolchain is used through its images')
+    paths = value.get('path', ['bin'] if sources else [])
     if not isinstance(paths, list) or len(paths) > 8:
         raise SetupError('toolchain recipe: path must be a list of at most 8 relative paths')
     for entry in paths:
@@ -330,9 +379,12 @@ def validate_recipe(value):
         raise SetupError('toolchain recipe: check must be a non-empty command list without control characters')
     if not isinstance(value['default'], bool):
         raise SetupError('toolchain recipe: default must be true or false')
-    return {'schema': RECIPE_SCHEMA, 'name': value['name'], 'version': value['version'], 'sources': sources,
-            'path': list(paths), 'env': {k: dict(v) for k, v in environment.items()}, 'requires': list(requires),
-            'notes': list(notes), 'check': list(check), 'default': value['default']}
+    recipe = {'schema': RECIPE_SCHEMA, 'name': value['name'], 'version': value['version'], 'sources': sources,
+              'path': list(paths), 'env': {k: dict(v) for k, v in environment.items()}, 'requires': list(requires),
+              'notes': list(notes), 'check': list(check), 'default': value['default']}
+    if images:
+        recipe['images'] = images
+    return recipe
 
 
 def load_recipe(path, translate=None):
@@ -361,6 +413,8 @@ def catalog(directory=None):
             raise SetupError('Catalog recipe ' + path.name + ' names the toolchain ' + recipe['name'])
         if any('archive' in source for source in recipe['sources']):
             raise SetupError('Catalog recipe ' + path.name + ' names a local archive; use an HTTPS URL')
+        if any('local' in image for image in recipe.get('images', ())):
+            raise SetupError('Catalog recipe ' + path.name + ' names a local image; use a digest-pinned reference')
         found[recipe['name']] = recipe
     return found
 
@@ -606,17 +660,25 @@ def archive_label(source):
     return source['url'] if 'url' in source else Path(source['archive']).name
 
 
-def tls_context(env):
-    """The host CA bundle that setup saved when host CA trust is on, else the system trust."""
+def host_ca_bundle(env):
+    """The host CA bundle that setup saved when host CA trust is on, else ''."""
     trust = env.get(PROFILE.env('TRUST_HOST_CA'), '').lower()
     if trust in ('', '0', 'false', 'no'):
-        return ssl.create_default_context()
+        return ''
     if trust not in ('1', 'true', 'yes'):
         raise SetupError(PROFILE.env('TRUST_HOST_CA') + ' must be 0, 1, true, false, yes, or no')
     bundle = env.get(PROFILE.env('CA_BUNDLE'), '') or next((c for c in CA_CANDIDATES if Path(c).is_file()), '')
     if not bundle or not Path(bundle).is_file():
         raise SetupError('no CA bundle file found for host CA trust; set ' + PROFILE.env('CA_BUNDLE') +
                          ' to a bundle file')
+    return bundle
+
+
+def tls_context(env):
+    """The host CA bundle that setup saved when host CA trust is on, else the system trust."""
+    bundle = host_ca_bundle(env)
+    if not bundle:
+        return ssl.create_default_context()
     try:
         return ssl.create_default_context(cafile=bundle)
     except (OSError, ssl.SSLError) as error:
@@ -805,6 +867,166 @@ def extract_image(source, destination):
     return {'image': image, 'path': source['path'], 'image_id': inspected.stdout.strip()}
 
 
+# Images for the session container engine (session-container-engine, design D5)
+
+# The helper runs as the engine's user, mapped to the caller like every session
+# engine (design D4): the caller owns the store, and layer owners match the engines'.
+ENGINE_USERNS = engine.USERNS
+ENGINE_STORAGE = engine.STORAGE
+ENGINE_CA = engine.CA
+STORE_TIMEOUT = 120
+
+
+def engine_image(env):
+    """The installed engine image: setup passes its ID; a checkout uses the latest tag."""
+    image = env.get(PROFILE.env('ENGINE_IMAGE')) or PROFILE.image('engine', 'latest')
+    if run(['image', 'exists', image]).returncode != 0:
+        raise SetupError('The container engine image ' + image + ' is missing; prepare it with --container-setup '
+                         'first.')
+    return image
+
+
+def image_store(library):
+    """The library's image store, private to the caller like the library."""
+    store = Path(library) / engine.STORE
+    if not store.is_dir():
+        store.mkdir(mode=0o700)
+    return store
+
+
+def store_command(library, env, args, *, interactive=False):
+    """A podman command in a helper container of the engine image, with the store as its storage.
+
+    The helper uses the host network and the host CA trust saved by setup, and
+    mounts nothing else: no workspace, state or installation path.
+    """
+    mounts = ['--volume', str(image_store(library)) + ':' + ENGINE_STORAGE]
+    bundle = host_ca_bundle(env)
+    if bundle:
+        mounts += ['--volume', bundle + ':' + ENGINE_CA + ':ro']
+    return ['run', '--rm', *(['--interactive'] if interactive else []), '--user', 'podman', ENGINE_USERNS,
+            '--security-opt', 'label=disable', '--device', '/dev/fuse', *mounts,
+            '--entrypoint', 'podman', engine_image(env), *args]
+
+
+def stored_id(library, env, reference):
+    """The image ID of a reference in the store, or '' when it is absent."""
+    result = run(store_command(library, env, ['image', 'inspect', '--format', '{{.Id}}', reference]),
+                 timeout=STORE_TIMEOUT)
+    identity = result.stdout.strip()
+    return identity if result.returncode == 0 and SHA256.fullmatch(identity) else ''
+
+
+def pipeline(producer, consumer):
+    """Run two engine commands with the first one's output as the second one's input.
+
+    Return both exit statuses and their standard error text."""
+    try:
+        first = subprocess.Popen(['podman', *producer], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as error:
+        raise SetupError('podman ' + producer[0] + ' failed: ' + str(error)) from None
+    try:
+        second = subprocess.Popen(['podman', *consumer], stdin=first.stdout, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE)
+    except OSError as error:
+        first.kill()
+        raise SetupError('podman ' + consumer[0] + ' failed: ' + str(error)) from None
+    first.stdout.close()
+    _, second_error = second.communicate()
+    first_error = first.stderr.read().decode(errors='replace')
+    first.stderr.close()
+    return first.wait(), second.returncode, first_error + second_error.decode(errors='replace')
+
+
+def copy_local(library, env, identity, name):
+    """Stream a local image of the host engine into the store, under its recipe name."""
+    saved, loaded, errors = pipeline(['save', identity],
+                                     store_command(library, env, ['load', '--quiet'], interactive=True))
+    if saved != 0 or loaded != 0:
+        detail = errors.strip()[-400:]
+        raise SetupError('Cannot copy the local image ' + identity + ' into the image store' +
+                         (': ' + detail if detail else ''))
+    tagged = run(store_command(library, env, ['tag', identity.removeprefix('sha256:'), name]), timeout=STORE_TIMEOUT)
+    if tagged.returncode != 0:
+        raise SetupError('Cannot name the local image ' + identity + ' ' + name + ' in the image store')
+
+
+def store_images(library, recipe, env, added):
+    """Put the recipe's images in the store; return their provenance records.
+
+    Each reference newly stored is appended to added, so a failed add can take
+    it out again; images already stored are only recorded.
+    """
+    records = []
+    for item in recipe.get('images', ()):
+        if 'image' in item:
+            reference = item['image']
+            identity = stored_id(library, env, reference)
+            if not identity:
+                # A digest-pinned pull runs no code, so it needs no maintenance consent.
+                print('Pulling ' + reference + ' into the image store', flush=True)
+                pulled = run(store_command(library, env, ['pull', '--quiet', reference]))
+                if pulled.returncode != 0:
+                    detail = pulled.stderr.strip()[-400:]
+                    raise SetupError('Cannot pull ' + reference + (': ' + detail if detail else ''))
+                added.append(reference)
+                identity = stored_id(library, env, reference)
+            if not identity:
+                raise SetupError('Cannot inspect ' + reference + ' in the image store')
+            records.append({'image': reference, 'image_id': identity})
+            continue
+        local, name = item['local'], item['name']
+        host = run(['image', 'inspect', '--format', '{{.Id}}', local])
+        if host.returncode != 0 or host.stdout.strip().removeprefix('sha256:') != local.removeprefix('sha256:'):
+            raise SetupError('The host engine has no local image ' + local + '; build or load it, then add the recipe '
+                             'again.')
+        if stored_id(library, env, name) != local.removeprefix('sha256:'):
+            print('Copying the local image ' + local + ' into the image store as ' + name, flush=True)
+            copy_local(library, env, local, name)
+            added.append(name)
+            if stored_id(library, env, name) != local.removeprefix('sha256:'):
+                raise SetupError('The image store does not hold ' + local + ' as ' + name + ' after the copy')
+        records.append({'local': local, 'name': name, 'image_id': local.removeprefix('sha256:')})
+    return records
+
+
+def references(value):
+    """The store references of a toolchain's image records."""
+    return [item.get('image') or item['name'] for item in value.get('images', ())]
+
+
+def running_engines(library):
+    """Names of the running session engines, of any wrapper, that use the library's store."""
+    store = str(Path(library) / engine.STORE)
+    result = run(['ps', '--filter', 'label=' + engine.STORE_LABEL, '--format',
+                  '{{.Names}}\t{{index .Labels "' + engine.STORE_LABEL + '"}}'], timeout=STORE_TIMEOUT)
+    if result.returncode != 0:
+        raise SetupError('Cannot list the running container engines: ' + result.stderr.strip()[-200:])
+    return sorted(line.split('\t', 1)[0] for line in result.stdout.splitlines()
+                  if '\t' in line and line.split('\t', 1)[1] == store)
+
+
+def deletable(library, kept, toolchains):
+    """References of kept-out images that no remaining toolchain lists; refused while engines run (design D8)."""
+    listed = {reference for value in toolchains.values() for reference in references(value)}
+    deleted = sorted(set(kept) - listed)
+    if deleted:
+        engines = running_engines(library)
+        if engines:
+            raise SetupError('Cannot delete ' + ', '.join(deleted) + ' from the image store while session engines '
+                             'run: ' + ', '.join(engines) + '; end those sessions and retry.')
+    return deleted
+
+
+def unstore(library, env, references):
+    """Remove stored images by reference; failures are reported, never raised."""
+    for reference in references:
+        result = run(store_command(library, env, ['rmi', reference]), timeout=STORE_TIMEOUT)
+        if result.returncode != 0:
+            print(PREFIX + ': could not remove ' + reference + ' from the image store: ' +
+                  result.stderr.strip()[-200:], file=sys.stderr)
+
+
 # Verification
 
 def runtime_image(env):
@@ -817,13 +1039,55 @@ def runtime_image(env):
     return image, inspected.stdout.strip()
 
 
-def check(library, name, root, value, toolchains, image):
+def engine_seccomp(directory):
+    """The installed engine profile; a checkout derives one from the engine host's default."""
+    installed_profile = INSTALLATION / engine.SECCOMP
+    if installed_profile.is_file():
+        return installed_profile
+    queried = run(['info', '--format', '{{.Host.Security.SECCOMPProfilePath}}'])
+    if queried.returncode != 0 or not queried.stdout.strip().startswith('/'):
+        raise SetupError('The engine host reports no default seccomp profile; the container engine profile is '
+                         'derived from it.')
+    derived = Path(directory) / 'seccomp.json'
+    try:
+        engine.write_seccomp(queried.stdout.strip(), derived)
+    except engine.EngineError as error:
+        raise SetupError(str(error)) from None
+    return derived
+
+
+@contextlib.contextmanager
+def check_engine(library, env):
+    """A temporary engine configured like a session's, without network, on the library's store (design D11)."""
+    name = PROFILE.name + '-toolchain-check-' + uuid.uuid4().hex[:12]
+    image = engine_image(env)
+    with tempfile.TemporaryDirectory(prefix='toolchain-engine-') as scratch:
+        options = engine.container_options(name=name, seccomp=engine_seccomp(scratch), store=image_store(library))
+        try:
+            started = run(['run', '--detach', *options, '--network=none', image, str(engine.PORT)])
+            if started.returncode != 0:
+                raise SetupError('Cannot start the check engine: ' + started.stderr.strip()[-400:])
+            for _ in range(engine.READY_SECONDS):
+                ready = run(['exec', name, 'podman', '--remote', '--url', engine.ENDPOINT, 'info', '--format',
+                             '{{.Host.Security.Rootless}}'], timeout=20)
+                if ready.returncode == 0 and ready.stdout.strip() == 'true':
+                    break
+                time.sleep(1)
+            else:
+                raise SetupError('The check engine did not answer within ' + str(engine.READY_SECONDS) + ' seconds')
+            yield name
+        finally:
+            # --rm also removes the engine's anonymous storage volume.
+            run(['rm', '--force', '--volumes', '--time', '0', name])
+
+
+def check(library, name, root, value, toolchains, image, network=('--network=none',)):
     mounts = []
     for required in closure(value['requires'], toolchains):
         mounts += ['--volume', str(Path(library) / required) + ':' + MOUNT + '/' + required + ':ro,nosuid,nodev']
     mounts += ['--volume', str(root) + ':' + MOUNT + '/' + name + ':ro,nosuid,nodev']
     # Start in /: the engine must never create or chown the image's WORKDIR.
-    result = run(['run', '--rm', '--network=none', '--read-only', '--pull=never', '--userns=keep-id', '--workdir', '/',
+    result = run(['run', '--rm', *network, '--read-only', '--pull=never', '--userns=keep-id', '--workdir', '/',
                   '--user', f'{os.getuid()}:{os.getgid()}', '--cap-drop=all', '--security-opt=no-new-privileges',
                   '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=256m',
                   '--mount', 'type=tmpfs,destination=' + MOUNT + ',tmpfs-size=1m', *mounts,
@@ -833,6 +1097,17 @@ def check(library, name, root, value, toolchains, image):
         output = (result.stdout + result.stderr).strip()[-4000:]
         raise SetupError(f'toolchain check failed for {name} (status {result.returncode}): ' + shlex.join(value['check']) +
                          ('\n' + output if output else ''))
+
+
+def checked(library, name, root, value, toolchains, image, env):
+    """Run the check; with images, against a temporary engine like a session's (design D11)."""
+    if not value.get('images'):
+        check(library, name, root, value, toolchains, image)
+        return
+    with check_engine(library, env) as engine_name:
+        check(library, name, root, value, toolchains, image,
+              network=('--network=container:' + engine_name, '--env', 'CONTAINER_HOST=' + engine.ENDPOINT,
+                       '--env', 'DOCKER_HOST=' + engine.ENDPOINT))
 
 
 def verified_record(image_id):
@@ -877,9 +1152,16 @@ def add(library, argument, env):
                 if not others[required]['default']:
                     raise SetupError('default toolchain ' + name + ' requires non-default ' + required +
                                      '; set default to false or make ' + required + ' a default toolchain')
+        # A replacement that drops images deletes them only while no engine runs.
+        listed = {item.get('image') or item['name'] for item in recipe.get('images', ())}
+        dropped = deletable(library, [reference for reference in references(toolchains.get(name, {}))
+                                      if reference not in listed], others)
         staging = Path(tempfile.mkdtemp(prefix='.staging-' + name + '-', dir=library))
+        added = []
+        published = False
         try:
             records = extract_sources(recipe, staging, library, env)
+            images = store_images(library, recipe, env, added)
             provided = commands(staging, recipe['path'])
             if recipe['default']:
                 for key, other in others.items():
@@ -893,17 +1175,25 @@ def add(library, argument, env):
             image, image_id = runtime_image(env)
             (staging / 'env.sh').write_text(env_script(name, recipe))
             os.chmod(staging / 'env.sh', 0o644)
-            check(library, name, staging, recipe, others, image)
+            checked(library, name, staging, recipe, others, image, env)
             # The manifest keeps every key that older wrappers read (design D3);
             # 'source' lists provenance records, never host paths of the recipe.
             manifest = {key: item for key, item in recipe.items() if key != 'sources'}
             manifest.update(source=records, commands=provided, verified=verified_record(image_id))
+            if images:
+                manifest['images'] = images
             write_atomic(staging / 'toolchain.json', json.dumps(manifest, indent=2, sort_keys=True) + '\n')
             os.chmod(staging, 0o755)
             publish(library, name, staging)
+            published = True
         finally:
             if staging.exists():
                 shutil.rmtree(staging)
+            if added and not published:
+                # Never published, so no session can rely on them.
+                unstore(library, env, added)
+        if dropped:
+            unstore(library, env, dropped)
     return library / name
 
 
@@ -916,11 +1206,15 @@ def remove(library, name, env=None):
         dependents = sorted(key for key, item in toolchains.items() if name in item['requires'])
         if dependents:
             raise SetupError('toolchain ' + name + ' is required by ' + ', '.join(dependents) + '; remove them first')
+        others = {key: item for key, item in toolchains.items() if key != name}
+        deleted = deletable(library, references(toolchains[name]), others)
         old = Path(tempfile.mkdtemp(prefix='.old-' + name + '-', dir=library))
         os.rmdir(old)
         os.rename(library / name, old)
         render(library)
         shutil.rmtree(old)
+        if deleted:
+            unstore(library, env or os.environ, deleted)
 
 
 def verify(library, name, env):
@@ -933,19 +1227,24 @@ def verify(library, name, env):
         for key in ([name] if name else sorted(toolchains)):
             value = toolchains[key]
             others = {other: item for other, item in toolchains.items() if other != key}
-            check(library, key, library / key, value, others, image)
+            checked(library, key, library / key, value, others, image, env)
             value['verified'] = verified_record(image_id)
             write_atomic(library / key / 'toolchain.json', json.dumps(value, indent=2, sort_keys=True) + '\n')
         render(library)
 
 
 def entry(name, value):
-    return {'name': name, 'version': value['version'], 'default': value['default'], 'commands': value['commands'],
+    item = {'name': name, 'version': value['version'], 'default': value['default'], 'commands': value['commands'],
             'path': container_paths(name, value),
             'env': {variable: container_value(name, item) for variable, item in sorted(value['env'].items())},
             'requires': value['requires'], 'notes': value['notes'], 'check': value['check'],
             'source': value['source'], 'verified': {'base': value['verified']['base'],
                                                     'date': value['verified']['date']}}
+    if value.get('images'):
+        # An optional field: the index schema stays the same for older wrappers.
+        item['images'] = [{'reference': image.get('image') or image['name'], 'image_id': image['image_id']}
+                          for image in value['images']]
+    return item
 
 
 GUIDE = """# Toolchains
@@ -962,6 +1261,13 @@ To use a toolchain in one command, source its env.sh first:
 Default toolchains are also on PATH, after the system tools, in sessions started
 after they were added. Toolchains added during a session are available only
 through their env.sh or full paths until the next session.
+
+Toolchains may also provide container images. A session started while the
+library holds images has a private container engine: run the images with
+podman (CONTAINER_HOST) or a Docker-API client (DOCKER_HOST) by the exact
+references listed below. They run without network in offline sessions, and
+images added during such a session are available at once; a session started
+before the library held any image has no engine until the next session.
 """
 
 
@@ -979,6 +1285,9 @@ def render(library):
         lines.append('- Environment: ' + env_text)
         lines.append('- Requires: ' + (', '.join(item['requires']) or 'none'))
         lines.append('- Default on PATH in new sessions: ' + ('yes' if item['default'] else 'no'))
+        for image in item.get('images', ()):
+            lines.append('- Image: `' + image['reference'] + '`, for example `podman run --rm ' +
+                         image['reference'] + '`')
         for note in item['notes']:
             lines.append('- Note: ' + note)
         lines.append('- Verified on ' + item['verified']['base'] + ' (' + item['verified']['date'] + ')\n')
@@ -1005,6 +1314,9 @@ def launch_env(library, base):
     lines = []
     for name in ordered:
         lines += [('path', path) for path in by_name[name]['path']]
+    if any(item.get('images') for item in index['toolchains']):
+        # Sessions get a container engine on the library's image store (session-container-engine).
+        lines.append(('store', str(Path(library) / engine.STORE)))
     for name in ordered:
         for variable, value in by_name[name]['env'].items():
             if not ENV_NAME.fullmatch(variable) or neutral_protected(variable) or not control_free(value) \
