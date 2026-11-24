@@ -116,7 +116,7 @@ class QualificationContracts(unittest.TestCase):
         gate = qualify.Gate({}); calls = []
         security = answers.get('security', ['no-new-privileges', 'label=disable', 'unmask=all',
                                             'seccomp=' + str(qualify.ROOT / records.ENGINE_SECCOMP)])
-        state = answers.get('state', 'CapBnd: 00000000000000c0\nNoNewPrivs: 1\nSeccomp: 2\nuid=1000\n'
+        state = answers.get('state', 'CapBnd: 00000000000400c0\nNoNewPrivs: 1\nSeccomp: 2\nuid=1000\n'
                                      'map=1000:0:1\nfuse=c tun=c\nstore=read-only')
         probe = answers.get('probe', 'pid1=bash\nprocs=1\nhost=0123456789ab\nsecrets=0\nroutes=0\ntcp=closed')
         ready = iter(answers.get('ready', ['true']))
@@ -154,7 +154,7 @@ class QualificationContracts(unittest.TestCase):
             'security': dict(security=['label=disable']),
             'capabilities': dict(state='CapBnd: 000001ffffffffff\nNoNewPrivs: 1\nSeccomp: 2\nuid=1000\n'
                                        'map=1000:0:1\nfuse=c tun=c\nstore=read-only'),
-            'writable store': dict(state='CapBnd: 00000000000000c0\nNoNewPrivs: 1\nSeccomp: 2\nuid=1000\n'
+            'writable store': dict(state='CapBnd: 00000000000400c0\nNoNewPrivs: 1\nSeccomp: 2\nuid=1000\n'
                                          'map=1000:0:1\nfuse=c tun=c\nstore=writable'),
             'shared procfs': dict(probe='pid1=podman\nprocs=40\nhost=0123456789ab\nsecrets=0\nroutes=0\ntcp=closed'),
             'route out': dict(probe='pid1=bash\nprocs=1\nhost=0123456789ab\nsecrets=0\nroutes=1\ntcp=open'),

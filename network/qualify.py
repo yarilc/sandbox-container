@@ -342,7 +342,7 @@ class Gate:
         if not isinstance(options, list) or set(options) != expected:
             raise GateError('session engine security options differ from the documented exceptions')
         state = self.engine('exec', name, 'sh', '-c', ENGINE_STATE)
-        if state.split() != ['CapBnd:', '00000000000000c0', 'NoNewPrivs:', '1', 'Seccomp:', '2', 'uid=1000',
+        if state.split() != ['CapBnd:', '00000000000400c0', 'NoNewPrivs:', '1', 'Seccomp:', '2', 'uid=1000',
                              'map=1000:0:1', 'fuse=c', 'tun=c', 'store=read-only']:
             raise GateError('session engine hardening differs from the documented exceptions: ' + state.replace('\n', ' '))
         # Nested containers: own process and host-name views, no secrets, and no

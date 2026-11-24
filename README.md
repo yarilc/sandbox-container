@@ -345,9 +345,10 @@ with its storage when the session ends. Without images in the library, or with
   limits on nested containers are not guaranteed: on an engine without
   delegated cgroup controllers they fail.
 - **Hardening exceptions:** the engine container is the one container that
-  relaxes the standard policy, only as nested rootless containers need: the
-  `SETUID` and `SETGID` capabilities for the user-namespace helpers (with
-  no-new-privileges kept on), the FUSE and TUN devices, an unmasked procfs,
+  relaxes the standard policy, only as nested rootless containers and image
+  operations need: the `SETUID` and `SETGID` capabilities for the
+  user-namespace helpers and `SYS_CHROOT` for layer extraction and builds
+  (with no-new-privileges kept on), the FUSE and TUN devices, an unmasked procfs,
   SELinux labelling disabled, and a seccomp profile derived from the host's
   default that also allows `sethostname` and `setdomainname`. It runs as an
   unprivileged user mapped to you (`--userns=keep-id:uid=1000,gid=1000`), which

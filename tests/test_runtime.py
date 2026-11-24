@@ -637,6 +637,15 @@ test "$(stat -c %u nested-file)" = "$(id -u)"
 podman run --rm --network=none -v /etc:/outside:ro localhost/sandbox-test-sample:1 grep -q k8s-file /outside/containers/containers.conf
 ! podman rmi localhost/sandbox-test-sample:1
 podman image exists localhost/sandbox-test-sample:1
+# Builds and the extraction of new layers (pull, load) chroot (design D4).
+mkdir .build-context && printf 'FROM localhost/sandbox-test-sample:1\nRUN echo built > /built\n' > .build-context/Containerfile
+podman build --quiet --pull=never --tag localhost/sandbox-test-built:1 .build-context >/dev/null
+test "$(podman run --rm --network=none localhost/sandbox-test-built:1 cat /built)" = built
+podman save --quiet --output .built.tar localhost/sandbox-test-built:1
+podman rmi localhost/sandbox-test-built:1 >/dev/null
+podman load --quiet --input .built.tar >/dev/null
+podman image exists localhost/sandbox-test-built:1
+rm -rf .build-context .built.tar
 echo ENGINE_SESSION_OK
 """)
         self.assert_success(result)
