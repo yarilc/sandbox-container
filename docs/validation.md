@@ -1,5 +1,28 @@
 # Validation record
 
+## Engine case beside a crowded container (`set-process-limits-inside-containers`, task 4.3): 2026-11-24
+
+An engine cannot start inside a session's engine, so the operator ran the case
+on the Windows Podman machine's own engine: Podman 6.1.4, `cgroupfs` manager,
+kernel `6.18.58.1-microsoft-standard-WSL2`, so the `rlimit` mechanism. The
+checkout was the Claude adoption of this tag (`claude-container` branch
+`adopt-sandbox-ref-34`, commit `eb84f80`). Its
+`test_engine_process_rlimit_counts_per_container` is this repository's case
+with Claude's names: the test body is identical, and only the crowd
+container's name prefix differs.
+
+Setup had named the images after the release only, so the operator first
+tagged its runtime and engine images `localhost/claude-code:latest` and
+`localhost/claude-code-engine:latest`. The pinned alpine sample image was
+pulled into the same engine.
+
+| Case | Result |
+| --- | --- |
+| `bash tests/run-runtime.sh -k test_engine_process_rlimit_counts_per_container` | Passed: 1 test in 14.553 seconds. Beside a container holding 520 processes, the engine session started with a process limit of 512/512 and ran a nested container |
+
+This completes the independence cases of design D4: the engine row of the
+table in the next section, unavailable from a session, passed here.
+
 ## Reference tag `sandbox-ref-34`: 2026-11-24
 
 Change `set-process-limits-inside-containers` (task 6.1). On the process

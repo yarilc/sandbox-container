@@ -66,7 +66,7 @@
     - `tests/test_launcher.py` checks the engine's `podman run` arguments on each mechanism.
 - [x] 4.2 Verify the engine's effective limit in the readiness check: the limit of PID 2, the entrypoint under `--init`, must equal the budget before the session starts (design D3).
   - **Verify:** `tests/test_launcher.py` cases where the fake reports the budget, another value and no value; the last two stop the launch and remove the engine.
-- [ ] 4.3 Add an engine runtime case: an engine session starts and runs a nested container beside a container holding more processes than its budget.
+- [x] 4.3 Add an engine runtime case: an engine session starts and runs a nested container beside a container holding more processes than its budget.
   - **Verify:** the case passes where an engine can start, and skips from inside a session's engine, as the other engine cases do.
 
 ## 5. Documentation
@@ -86,7 +86,7 @@
   - **Verify:**
     - every mode passes, apart from the failures recorded for `cgroupfs` cgroup limits, which need a cgroup manager;
     - no case fails with `Resource temporarily unavailable`.
-- [ ] 6.2 Merge, tag `sandbox-ref-34`, and update the reference parity row.
+- [x] 6.2 Merge, tag `sandbox-ref-34`, and update the reference parity row.
   - **Verify:** `git describe --exact-match` on `main` prints the tag, and `python3 -m unittest tests.test_alignment` passes.
 
 ## Workflow follow-up
