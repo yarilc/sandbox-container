@@ -18,7 +18,8 @@ import common  # noqa: E402
 import engine  # noqa: E402
 
 ENGINE = ROOT / 'launcher/engine'
-PINNED_BASE = re.compile(r'quay\.io/podman/stable@sha256:[a-f0-9]{64}')
+# An -immutable tag: quay.io deletes the manifests of the other podman/stable tags when it rebuilds them.
+PINNED_BASE = re.compile(r'quay\.io/podman/stable:v[0-9]+(\.[0-9]+)*-immutable@sha256:[a-f0-9]{64}')
 # Defaults of the base image that the engine must not keep (design D3).
 REMOVED = ('/usr/share/containers/containers.conf.d/00-vendor.conf',
            '/etc/containers/containers.rootless.conf.d/20-image_build.conf')
@@ -30,7 +31,7 @@ def recipe_violations(recipe):
     found = []
     bases = re.findall(r'(?im)^\s*FROM\s+(\S+)', recipe)
     if len(bases) != 1 or not PINNED_BASE.fullmatch(bases[0]):
-        found.append('the base must be one digest-pinned quay.io/podman/stable')
+        found.append('the base must be one quay.io/podman/stable -immutable tag pinned by digest')
     if re.search(r'(?i)\b(dnf|yum|microdnf|curl|wget|pip)\b', recipe):
         found.append('the recipe must build without fetching anything')
     for path in REMOVED:
@@ -67,7 +68,8 @@ class EngineRecipeTests(unittest.TestCase):
     def test_recipe_is_pinned_offline_and_replaces_base_defaults(self):
         self.assertEqual(recipe_violations(self.recipe), [])
         cases = {
-            'tag only': self.recipe.replace(re.search(r'@sha256:[a-f0-9]{64}', self.recipe).group(0), ':latest'),
+            'tag only': self.recipe.replace(re.search(r'@sha256:[a-f0-9]{64}', self.recipe).group(0), ''),
+            'rebuilt tag': self.recipe.replace('-immutable@sha256:', '@sha256:'),
             'second base': self.recipe + '\nFROM docker.io/library/alpine@sha256:' + 'a' * 64 + '\n',
             'package install': self.recipe.replace('RUN rm -f', 'RUN dnf -y install strace && rm -f'),
             'journald kept': self.recipe.replace(REMOVED[0], '/nonexistent'),

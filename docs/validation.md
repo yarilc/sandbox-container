@@ -1,5 +1,42 @@
 # Validation record
 
+## Reference tag `sandbox-ref-31`: 2026-11-24
+
+Fix to the engine image's base pin, found while the operator added an image
+toolchain for the Claude adoption. A clean pull of the pinned
+`quay.io/podman/stable@sha256:3e54de04…` failed with `manifest unknown`.
+quay.io rebuilds the `podman/stable` tags daily: the copy the pin came from was
+built on 2026-11-23 at 03:33, and `v6.2` pointed to a build of 2026-11-24 at
+03:39. The earlier manifest was deleted. Installations that already had the
+base built the engine; a new installation could not.
+
+The project publishes `-immutable` tags that are never rebuilt. The engine now
+builds `FROM quay.io/podman/stable:v6.2.0-immutable@sha256:e0da0a3a…`, the
+multi-architecture index; its amd64 manifest is `sha256:39a21e78…`, built on
+2026-11-18. It has Podman 6.2.0, crun 1.31, fuse-overlayfs 1.17 and the same
+subordinate ranges as the measured base. It also has the files the recipe
+removes or empties, and the `/var/lib/shared` additional image store in
+`storage.rootless.conf.d/20-image_build.conf`. `tests/test_engine.py` refuses
+a base without an `-immutable` tag (design D3, task 2.6).
+
+Shared files changed since `sandbox-ref-30`: `launcher/engine/Containerfile`
+and `tests/test_engine.py`. The engine files are in `SHARED_CODE`, so
+`--qualification` ran. The operator pulled the base by its index digest into
+the spike engine's storage, with the spike's subordinate ranges, and the engine
+image was rebuilt from the new recipe. A first attempt pulled it into the spike's
+shared store with the image's own ranges: files owned by `podman` appeared as
+UID 1 in the engine, and every engine test failed on `stat /home/podman/.config`.
+That was the test setup, not the base. Same runner as the `sandbox-ref-29`
+record below.
+
+| Mode | Result |
+| --- | --- |
+| `--shared` (unit discovery) | Passed: 559 tests, 78 skipped |
+| `--qualification` | Passed: 34 tests, 1 skipped (no authentication method in the profile) |
+| `--setup-runtime` | Passed: 2 tests in 210 s; setup built the engine image from the pinned base |
+| runtime (default mode) | Passed: 21 tests, including the three `SessionEngineTests` |
+| `--network -k test_offline_session_engine_has_no_external_path -k test_image_recipe_check_runs_without_network` | Passed: 2 tests |
+
 ## Reference tag `sandbox-ref-30`: 2026-11-24
 
 Fix to the session container engine, found while preparing the Claude adoption

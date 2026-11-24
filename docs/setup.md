@@ -210,7 +210,7 @@ mode skips the guard and toolchain.
 
 Every mode also gets the session container engine image, which sessions run
 when the toolchain library holds image toolchains. Setup builds it from
-`launcher/engine/Containerfile` on a digest-pinned `quay.io/podman/stable`, with
+`launcher/engine/Containerfile` on a digest-pinned `quay.io/podman/stable` `-immutable` tag, with
 no network access in the build, and tags it `<engine image>:setup-<release>`.
 It reuses the previous engine image when the engine inputs (the Containerfile,
 its configuration and entrypoint) are unchanged and no refresh was requested.
