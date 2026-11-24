@@ -45,6 +45,54 @@ its containers. In the Claude network suite one test failed with
 `crun: fork: Resource temporarily unavailable` and passed alone. A session
 started for heavy suites can raise `<P>_PIDS_LIMIT`.
 
+## Reference tag `sandbox-ref-33`: 2026-11-24
+
+Fix to the interface checks of restricted sessions, found by the Claude
+adoption of `sandbox-ref-32`. The operator's library now held image toolchains,
+so the setup smoke session had an engine. On the Windows Podman machine, setup
+stopped at `assert os.listdir('/sys/class/net') == ['lo']`, after the
+qualification had passed.
+
+Measured in a Claude provider session with its engine, on the same machine:
+- `/sys` is the host's sysfs (superblock `0:24`), bind-mounted read-only with
+  its submounts (`tracefs`, `debugfs`, `configfs`, `fusectl`);
+- `/sys/class/net` lists the host's `eth0` to `eth8`, `loopback0` and `lo`,
+  with their MAC addresses, link state and counters;
+- `/proc/net/dev` lists only `lo`;
+- `debugfs` and `tracefs` give `Permission denied`, `configfs` is empty, and
+  Podman's masks of `/sys/firmware` and `/sys/fs/selinux` apply.
+
+Rootless Podman bind-mounts its own `/sys` into a container that joins another
+container's network namespace. Through this session's engine, a container
+joining another's namespace got the engine's sysfs (`0:184`), with only its own
+user namespace or with the other container's as well. The owner of the
+namespace got a sysfs of its own (`0:205`). The spike's nested engines therefore
+showed only loopback, and design D1 could not see the difference before a
+setup on a real host.
+
+The operator accepted the read-only host view, now documented in the README's
+engine section and in design D1. The setup smoke check, the qualification probe
+and the offline default test read `/proc/net/dev`, and the offline engine test
+checks that it lists only loopback (task 4.7). `tests/network_fixture.py` is
+unchanged: its probes run in containers that own their network namespace.
+
+Shared files changed since `sandbox-ref-32`: `network/qualification_probe.py`
+and `setup/smoke.py`, both in `SHARED_CODE`. Per-wrapper file:
+`tests/test_network_runtime.py`. Same runner as `sandbox-ref-32`.
+
+| Mode | Result |
+| --- | --- |
+| `--shared` (unit discovery) | Passed: 560 tests, 78 skipped |
+| `--setup` | Passed: 93 tests |
+| `--qualification` | Passed: 34 tests, 1 skipped (no authentication method in the profile) |
+| runtime (default mode) | Passed: 18 tests. `SessionEngineTests` skipped: an engine cannot start inside a session's engine |
+| `--network -k test_offline_defaults_and_leftover_delegation_refusal -k test_offline_session_engine_has_no_external_path` | Passed: 2 tests. The engine test skipped for the same reason |
+| `--setup-runtime` | Unavailable from a session: the offline case stops at the engine qualification (nested engine), before the smoke check |
+| ShellCheck | Passed |
+
+The new smoke check runs for real in the adoption's setup on the Windows
+machine.
+
 ## Reference tag `sandbox-ref-32`: 2026-11-24
 
 Fix to how shared code reads engine labels, found by the Claude adoption's

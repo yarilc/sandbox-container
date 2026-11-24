@@ -102,7 +102,9 @@ status = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text
 assert all(int(status[name], 16) == 0 for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'))
 assert int(status['NoNewPrivs']) == 1 and int(status['Seccomp']) == 2
 effective_budgets(config['budgets'])
-assert os.listdir('/sys/class/net') == ['lo']
+# The namespace's interfaces: /sys/class/net can be the host's (see setup/smoke.py).
+assert sorted(line.split(':', 1)[0].strip()
+              for line in Path('/proc/self/net/dev').read_text().splitlines()[2:]) == ['lo']
 for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy'):
     os.environ.pop(key, None)
 external(False)
