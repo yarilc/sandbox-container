@@ -373,24 +373,35 @@ try {
     }
 
     # One engine: the machine's launch service runs a command in, and removes, a
-    # running session's container. Other running sessions of this wrapper would
-    # also match the label. A session's container engine carries the same label,
-    # and the session depends on it, so engines are left out of the listing.
-    $background = Invoke-BackgroundCase '& $E @C -c ''sleep 60'''
+    # running session's container. Only the session this case starts is
+    # touched: containers that already carry the session label, such as an
+    # operator's own agent session and its engine, are noted first and never
+    # chosen. A session's container engine carries the same label, and the
+    # session depends on it, so engines are left out of the listing.
+    $before = Invoke-ServicePodman ('podman --remote --url $service ps -a --filter label=' + $sessionLabel +
+        ' --format {{.ID}}')
+    $existing = @($before.Output | ForEach-Object { $_.Trim() } | Where-Object { $_ -cmatch '^[0-9a-f]{12,64}$' })
     $container = ''
-    for ($i = 0; $i -lt 45 -and -not $container; $i++) {
-        Start-Sleep -Seconds 2
-        $listed = Invoke-ServicePodman ('engines=$XDG_RUNTIME_DIR/validate-engines.$$; ' +
-            'podman --remote --url $service ps --filter label=' + $sessionLabel +
-            ' --filter label=sandbox-engine.owner --format {{.ID}} > $engines; ' +
-            'podman --remote --url $service ps --filter label=' + $sessionLabel +
-            ' --format {{.ID}} | grep -vxF -f $engines; rm -f $engines')
-        $container = @($listed.Output | ForEach-Object { $_.Trim() } | Where-Object { $_ -cmatch '^[0-9a-f]{12,64}$' } |
-            Select-Object -First 1) -join ''
-    }
-    if (-not $container) {
-        Add-Result 'FAIL' 'One engine for sessions and the machine' 'the service listed no session container within 90 s'
+    $background = $null
+    if ($before.Code -ne 0) {
+        Add-Result 'FAIL' 'One engine for sessions and the machine' ('the service could not list the running sessions: ' +
+            (($before.Output | Select-Object -Last 1) -join ' '))
     } else {
+        $background = Invoke-BackgroundCase '& $E @C -c ''sleep 60'''
+        for ($i = 0; $i -lt 45 -and -not $container; $i++) {
+            Start-Sleep -Seconds 2
+            $listed = Invoke-ServicePodman ('engines=$XDG_RUNTIME_DIR/validate-engines.$$; ' +
+                'podman --remote --url $service ps --filter label=' + $sessionLabel +
+                ' --filter label=sandbox-engine.owner --format {{.ID}} > $engines; ' +
+                'podman --remote --url $service ps --filter label=' + $sessionLabel +
+                ' --format {{.ID}} | grep -vxF -f $engines; rm -f $engines')
+            $container = @($listed.Output | ForEach-Object { $_.Trim() } | Where-Object { $_ -cmatch '^[0-9a-f]{12,64}$' } |
+                Where-Object { $existing -notcontains $_ } | Select-Object -First 1) -join ''
+        }
+    }
+    if ($before.Code -eq 0 -and -not $container) {
+        Add-Result 'FAIL' 'One engine for sessions and the machine' 'the service listed no new session container within 90 s'
+    } elseif ($container) {
         $exec = Invoke-ServicePodman ('podman --remote --url $service exec ' + $container + ' /bin/true')
         $removed = Invoke-ServicePodman ('podman --remote --url $service rm -f -t 0 ' + $container)
         $ended = $background.Process.WaitForExit(60000)
@@ -405,7 +416,7 @@ try {
                 (($removed.Output | Select-Object -Last 1) -join ' ') + '); session ended: ' + $ended + '; containers left: ' + $remaining)
         }
     }
-    if (-not $background.Process.HasExited) { $background.Process.Kill() }
+    if ($background -and -not $background.Process.HasExited) { $background.Process.Kill() }
 
     # Entry directory outside writable mounts.
     Test-Outcome 'Launch from the checkout' (Invoke-Case '& $E @C -c true' $Checkout) 1 'overlaps the writable mount'
