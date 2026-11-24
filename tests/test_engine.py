@@ -192,7 +192,7 @@ class EngineOptionsTests(unittest.TestCase):
     def test_options_hold_exactly_the_documented_exceptions(self):
         # session-container-engine: Fixed engine hardening exceptions / Engine carries no secrets.
         options = self.options()
-        for expected in ('--rm', '--init', '--cap-drop=all', '--cap-add=SETUID,SETGID', '--security-opt=no-new-privileges',
+        for expected in ('--rm', '--init', '--cap-drop=all', '--cap-add=SETUID,SETGID,SYS_CHROOT', '--security-opt=no-new-privileges',
                          '--security-opt=unmask=ALL', '--security-opt=label=disable', '--device=/dev/fuse',
                          '--device=/dev/net/tun', '--http-proxy=false', engine.USERNS,
                          '--security-opt=seccomp=/release/launcher/engine/seccomp.json'):

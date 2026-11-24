@@ -522,7 +522,7 @@ class LauncherTests(unittest.TestCase):
                 calls = self.calls()
                 self.assertLess(calls.index(run), calls.index(create))
                 for option in ('--rm', '--init', '--userns=keep-id:uid=1000,gid=1000', '--cap-drop=all',
-                               '--cap-add=SETUID,SETGID', '--security-opt=no-new-privileges', '--http-proxy=false'):
+                               '--cap-add=SETUID,SETGID,SYS_CHROOT', '--security-opt=no-new-privileges', '--http-proxy=false'):
                     self.assertIn(option, run)
                 name = run[run.index('--name') + 1]
                 self.assertTrue(name.startswith('my-project-engine-'), name)

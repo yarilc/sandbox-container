@@ -125,7 +125,7 @@ image.
 |---|---|
 | `--init` | The service does not reap children, and zombie fuse-overlayfs/conmon processes exhausted `RLIMIT_NPROC`, so the proxy failed to clone. |
 | `--user podman`, `--userns=keep-id:uid=1000,gid=1000` | The engine runs unprivileged as the caller: nested containers' root is the caller, so files they create in the workspace belong to the caller, as with delegation. Without it, nested root is a subordinate ID and cannot write a caller-owned workspace (measured, task 2.3). The engine user's subordinate ranges (1-999, 1001-65535) need 65535 of the caller's contiguous subordinate IDs. |
-| `--cap-drop=all --cap-add=SETUID,SETGID --security-opt=no-new-privileges` | `newuidmap` and `newgidmap` need `CAP_SETUID` and `CAP_SETGID`. For the non-root engine user, Podman passes added capabilities as ambient ones, so no file capability is needed and no-new-privileges stays on (measured, task 2.3). |
+| `--cap-drop=all --cap-add=SETUID,SETGID,SYS_CHROOT --security-opt=no-new-privileges` | `newuidmap` and `newgidmap` need `CAP_SETUID` and `CAP_SETGID`. For the non-root engine user, Podman passes added capabilities as ambient ones, so no file capability is needed and no-new-privileges stays on (measured, task 2.3). Layer extraction (`pull`, `load`) and image builds chroot into the layer, which needs `CAP_SYS_CHROOT`: Podman re-executes itself in its rootless user namespace, where the bounding set caps it. Without it, a `RUN` step failed with `chrooting to directory …: operation not permitted` and a load of new layers failed with `chroot ".": operation not permitted` (measured, task 2.5). |
 | `--security-opt unmask=ALL` | Mounting a fresh procfs requires a fully visible `/proc`. |
 | `--security-opt label=disable` | Nested containers cannot work under the engine's SELinux label. |
 | `--device /dev/fuse` | Needed by fuse-overlayfs. |
@@ -260,7 +260,8 @@ that passes predicts a session that works.
 ## Risks / Trade-offs
 
 - **[The engine container is less confined than a shell container]** It holds
-  user-namespace helper capabilities, SELinux labelling is disabled, procfs is
+  user-namespace helper capabilities and the chroot capability, which standard
+  containers also have; SELinux labelling is disabled, procfs is
   unmasked, and FUSE and TUN are present. → It runs unprivileged, holds no
   secrets and has no host socket. Its only host paths are the workspace (already
   writable by the session) and the read-only store. The exceptions are fixed,

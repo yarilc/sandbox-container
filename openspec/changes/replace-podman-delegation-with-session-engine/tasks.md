@@ -24,6 +24,12 @@
 - [x] 2.3 Establish the engine's minimal capability set (design D4).
   - **Verify:** nested rootless containers run with `--cap-drop=all --cap-add=SETUID,SETGID` and fail without either capability.
   - **Record:** the options in the engine argument builder and in `docs/validation.md`.
+- [x] 2.5 Let the engine build images and extract new layers (design D4). Found after `sandbox-ref-29`: with `SETUID` and `SETGID` only, `podman build` failed at a `RUN` step and `podman load` of new layers failed, both on `chroot`.
+  - **Verify:**
+    - with `--cap-add=SETUID,SETGID,SYS_CHROOT`, a build with a `RUN` step and a load of new layers succeed in an engine started with the D4 options;
+    - the qualification probe expects the bounding set `0x400c0`;
+    - `SessionEngineTests` builds, saves, removes and loads an image in a session.
+  - **Record:** `docs/validation.md`, under `sandbox-ref-30`.
 - [x] 2.4 Document the engine image in `docs/setup.md`: what setup builds, the seccomp derivation and when it is regenerated.
   - **Verify:** every documented command runs as written in a scratch installation.
 

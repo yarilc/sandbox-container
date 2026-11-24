@@ -82,13 +82,16 @@ def write_seccomp(source, destination):
 def container_options(*, name, seccomp, store, mounts=(), ca_bundle='', labels=()):
     """podman run options of an engine container (design D2, D4, D5, D6).
 
+    SETUID and SETGID serve the user-namespace helpers; SYS_CHROOT serves layer
+    extraction (pull, load) and image builds, whose helpers chroot.
+
     The caller adds the network and budget options, then the image and PORT. The
     engine mounts only an anonymous storage volume, which --rm removes with the
     engine, the library's store read-only, the given workspace paths at the same
     paths, and the CA bundle when trusted.
     """
     options = ['--name', name, '--rm', '--init', '--user', 'podman', USERNS,
-               '--cap-drop=all', '--cap-add=SETUID,SETGID', '--security-opt=no-new-privileges',
+               '--cap-drop=all', '--cap-add=SETUID,SETGID,SYS_CHROOT', '--security-opt=no-new-privileges',
                '--security-opt=unmask=ALL', '--security-opt=label=disable', '--security-opt=seccomp=' + str(seccomp),
                '--device=/dev/fuse', '--device=/dev/net/tun', '--http-proxy=false',
                '--mount', 'type=tmpfs,destination=/run/secrets,ro=true',

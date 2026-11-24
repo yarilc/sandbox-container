@@ -1,5 +1,50 @@
 # Validation record
 
+## Reference tag `sandbox-ref-30`: 2026-11-24
+
+Fix to the session container engine, found while preparing the Claude adoption
+of `sandbox-ref-29`. In an engine started with the documented options, image
+operations that extract layers failed:
+- a build with a `RUN` step failed with `error in copier subprocess: chrooting
+  to directory "…/merged": operation not permitted`;
+- a load of layers the engine did not have failed with `unpacking failed …
+  chroot ".": operation not permitted`.
+
+Running containers from library images worked, which is all the spike had
+measured. Podman re-executes itself in its rootless user namespace, where the
+container's bounding set (`SETUID`, `SETGID`) caps its capabilities, so
+`chroot` was denied. With `SYS_CHROOT` added, both operations succeeded in the
+same engine; `--isolation=oci` builds failed the same way without it. The
+engine options now add `SYS_CHROOT` (design D4, task 2.5 of
+`replace-podman-delegation-with-session-engine`). The qualification probe
+expects the bounding set `0x400c0`. `SessionEngineTests` builds an image with a
+`RUN` step in a session, removes it and loads it back.
+
+Shared files changed since `sandbox-ref-29`: `setup/engine.py`,
+`network/qualify.py`, and the shared tests `test_engine.py`,
+`test_launcher.py` and `test_qualification.py`. The engine files are in
+`SHARED_CODE`, so `--qualification` ran. Same runner as the `sandbox-ref-29`
+record below.
+
+| Mode | Result |
+| --- | --- |
+| `--shared` (unit discovery) | Passed: 559 tests, 78 skipped |
+| `--setup` | Passed: 93 tests |
+| `--setup-runtime` | Passed: 2 tests in 124 s |
+| `--qualification` | Passed: 34 tests, 1 skipped (no authentication method in the profile) |
+| `--wrapper` | Passed: 114 tests, 1 skipped |
+| runtime (default mode) | Passed: 21 tests, including the three `SessionEngineTests` |
+| `--network -k test_offline_session_engine_has_no_external_path -k test_image_recipe_check_runs_without_network` | Passed: 2 tests |
+
+**Engines nested in a session's engine.** An engine container started inside an
+engine, as the engine tests would do when run from a session, did not start:
+`crun: mkdir /home/podman/.local: Permission denied`. The engine user's
+subordinate ranges (1-999 and 1001-65535) also give a nested engine only 65535
+IDs, one fewer than its own ranges need. The engine tests
+(`SessionEngineTests`, the `session-engine` qualification case and the two
+network engine cases) therefore run against a host engine; from a session they
+skip when the library holds no engine image. Not changed by this tag.
+
 ## Reference tag `sandbox-ref-29`: 2026-11-24
 
 Container tests through a private session engine instead of host Podman
