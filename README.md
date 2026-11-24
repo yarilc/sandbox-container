@@ -354,6 +354,13 @@ with its storage when the session ends. Without images in the library, or with
   unprivileged user mapped to you (`--userns=keep-id:uid=1000,gid=1000`), which
   needs 65535 of your subordinate IDs in one contiguous range. A tool that
   needs more privilege is unsupported.
+- **Host `/sys` in the session:** the session joins the engine's network
+  namespace, and a rootless container that joins another namespace cannot
+  mount a sysfs of its own: Podman bind-mounts the host's `/sys` read-only
+  instead. A session with an engine therefore sees the host's network
+  interfaces in `/sys/class/net` (names, MAC addresses, link state and
+  counters). Its network namespace still has only loopback, as `/proc/net/dev`
+  shows.
 
 Migration: host Podman delegation (`SANDBOX_CONTAINER_PODMAN=1`, with
 `SANDBOX_CONTAINER_PODMAN_SOCKET`) was removed. The exact value `1` now stops

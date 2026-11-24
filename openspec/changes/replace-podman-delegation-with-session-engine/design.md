@@ -75,6 +75,19 @@ file read-only at `/etc/hosts`:
 - engine sessions lose only Podman's `host.containers.internal` entry, which
   restricted sessions cannot reach anyway.
 
+A second difference appeared only on a real host, after `sandbox-ref-32`: a
+rootless container that joins another network namespace cannot mount a sysfs
+of its own, so Podman bind-mounts the host's `/sys` into it, read-only. Sharing
+the engine's user namespace as well does not change this. A session with an
+engine therefore sees the host's network interfaces in `/sys/class/net`: names,
+MAC addresses, link state and counters. `debugfs` and `tracefs` appear but stay
+closed to the session user, and Podman's masks still apply. Its network
+namespace still has only loopback. Task 1.1 could not see this, because nested
+engines bind their own parent's sysfs, which already shows only loopback. This
+read-only view is accepted and documented. The setup smoke check, the
+qualification probe and the tests read the interfaces of the network namespace
+from `/proc/net/dev` instead of `/sys/class/net`.
+
 ### D2. Loopback TCP endpoint on a fixed port
 
 The engine's `podman system service` listens on `tcp://127.0.0.1:2375` inside

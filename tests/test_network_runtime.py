@@ -219,6 +219,8 @@ class NetworkRuntime(unittest.TestCase):
         self.remove_toolchain_on_cleanup('sample', values)
         result = self.shell(r"""
 test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+# The namespace has only loopback; /sys/class/net may be the host's (design D1).
+test "$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | sort | tr '\n' ' ')" = 'lo '
 podman network create engine-test-net >/dev/null
 for network in host none default engine-test-net; do
   flags=(--network="$network"); [ "$network" != default ] || flags=()
@@ -265,7 +267,7 @@ echo OFFLINE_ENGINE_OK
                     self.assertIn('toolchain check failed', added.stderr)
 
     def test_offline_defaults_and_leftover_delegation_refusal(self):
-        result = self.shell("python3 - <<'PY'\nimport os,socket\nassert os.listdir('/sys/class/net') == ['lo']\nassert 'HTTP_PROXY' not in os.environ\ntry: socket.create_connection(('1.1.1.1',443),1)\nexcept OSError: pass\nelse: raise AssertionError('direct route')\nPY\n")
+        result = self.shell("python3 - <<'PY'\nimport os,socket\nassert sorted(l.split(':',1)[0].strip() for l in open('/proc/net/dev').read().splitlines()[2:]) == ['lo']\nassert 'HTTP_PROXY' not in os.environ\ntry: socket.create_connection(('1.1.1.1',443),1)\nexcept OSError: pass\nelse: raise AssertionError('direct route')\nPY\n")
         self.assert_success(result)
         self.assertIn('mode=offline', result.stderr)
         self.assertFalse(list(self.runtime.iterdir()))

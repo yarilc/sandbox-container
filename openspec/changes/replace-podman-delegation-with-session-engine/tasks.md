@@ -118,6 +118,13 @@
   - `docs/launcher-test-map.md`.
   - **Verify:** the contract and test map entries name the new tests, and the README commands run as written in a session.
 
+- [x] 4.7 Check a restricted session's interfaces in its network namespace (design D1). Found after `sandbox-ref-32`: the first setup with image toolchains on the Windows Podman machine failed its smoke check, because a session with an engine sees the host's `/sys` and its `/sys/class/net` lists the host's interfaces.
+  - **Verify:**
+    - nested containers that join another container's network namespace get their parent's `/sys`, with or without its user namespace, while `/proc/net/dev` shows only the shared namespace;
+    - the setup smoke check, the qualification probe and the offline runtime tests read `/proc/net/dev`, and the offline engine test checks that it lists only loopback;
+    - the README's engine section documents the host `/sys` view.
+  - **Record:** `docs/validation.md`, under `sandbox-ref-33`.
+
 ## 5. Engine qualification
 
 - [x] 5.1 Add the engine containment probe to restricted qualification (design D10).
