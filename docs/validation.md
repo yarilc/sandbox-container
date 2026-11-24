@@ -1,5 +1,50 @@
 # Validation record
 
+## Suites from a session with its engine (tasks 7.1 and 8.1): 2026-11-24
+
+The suites ran from a restricted Claude session on the Windows Podman machine,
+through that session's own engine. That session was started by `claude-container`
+on its adoption branch of `sandbox-ref-31`. The library held two image
+toolchains:
+- the pinned registry images of the tests: alpine, node, python, ShellCheck and
+  the engine base;
+- the local runtime, guard toolchain and PowerShell tool images of both
+  wrappers, copied by image ID.
+
+The engine images were left out on purpose; see the nested engines below.
+`tests/run-runtime.sh` ran unchanged: it found
+`CONTAINER_HOST=tcp://127.0.0.1:2375` and copied the checkout, which is mode
+777 on `C:`, into a native volume. The unit discovery ran in the runtime image
+in the same engine, on a native copy.
+
+| Mode | Result |
+| --- | --- |
+| unit discovery | Passed: 559 tests, 78 skipped |
+| runtime (default mode) | Passed: 18 tests; `SessionEngineTests` skipped, no engine image in the library |
+| `--setup` | Passed: 93 tests |
+| `--wrapper` | Passed: 114 tests, 1 skipped |
+| `--qualification` | Passed: 34 tests, 1 skipped |
+| `--network-feasibility`, `--network-policy`, `--mux` | Passed: 1, 15 and 26 tests |
+| `--network` | 18 tests, 3 skipped (the two engine cases and the opt-in examples). Only the 5 budget subtests that fail under `cgroupfs` on this machine |
+| `--guard` | 25 tests, 1 skipped. The AF_VSOCK control and the 3 multiplex tests with explicit `--memory` limits failed, as in the spike |
+| `--setup-runtime` | 2 tests; the offline setup failed at qualification: `the qualification container engine did not answer as a rootless engine` |
+| `tools/shellcheck.sh .`, `tools/powershell.sh .` | Passed: no finding, 62 shim cases |
+
+**Nested engines.** An engine started inside a session's engine exits with
+`newuidmap: write to uid_map failed: Operation not permitted` for
+`0 1000 1 1 1 999 1000 1001 64535`. The engine user's subordinate ranges reach
+ID 65535, but a container of the session's engine has 65535 IDs, 0 to 65534.
+The qualification probe of a setup run inside a session starts such an engine,
+and so does every engine test. These ran against a host engine for
+`sandbox-ref-31` (record above). Sizing the engine user's ranges to the IDs the
+engine receives would lift this; it is left to a separate change.
+
+**Process budget.** Under `cgroupfs`, the engine's process budget falls back to
+the process rlimit (512 tasks), which counts every process in the engine and
+its containers. In the Claude network suite one test failed with
+`crun: fork: Resource temporarily unavailable` and passed alone. A session
+started for heavy suites can raise `<P>_PIDS_LIMIT`.
+
 ## Reference tag `sandbox-ref-31`: 2026-11-24
 
 Fix to the engine image's base pin, found while the operator added an image

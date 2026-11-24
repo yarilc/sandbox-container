@@ -151,14 +151,14 @@
 
 ## 7. Repository tests from a session
 
-- [ ] 7.1 Let `tests/run-runtime.sh` run from inside a session against its engine. When the checkout is not on native storage, copy it into an engine volume, as the spike driver did.
+- [x] 7.1 Let `tests/run-runtime.sh` run from inside a session against its engine. When the checkout is not on native storage, copy it into an engine volume, as the spike driver did.
   - **Verify:** every `run-runtime.sh` mode, `bash tools/shellcheck.sh .` and `bash tools/powershell.sh .` run from a restricted session with the needed images in the library.
 - [x] 7.2 Fix `test_term_forwarding` in `tests/test_launcher.py`: it must fail when `.started` never appears, and wait longer than 2 s.
   - **Verify:** 20 consecutive runs pass inside the engine.
 
 ## 8. Integration validation
 
-- [ ] 8.1 Run all suites from a restricted session on the Windows Podman machine, through the engine, and record the results in `docs/validation.md`.
+- [x] 8.1 Run all suites from a restricted session on the Windows Podman machine, through the engine, and record the results in `docs/validation.md`.
   - **Expected machine-equivalent failures:** the cgroupfs budget subtests and the AF_VSOCK control.
   - **Expected engine-only failures:** the 3 guard tests with explicit limits.
 - [ ] 8.2 On a native Linux host with the systemd cgroup manager, verify:
