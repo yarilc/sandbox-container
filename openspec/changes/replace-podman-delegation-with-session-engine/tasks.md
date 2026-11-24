@@ -73,6 +73,14 @@
   - **Verify:** the previous release's `--container-toolchain list` and `launch-env` work on a library with `.images` and image-only toolchains. Record the result, and fix the index if they fail.
 - [x] 3.8 Document image recipes in the README "Managing the library" and "Recipes" sections: fields, local images, live updates, and removal while sessions run.
   - **Verify:** every command in those sections runs as written in a scratch library.
+- [x] 3.9 Read engine labels in a form every Podman version accepts (design D8). Found after `sandbox-ref-31`, by the Claude adoption's Windows validation on a machine with Podman 6:
+  - `--container-toolchain remove` failed with "cannot index slice/array with type string" whenever an engine was running;
+  - the launcher's reconciliation of engines left by interrupted launches failed silently on the same template.
+  - **Verify:**
+    - with a Podman 6.2 client, `ps --format '{{index .Labels …}}'` fails, while `ps --format json` and `container inspect` with `{{index .Config.Labels …}}` work, as they do with the 4.3 client;
+    - the fakes in `tests/test_toolchains.py` and `tests/fake_podman.py` refuse `.Labels` in `ps` templates, as Podman 6.2 does;
+    - the engine-listing and reconciliation tests pass.
+  - **Record:** `docs/validation.md`, under `sandbox-ref-32`.
 
 ## 4. Engine in sessions
 

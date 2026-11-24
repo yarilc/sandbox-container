@@ -1399,10 +1399,14 @@ launcher_identity() {
 # interrupted launch could not remove its own (session-owned engine storage).
 engine_reconcile() {
     local listing id owner
-    listing=$(engine ps --filter "label=sandbox-engine.owner" \
-        --format '{{.ID}} {{index .Labels "sandbox-engine.owner"}}' 2>/dev/null) || return 0
-    while read -r id owner; do
-        [[ "$id" =~ ^[a-f0-9]{12,64}$ && "$owner" =~ ^[0-9]+-[0-9]+$ ]] || continue
+    # The owner comes from inspect: in `ps` templates `.Labels` is a map in
+    # Podman 4.3 and a string in Podman 6.2, and no label template works on both.
+    listing=$(engine ps --filter "label=sandbox-engine.owner" --format '{{.ID}}' 2>/dev/null) || return 0
+    while read -r id; do
+        [[ "$id" =~ ^[a-f0-9]{12,64}$ ]] || continue
+        owner=$(engine container inspect --format '{{index .Config.Labels "sandbox-engine.owner"}}' "$id" \
+            2>/dev/null) || continue
+        [[ "$owner" =~ ^[0-9]+-[0-9]+$ ]] || continue
         [[ "$(launcher_identity "${owner%%-*}" || true)" != "$owner" ]] || continue
         engine rm --force --volumes --time 0 --ignore "$id" >/dev/null 2>&1 || true
     done <<<"$listing"

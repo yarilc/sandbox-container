@@ -998,12 +998,17 @@ def references(value):
 def running_engines(library):
     """Names of the running session engines, of any wrapper, that use the library's store."""
     store = str(Path(library) / engine.STORE)
-    result = run(['ps', '--filter', 'label=' + engine.STORE_LABEL, '--format',
-                  '{{.Names}}\t{{index .Labels "' + engine.STORE_LABEL + '"}}'], timeout=STORE_TIMEOUT)
+    # JSON, not a Go template: in `ps` templates `.Labels` is a map in Podman
+    # 4.3 and a string in Podman 6.2, and no label template works on both.
+    result = run(['ps', '--filter', 'label=' + engine.STORE_LABEL, '--format', 'json'], timeout=STORE_TIMEOUT)
     if result.returncode != 0:
         raise SetupError('Cannot list the running container engines: ' + result.stderr.strip()[-200:])
-    return sorted(line.split('\t', 1)[0] for line in result.stdout.splitlines()
-                  if '\t' in line and line.split('\t', 1)[1] == store)
+    try:
+        listing = json.loads(result.stdout or '[]')
+        return sorted(name for item in listing if (item.get('Labels') or {}).get(engine.STORE_LABEL) == store
+                      for name in item.get('Names') or ())
+    except (ValueError, AttributeError, TypeError):
+        raise SetupError('Cannot list the running container engines: unreadable listing from the Podman engine')
 
 
 def deletable(library, kept, toolchains):
