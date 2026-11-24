@@ -166,6 +166,15 @@ function Get-FirstLine([string]$Text) {
     return '(no output)'
 }
 
+# The last line of a failed case's error output: launch notices come first, the
+# error that ended the launch comes last.
+function Get-LastLine([string]$Text) {
+    $plain = $Text -replace '#< CLIXML', '' -replace '(?s)<Obj S="progress".*?</Obj>', '' -replace '</?Objs[^>]*>', ''
+    $lines = @($plain -split "`r?`n" | Where-Object { $_.Trim() })
+    if ($lines.Count -gt 1) { return ' | last: ' + $lines[-1].Trim() }
+    return ''
+}
+
 # Records a case: the expected status and a text expected in the output.
 function Test-Outcome([string]$Scenario, $Result, [int]$Code, [string]$Text) {
     $all = $Result.Out + "`n" + $Result.Err
@@ -173,7 +182,7 @@ function Test-Outcome([string]$Scenario, $Result, [int]$Code, [string]$Text) {
         Add-Result 'PASS' $Scenario ('status ' + $Result.Code + '; ' + (Get-FirstLine $(if ($Code -eq 0) { $Result.Out } else { $Result.Err })))
     } else {
         Add-Result 'FAIL' $Scenario ('status ' + $Result.Code + ' (expected ' + $Code + ', text ''' + $Text + '''); out: ' +
-            (Get-FirstLine $Result.Out) + '; err: ' + (Get-FirstLine $Result.Err))
+            (Get-FirstLine $Result.Out) + '; err: ' + (Get-FirstLine $Result.Err) + (Get-LastLine $Result.Err))
     }
 }
 
@@ -365,12 +374,17 @@ try {
 
     # One engine: the machine's launch service runs a command in, and removes, a
     # running session's container. Other running sessions of this wrapper would
-    # also match the label.
+    # also match the label. A session's container engine carries the same label,
+    # and the session depends on it, so engines are left out of the listing.
     $background = Invoke-BackgroundCase '& $E @C -c ''sleep 60'''
     $container = ''
     for ($i = 0; $i -lt 45 -and -not $container; $i++) {
         Start-Sleep -Seconds 2
-        $listed = Invoke-ServicePodman ('podman --remote --url $service ps --filter label=' + $sessionLabel + ' --format {{.ID}}')
+        $listed = Invoke-ServicePodman ('engines=$XDG_RUNTIME_DIR/validate-engines.$$; ' +
+            'podman --remote --url $service ps --filter label=' + $sessionLabel +
+            ' --filter label=sandbox-engine.owner --format {{.ID}} > $engines; ' +
+            'podman --remote --url $service ps --filter label=' + $sessionLabel +
+            ' --format {{.ID}} | grep -vxF -f $engines; rm -f $engines')
         $container = @($listed.Output | ForEach-Object { $_.Trim() } | Where-Object { $_ -cmatch '^[0-9a-f]{12,64}$' } |
             Select-Object -First 1) -join ''
     }
@@ -387,8 +401,8 @@ try {
                 ' and removed it; the session ended with status ' + $background.Process.ExitCode)
         } else {
             Add-Result 'FAIL' 'One engine for sessions and the machine' ('exec status ' + $exec.Code + ' (' +
-                (($exec.Output | Select-Object -First 2) -join ' ') + '); rm status ' + $removed.Code + '; session ended: ' +
-                $ended + '; containers left: ' + $remaining)
+                (($exec.Output | Select-Object -First 2) -join ' ') + '); rm status ' + $removed.Code + ' (' +
+                (($removed.Output | Select-Object -Last 1) -join ' ') + '); session ended: ' + $ended + '; containers left: ' + $remaining)
         }
     }
     if (-not $background.Process.HasExited) { $background.Process.Kill() }
@@ -420,7 +434,7 @@ try {
             '" ' + $shellArgument + '-c "od -An -tx1" < "' + $inputFile + '""') $project
         $hex = ($r.Out -replace '\s', '')
         if ($r.Code -eq 0 -and $hex.EndsWith('610ac3a80d0a007a')) { Add-Result 'PASS' 'Redirected input' $hex }
-        else { Add-Result 'FAIL' 'Redirected input' ('status ' + $r.Code + ' got ' + $hex + '; err: ' + (Get-FirstLine $r.Err)) }
+        else { Add-Result 'FAIL' 'Redirected input' ('status ' + $r.Code + ' got ' + $hex + '; err: ' + (Get-FirstLine $r.Err) + (Get-LastLine $r.Err)) }
     } else { Add-Result 'SKIP' 'Redirected input' 'no cmd.exe' }
 
     # Distribution, user and installation diagnosis.
