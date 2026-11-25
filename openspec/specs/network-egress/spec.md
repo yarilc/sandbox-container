@@ -277,7 +277,7 @@ Documentation SHALL map N01–N14 to implementation and acceptance, publish the 
 #### Scenario: Provider profile readiness
 - **WHEN** a profile is declared verified for a CLI/authentication version
 - **THEN** evidence covers login, token refresh, streaming, long-lived requests, supported WebSockets, proxy/CA behavior, shell and native permission modes
-- **AND** credential-free bypass tests separately cover DNS/UDP/IPv6, direct IP/ports, deceptive hosts, redirects, host/LAN/metadata, administration, concurrency, delegation rejection, failure closure, and cleanup
+- **AND** credential-free bypass tests separately cover DNS/UDP/IPv6, direct IP/ports, deceptive hosts, redirects, host/LAN/metadata, administration, concurrency, leftover delegation opt-in rejection, containment of the session container engine and its nested containers, failure closure, and cleanup
 - **AND** IPC evidence covers existing and late-created host sockets, persistent socket placement, aliases, explicit datagram sends, abstract endpoints, inherited descriptors, compat/x32 and asynchronous syscall bypasses, pair retargeting, descendant enforcement, denied private named listeners, permitted pairs/loopback, ordinary files and alternate host transports
 
 #### Scenario: Real API key unavailable during acceptance
