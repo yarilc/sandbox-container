@@ -4,22 +4,65 @@
 
 Change `fix-runtime-test-portability` (tasks 4.1 and 4.2). The runner suites
 now run on kernels without IPv6, on engines without the `cpu` controller, and
-where the runner's Podman client gives `--read-only` containers a read-only
-`/dev`. Only tests, the new shared probe `tests/guard_terminal_probe.py` and
-`AGENTS.md` changed. No product code changed.
+where no terminal attaches to a `--read-only` container through the runner's
+Podman client. Only tests, the new shared probe `tests/guard_terminal_probe.py`
+and `AGENTS.md` changed. No product code changed.
+
+The first version of the probe skipped the terminal tests whenever `/dev` was
+read-only. On WSL, Podman 4.9.3 also gives the runner's client a read-only
+`/dev`, but crun 1.14.1 attaches the terminal there, so the tests skipped where
+they pass. The probe now starts a `--read-only` container with a terminal, and
+skips only when that fails, the container starts without one, and `/dev` is
+read-only (`b7f4587`). `--guard`, `--network` and the unit discovery ran again
+with it.
+
+### WSL (task 4.1)
+
+The operator ran every mode on WSL2 x86_64 `6.18.58.1-microsoft-standard-WSL2`:
+- Podman server 4.9.3 with crun 1.14.1, reached by the runner's 4.3.1 client;
+- the `systemd` manager with `[cpu memory pids]`;
+- IPv6 present.
+
+The checkout was a native clone of branch `fix-runtime-test-portability`, at
+`e9fecbb` and at `b7f4587` for the modes run again. The runtime and engine
+images were missing, so the operator built them from the checkout:
+- runtime `28417a77299e`, with `--container-build`;
+- engine `96c2d398a65e`, with `podman build` on `launcher/engine/Containerfile`,
+  as setup does.
+
+The guard toolchain was `101d7cadcd1c`, built on 2026-11-17.
+
+| Mode | Result |
+| --- | --- |
+| unit discovery, in the runtime image | Passed: 567 tests, 82 skipped, at both commits |
+| runtime (default mode) | Passed: 23 tests, 2 skipped (the process rlimit cases) |
+| `--setup` | Passed: 93 tests |
+| `--setup-runtime` | Passed: 2 tests. The 88 image tags were identical before and after the mode |
+| `--qualification` | Passed: 34 tests, 1 skipped |
+| `--wrapper` | Passed: 117 tests, 1 skipped (no drive root under `/mnt` in the runner) |
+| `--network-feasibility` | Passed: 1 test, with IPv6 present |
+| `--network-policy`, `--mux` | Passed: 15 and 26 tests |
+| `--network` | At `b7f4587`: 19 tests, 2 skipped (the opt-in toolchain examples and the proxy's rlimit case). Both terminal cases of `test_guarded_arguments_stdin_status_and_tty_both_state_modes` ran and passed. The budget test checked the memory, CPU and process budgets. `test_toolchain_added_during_offline_session_without_network` failed once with `session readiness timed out`, its 20-second readiness window. It passed at `e9fecbb`, and in 6 runs of the test alone at `b7f4587`. At `e9fecbb` the first probe had skipped the two terminal cases (19 tests, 4 skipped) |
+| `--guard` | At `b7f4587`: 25 tests, 1 skipped (the opt-in idle check). `test_terminal_interrupt_is_delivered_once` and `test_terminal_interrupt_reaches_an_application_without_a_handler` ran and passed. `test_production_filter_and_landlock_on_real_rootless_kernel` passed with IPv6. At `e9fecbb` the first probe had skipped the two terminal tests (25 tests, 3 skipped) |
+| `tools/shellcheck.sh .`, `tools/powershell.sh .` | Passed: no finding, 62 shim cases |
+
+**Follow-up.** The readiness timeout is intermittent, and not related to this
+change: the test does not use the probe, and its code did not change between
+the two commits. It reports no session output, so the cause is not known. A
+later change can widen the window and report the session's standard error.
 
 ### Rocky 9 lab host (task 4.2)
 
 The operator ran every mode on the lab host of the next section: kernel
 `5.14.0-687.12.1.el9_8` without IPv6, Podman 5.8.0, crun 1.27, and `systemd`
 with `[memory pids]`. The checkout was branch `fix-runtime-test-portability`
-at `e9fecbb` (`sandbox-ref-34-10-ge9fecbb`). The images were those of the next
-section: runtime `ae925a03d71f`, engine `12895fbaa9ea` and guard toolchain
-`c6562a3f25f8`.
+at `e9fecbb` (`sandbox-ref-34-10-ge9fecbb`), and at `b7f4587` for the modes run
+again with the new probe. The images were those of the next section: runtime
+`ae925a03d71f`, engine `12895fbaa9ea` and guard toolchain `c6562a3f25f8`.
 
 | Mode | Result |
 | --- | --- |
-| unit discovery, in the runtime image | Passed: 567 tests, 82 skipped |
+| unit discovery, in the runtime image | Passed: 567 tests, 82 skipped, at both commits |
 | runtime (default mode) | Passed: 23 tests, 2 skipped (the process rlimit cases) |
 | `--setup` | Passed: 93 tests |
 | `--setup-runtime` | Passed: 2 tests. The offline case trusted the CA bundle copied into the test state. The 29 image tags were identical before and after the mode. `:setup-` tags from earlier runs, present before it, remained |
@@ -27,9 +70,13 @@ section: runtime `ae925a03d71f`, engine `12895fbaa9ea` and guard toolchain
 | `--wrapper` | Passed: 117 tests, 1 skipped |
 | `--network-feasibility` | Passed: 1 test, on the kernel without IPv6. `tools/propagate.py` does not print this mode for the fixture |
 | `--network-policy`, `--mux` | Passed: 15 and 26 tests |
-| `--network` | Passed: 19 tests, 4 skipped. The budget test checked the memory and process budgets, and found `cpu` undelegated. **Unavailable:** the two terminal cases of `test_guarded_arguments_stdin_status_and_tty_both_state_modes`, skipped by the probe. Its piped cases passed in both state modes. The other skips are the opt-in toolchain examples and the proxy's rlimit case |
-| `--guard` | Passed: 25 tests, 3 skipped. `test_production_filter_and_landlock_on_real_rootless_kernel` passed without IPv6. **Unavailable:** `test_terminal_interrupt_is_delivered_once` and `test_terminal_interrupt_reaches_an_application_without_a_handler`, skipped by the probe. The third skip is the opt-in 305-second idle check |
+| `--network` | Passed: 19 tests, 4 skipped, at both commits. The budget test checked the memory and process budgets, and found `cpu` undelegated. **Unavailable:** the two terminal cases of `test_guarded_arguments_stdin_status_and_tty_both_state_modes`, skipped by the probe. Its piped cases passed in both state modes. The other skips are the opt-in toolchain examples and the proxy's rlimit case |
+| `--guard` | Passed: 25 tests, 3 skipped, at both commits. `test_production_filter_and_landlock_on_real_rootless_kernel` passed without IPv6. **Unavailable:** `test_terminal_interrupt_is_delivered_once` and `test_terminal_interrupt_reaches_an_application_without_a_handler`, skipped by the probe. The third skip is the opt-in 305-second idle check |
 | `tools/shellcheck.sh .`, `tools/powershell.sh .` | Passed: no finding, 62 shim cases |
+
+At `b7f4587`, every terminal skip carried the engine's error: `preparing
+container … for attach: crun: unlink /dev/console: Read-only file system: OCI
+runtime error`. This is the failure recorded on 2026-11-10.
 
 **Manual terminal evidence.** The operator opened an interactive offline
 session with the host's own client (`sandbox-container --container-shell`,

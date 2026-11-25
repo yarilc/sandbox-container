@@ -19,10 +19,10 @@
   - **Errors:** a container that also fails without a terminal, no `/dev` line, or a writable `/dev` raises; none leads to a skip.
   - **Skip reason:** it names the runner client's read-only `/dev`, carries the engine's error, and points to the manual terminal check.
   - **Verify:** `python3 -m unittest tests.test_alignment` passes, including the shared list and the agent-literal scan.
-- [ ] 2.2 Skip the two terminal tests of `tests/test_guard.py` where no terminal attaches.
+- [x] 2.2 Skip the two terminal tests of `tests/test_guard.py` where no terminal attaches.
   - **Where:** `run_in_terminal` calls the probe with the test's image before it starts the container, and skips with the probe's reason.
   - **Verify:** on WSL, `bash tests/run-runtime.sh --guard -k test_terminal_interrupt` runs both tests, without skipping, and they pass.
-- [ ] 2.3 Skip only the terminal case of `test_guarded_arguments_stdin_status_and_tty_both_state_modes` in `tests/test_network_runtime.py` where no terminal attaches.
+- [x] 2.3 Skip only the terminal case of `test_guarded_arguments_stdin_status_and_tty_both_state_modes` in `tests/test_network_runtime.py` where no terminal attaches.
   - **Where:** in each state mode, the terminal case runs in its own `subTest`, which skips with the probe's reason. The piped case still runs in both state modes.
   - **Verify:** on WSL, `bash tests/run-runtime.sh --network -k test_guarded_arguments_stdin_status_and_tty_both_state_modes` passes with both terminal cases run.
 - [x] 2.4 Add the manual terminal check to the Testing Guidelines of `AGENTS.md` (design D6).
@@ -44,7 +44,7 @@
 
 ## 4. Integration validation
 
-- [ ] 4.1 Run every runner mode on WSL, where IPv6 is present and a terminal attaches through the runner's client.
+- [x] 4.1 Run every runner mode on WSL, where IPv6 is present and a terminal attaches through the runner's client.
   - **Modes:**
     - the unit discovery, the default mode, `--setup` and `--setup-runtime`;
     - `--qualification` and `--wrapper`;
@@ -52,12 +52,12 @@
     - `bash tools/shellcheck.sh .` and `bash tools/powershell.sh .`.
   - **Expected:** the terminal tests run and pass, and no test skips because of the probe.
   - **Record:** the results in `docs/validation.md`, under a section that names `sandbox-ref-35`.
-- [ ] 4.2 Have the operator run the same modes on the Rocky 9 lab host.
+- [x] 4.2 Have the operator run the same modes on the Rocky 9 lab host.
   - **Expected:**
     - every test passes, except the three terminal cases, which skip with the probe's reason;
     - the operator's interactive session attaches its terminal.
   - **Record:** in the same section, with the terminal cases as unavailable and the session as the manual evidence. `--network-feasibility` is listed even though `tools/propagate.py` does not print it for this fixture.
-- [ ] 4.3 Run the repository checks.
+- [x] 4.3 Run the repository checks.
   - **Checks:**
     - `openspec validate fix-runtime-test-portability --strict`;
     - `python3 -m unittest discover -s tests`;
