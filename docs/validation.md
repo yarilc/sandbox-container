@@ -1,5 +1,81 @@
 # Validation record
 
+## Native Linux with the `systemd` manager (`replace-podman-delegation-with-session-engine`, task 8.2): 2026-11-25
+
+The operator ran the checks on the Rocky 9 lab host:
+- kernel `5.14.0-687.12.1.el9_8`, booted with `ipv6.disable=1`, Landlock ABI 6;
+- rootless Podman 5.8.0 and crun 1.27;
+- cgroup v2 with the `systemd` manager, delegated controllers `[memory pids]`
+  (no `cpu`);
+- 65536 subordinate IDs for the user, and host Python 3.9.
+
+The checkout was `main` at `c110030` (`sandbox-ref-34-5-gc110030`), whose
+shared files are those of `sandbox-ref-34`.
+
+Offline setup of this tree reported `Sandbox: ready` and `locally-qualified`.
+It enforced the memory and process budgets and announced the CPU budget as not
+enforced, because `cpu` is not delegated.
+
+Images:
+- runtime `ae925a03d71f` and engine `12895fbaa9ea`, both tagged `latest` for
+  the runner;
+- guard toolchain `01354e8d12ee`. The operator removed it while freeing disk
+  space on the host, and rebuilt it as `c6562a3f25f8`.
+
+**Task 8.2 answers.**
+
+| Question | Result |
+| --- | --- |
+| Engine budgets are enforced | **Memory and processes: yes.** With the default budgets of setup, the engine container had `HostConfig` memory `4294967296`, NanoCpus `0` and PidsLimit `512`. Its cgroup had `memory.max` `4294967296` and `pids.max` `512`. The launch printed the agent's CPU notice and `container engine …: the session budgets apply to it as well`, and verified the enforced budgets (design D7). **CPU: announced, not enforced**, because `cpu` is not delegated on this host |
+| An offline session runs a library image | **Yes.** An image toolchain with the pinned alpine image was added with `--container-toolchain add`. In an offline session (`mode=offline`), `podman run --network=none` ran the image. `wget` to `1.1.1.1` from a nested container on the default network failed with `Connection refused`. `test_offline_session_engine_has_no_external_path`, `test_toolchain_added_during_offline_session_without_network` and `test_session_engine_runs_library_images_inside_the_session_boundaries` passed |
+| Nested explicit limits apply (design Open Questions) | **No.** In the session, `podman run --memory=64m --pids-limit=32 --cpus=0.5` failed with `crun: cannot set limits without cgroups: create /sys/fs/cgroup/<id>: Permission denied`. In the engine, `/sys/fs/cgroup` is mounted `rw,nsdelegate`, but it belongs to root of the container's user namespace (`0 755`). The engine runs as its `podman` user (uid 1000, design D4), and reports `cgroupfs [memory pids]`. The `session-container-engine` spec does not guarantee these limits. The session budgets bound the engine and its nested containers together |
+
+**Runner modes from the host.** The first pass ran with little free disk
+space. The modes that failed in it ran again after the operator freed space
+and rebuilt the guard toolchain. The table gives the last run of each mode.
+
+| Mode | Result |
+| --- | --- |
+| unit discovery, in the runtime image | Passed: 567 tests, 82 skipped. Host Python 3.9 cannot run it: `asyncio.timeout` needs Python 3.11 |
+| runtime (default mode) | Passed: 23 tests, 2 skipped (the process rlimit cases: the engine applies cgroup limits). `SessionEngineTests` ran on the host engine |
+| `--setup` | Passed: 93 tests |
+| `--setup-runtime` | 2 tests, 1 failed. `test_fresh_offline_new_terminal_rerun_and_failed_update` answers the CA prompt with `/etc/ssl/certs/ca-certificates.crt`. That path exists in the runner but not on the Rocky host, so qualification stopped with `statfs /etc/ssl/certs/ca-certificates.crt: no such file or directory`. `test_unrestricted_fresh_setup_and_shell` passed |
+| `--qualification` | Passed: 34 tests, 1 skipped |
+| `--wrapper` | Passed: 117 tests, 1 skipped |
+| `--network-feasibility` | 1 test, failed. `tests/network_fixture.py` creates an `AF_INET6` socket outside its `try`, and the kernel has no IPv6 (`EAFNOSUPPORT`) |
+| `--network-policy`, `--mux` | Passed: 15 and 26 tests |
+| `--network` | 19 tests, 2 skipped, 3 failed. Both subtests of `test_agent_budgets_are_effective_and_lifetime_is_enforced` failed, because they read `cpu.max`, which is absent without `cpu` delegation. `test_guarded_arguments_stdin_status_and_tty_both_state_modes` failed on its terminal case (see below). The proxy budget and exhaustion tests, which fail under `cgroupfs`, passed |
+| `--guard` | 25 tests, 1 skipped, 3 failed. `test_production_filter_and_landlock_on_real_rootless_kernel` failed on the same IPv6 pattern, in `tests/guard_runtime_fixture.py`. `test_terminal_interrupt_is_delivered_once` and `test_terminal_interrupt_reaches_an_application_without_a_handler` failed on the terminal (see below). The 3 multiplex tests with explicit `--memory` limits, which fail from a session, passed on the host engine. No AF_VSOCK failure |
+| `tools/shellcheck.sh .`, `tools/powershell.sh .` | Passed: no finding, 62 shim cases |
+
+**Terminal failures.** The three terminal tests start a `--read-only`
+container with a terminal through the runner's Podman 4.3.1 client, against
+the host's Podman 5.8.0 server. Operator probes with the pinned alpine image:
+
+| Probe | Host client 5.8.0 | Runner client 4.3.1 |
+| --- | --- | --- |
+| `/dev` of a `--read-only` container | `tmpfs rw` | `tmpfs ro` |
+| `run -t` without `--read-only` | Passed | Passed |
+| `run -t --read-only` | Not run | Failed: `container create failed (no logs from conmon)` |
+| `run -t --read-only --read-only-tmpfs=true` | Not run | Failed: `crun: unlink /dev/console: Read-only file system` |
+
+With the old client, the container therefore gets the read-only `/dev` of
+"Terminal attach with an engine-forced read-only `/dev`" below.
+
+The managed launcher uses the host client: an interactive offline session on
+this host attached its terminal. `test_pseudo_terminals_and_device_masks` in
+the runtime suite also passed. In the session engine (Podman 6.2.0, crun 1.31),
+the same old client passed the terminal tests on Windows.
+
+**Follow-up.** None of these failures involves the session engine. The change
+`fix-runtime-test-portability` plans the fixes:
+- the IPv6 fixtures;
+- the `cpu.max` read;
+- the CA bundle path;
+- the engine tags that `test_setup_runtime.py` leaves behind (`clean_tags`
+  removes only the runtime tag);
+- the terminal tests with the older client.
+
 ## Engine case beside a crowded container (`set-process-limits-inside-containers`, task 4.3): 2026-11-24
 
 An engine cannot start inside a session's engine, so the operator ran the case
