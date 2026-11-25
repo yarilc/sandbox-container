@@ -176,7 +176,7 @@
 - [x] 8.1 Run all suites from a restricted session on the Windows Podman machine, through the engine, and record the results in `docs/validation.md`.
   - **Expected machine-equivalent failures:** the cgroupfs budget subtests and the AF_VSOCK control.
   - **Expected engine-only failures:** the 3 guard tests with explicit limits.
-- [ ] 8.2 On a native Linux host with the systemd cgroup manager, verify:
+- [x] 8.2 On a native Linux host with the systemd cgroup manager, verify:
   - the engine budgets are enforced;
   - an offline session runs a library image;
   - whether nested explicit limits apply (design Open Questions).

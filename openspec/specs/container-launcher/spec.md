@@ -7,11 +7,11 @@ Provide predictable rootless container startup, transparent CLI invocation, and 
 ## Requirements
 
 ### Requirement: Verified launch engine
-After ordinary launch configuration is admitted, the wrapper SHALL verify that the engine used for image operations and container launch reports Linux and rootless operation. Failed or unrecognized verification SHALL stop before image inspection, build, or container creation. Every read-only engine query (`info`, `version`, `ps`, image and container existence and inspection, the delegation socket query) SHALL be bounded by a timeout; `create`, `start`, `build` and `pull` SHALL NOT be. Setup SHALL verify the engine after approved user-service preparation and before image operations or smoke container creation. Help and missing-installation refusal SHALL require no engine query.
+After ordinary launch configuration is admitted, the wrapper SHALL verify that the engine used for image operations and container launch reports Linux and rootless operation. Failed or unrecognized verification SHALL stop before image inspection, build, or container creation. Every read-only engine query (`info`, `version`, `ps`, image and container existence and inspection, the session container engine's readiness query) SHALL be bounded by a timeout; `create`, `start`, `build` and `pull` SHALL NOT be. Setup SHALL verify the engine after approved user-service preparation and before image operations or smoke container creation. Help and missing-installation refusal SHALL require no engine query.
 
 #### Scenario: Local rootless engine without delegation
-- **WHEN** local Podman reports Linux and rootless operation and delegation is disabled
-- **THEN** engine verification succeeds without requiring a delegation socket
+- **WHEN** local Podman reports Linux and rootless operation
+- **THEN** engine verification succeeds without requiring or exposing any Podman API socket
 
 #### Scenario: Engine cannot be verified
 - **WHEN** engine verification fails or reports rootful, non-Linux, empty, or malformed results
@@ -44,7 +44,7 @@ The wrapper SHALL support local Podman and an explicit same-host absolute Unix `
 #### Scenario: Unix endpoint lacks a socket pathname
 - **WHEN** `CONTAINER_HOST` is `unix://`, `unix:///`, or names only slash characters after the scheme
 - **THEN** startup fails with an absolute socket-path diagnostic before querying Podman or performing image operations
-- **AND** the rejection applies with delegation enabled or disabled, including an explicit delegation-socket override
+- **AND** the rejection applies whether or not the session would get a container engine
 
 #### Scenario: Relative Unix endpoint
 - **WHEN** `CONTAINER_HOST` is a Unix endpoint with a relative path
@@ -117,13 +117,13 @@ The wrapper SHALL build an absent image and refresh it on `--container-build` on
 - **AND** unrestricted runtime mode does not implicitly authorize that build
 
 #### Scenario: Restricted setup gates build
-- **WHEN** an offline invocation, including the default mode, lacks a protected installation or selects enabled socket delegation
+- **WHEN** an offline invocation, including the default mode, lacks a protected installation or carries a leftover exact `SANDBOX_CONTAINER_PODMAN=1`
 - **THEN** startup fails before image build even with maintenance authorization
 
 #### Scenario: Build-only operation
 - **WHEN** `--container-build` is given with maintenance authorization and no application argument, also together with `--container-git-worktree`
 - **THEN** the wrapper validates its settings, builds the image and exits with the build status without creating a container
-- **AND** an invalid setting, such as an unusable delegation socket, stops it before the build
+- **AND** an invalid setting, such as a leftover delegation opt-in, stops it before the build
 
 #### Scenario: Stale image
 - **WHEN** the Containerfile or another build input changed after the image was built
@@ -425,3 +425,18 @@ When an ordinary offline launch, including the default mode, runs from a locatio
 - **WHEN** the list names `HOME`, or names `HTTPS_PROXY` in offline mode
 - **THEN** that name is skipped with a notice and the session starts
 - **AND** a name such as `1BAD` stops the launch before any engine query
+
+### Requirement: Leftover delegation opt-in is refused
+An exact `SANDBOX_CONTAINER_PODMAN=1` in the launch environment SHALL stop every session launch and build-only operation, in every network mode, before any engine query or image operation. The diagnostic SHALL state that host Podman delegation was removed. It SHALL direct the operator to add needed images as toolchains and to unset the variable. Other values of the variable, and the former socket override, SHALL be ignored.
+
+#### Scenario: Unrestricted launch with the old opt-in
+- **WHEN** an operator starts an unrestricted session with `SANDBOX_CONTAINER_PODMAN=1`
+- **THEN** the wrapper exits nonzero before querying an engine, names the variable, and points to image toolchains and the README section on container tests
+
+#### Scenario: Other values
+- **WHEN** `SANDBOX_CONTAINER_PODMAN` is empty or `0`, or `SANDBOX_CONTAINER_PODMAN_SOCKET` is set
+- **THEN** the launch proceeds as if the variables were unset, and no Podman socket is mounted
+
+#### Scenario: Help and toolchain commands
+- **WHEN** `--container-help` or `--container-toolchain list` runs with `SANDBOX_CONTAINER_PODMAN=1`
+- **THEN** the command succeeds unchanged
