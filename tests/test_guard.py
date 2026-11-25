@@ -15,6 +15,8 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox_profile import AGENT_COMMAND, AGENT_HOME, AGENT_IMAGE, PROFILE, ROOT, env as profile_env
 from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, TLS_ENFORCEMENT
+from qualification_records import ipv6_state
+from guard_terminal_probe import SKIP_REASON, read_only_dev
 ENABLED = os.environ.get('SANDBOX_GUARD_TESTS') == '1'
 
 
@@ -229,6 +231,10 @@ class GuardTests(unittest.TestCase):
         import pty
         import select
         import time
+        # Through an older client, a Podman 5 server gives the container a read-only
+        # /dev, where no terminal can attach (guard_terminal_probe).
+        if read_only_dev(os.environ.get(profile_env('IMAGE'), AGENT_IMAGE)):
+            self.skipTest(SKIP_REASON)
         command = self.production_command(None, extra=('--tty',), program=program)
         pid, fd = pty.fork()
         if pid == 0:
@@ -331,7 +337,9 @@ class GuardTests(unittest.TestCase):
             os.close(directory)
         listener.listen(4)
         (self.fixture / 'alias.sock').symlink_to('external.sock')
-        fixture = 'AGENT = ' + repr(AGENT_COMMAND) + '\n' + (ROOT / 'tests/guard_runtime_fixture.py').read_text()
+        # The engine host's IPv6 state, detected as the qualification gate does (design D1).
+        fixture = ('AGENT = ' + repr(AGENT_COMMAND) + '\nIPV6 = ' + repr(ipv6_state() == 'present') + '\n'
+                   + (ROOT / 'tests/guard_runtime_fixture.py').read_text())
         result = self.production_container(fixture)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)['native_guard'], 'passed')

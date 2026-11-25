@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox_profile import (AGENT_FIXTURE, PROFILE as FIXTURE, REAL_PROFILE, REAL_ROOT as ROOT,  # noqa: E402
                              env as fixture_env, fixture_root, real_env)
 from revisions import TLS_ENFORCEMENT  # noqa: E402
+from guard_terminal_probe import SKIP_REASON, read_only_dev  # noqa: E402
 IMAGE = os.environ.get(real_env('IMAGE'), REAL_PROFILE.image('agent', 'latest'))
 HARNESS = ROOT / 'tests/provider_session.py'
 EGRESS_LABEL = FIXTURE.label('egress')
@@ -563,16 +564,44 @@ echo examples-ok
                                      env=self.env, capture_output=True, text=True, timeout=120)
             self.assert_success(removed)
 
+    def engine_budgets(self):
+        """Delegated controllers and process mechanism of the engine, by the launcher's rule."""
+        sys.path.insert(0, str(ROOT / 'network'))
+        import agent_budgets
+        sys.path.pop(0)
+        delegated = agent_budgets.delegated(self.podman('info', '--format', '{{.Host.CgroupControllers}}'),
+                                            self.podman('info', '--format', '{{.Host.CgroupManager}}'))
+        return delegated, agent_budgets.process_mechanism(delegated, self.podman('info', '--format', '{{.Host.Kernel}}'))
+
     def test_agent_budgets_are_effective_and_lifetime_is_enforced(self):
+        # Each budget is checked as the engine enforces it: a cgroup limit only for a
+        # delegated controller, the process rlimit as fallback (agent_budgets).
+        delegated, mechanism = self.engine_budgets()
         check = """from pathlib import Path
 import sys
 memory, nano, pids = map(int, sys.argv[1:4])
+delegated, mechanism = sys.argv[4].split(','), sys.argv[5]
 root = Path('/sys/fs/cgroup')
 assert Path('/proc/self/cgroup').read_text() == '0::/\\n'
-assert int((root / 'memory.max').read_text()) == memory
-assert int((root / 'pids.max').read_text()) == pids
-quota, period = (root / 'cpu.max').read_text().split()
-assert int(quota) * 10**9 == nano * int(period)
+def limit(name):
+    path = root / name
+    return path.read_text().split() if path.exists() else ['max']
+if 'memory' in delegated:
+    assert int(limit('memory.max')[0]) == memory
+else:
+    assert limit('memory.max') == ['max'], limit('memory.max')
+quota, *period = limit('cpu.max')
+if 'cpu' in delegated:
+    assert int(quota) * 10**9 == nano * int(period[0])
+else:
+    assert quota == 'max', quota
+if mechanism == 'cgroup':
+    assert int(limit('pids.max')[0]) == pids
+else:
+    assert limit('pids.max') == ['max'], limit('pids.max')
+if mechanism == 'rlimit':
+    line = next(l for l in Path('/proc/self/limits').read_text().splitlines() if l.startswith('Max processes'))
+    assert line.split()[2:4] == [str(pids), str(pids)], line
 print('AGENT_BUDGETS_OK')
 """
         cases = (({}, (4 << 30, 2 * 10**9, 512)),
@@ -580,7 +609,8 @@ print('AGENT_BUDGETS_OK')
                    real_env('PIDS_LIMIT'): '384'}, (2 << 30, 500000000, 384)))
         for budgets, expected in cases:
             with self.subTest(budgets=budgets):
-                script = ("python3 - " + ' '.join(map(str, expected)) + " <<'PY'\n" + check + 'PY\n')
+                script = ("python3 - " + ' '.join(map(str, [*expected, ','.join(delegated) or 'none', mechanism]))
+                          + " <<'PY'\n" + check + 'PY\n')
                 result = self.shell(script, **budgets)
                 self.assert_success(result)
                 self.assertIn('AGENT_BUDGETS_OK', result.stdout)
@@ -592,12 +622,7 @@ print('AGENT_BUDGETS_OK')
         # set-process-limits-inside-containers: on the rlimit fallback the proxy's process
         # budget is its own. A limit applied at creation would count every container of the
         # user, and the proxy could not start or pass its effective check.
-        sys.path.insert(0, str(ROOT / 'network'))
-        import agent_budgets
-        sys.path.pop(0)
-        delegated = agent_budgets.delegated(self.podman('info', '--format', '{{.Host.CgroupControllers}}'),
-                                            self.podman('info', '--format', '{{.Host.CgroupManager}}'))
-        if agent_budgets.process_mechanism(delegated, self.podman('info', '--format', '{{.Host.Kernel}}')) != 'rlimit':
+        if self.engine_budgets()[1] != 'rlimit':
             self.skipTest('the engine does not use the process rlimit fallback')
         _, environment = self.provider_fixture()
         crowd = 'sandbox-test-crowd-' + uuid.uuid4().hex[:12]
@@ -762,26 +787,32 @@ os.execv(real,[real,*args])
                 self.fail(f'guarded pipe timed out; isolated={bool(state)} stdout={error.stdout!r} stderr={error.stderr!r}')
             self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
             self.assertEqual(json.loads(result.stdout), {'argv':arguments, 'stdin':'synthetic stdin\n', 'tty':False})
-            master, slave = pty.openpty()
-            try:
-                proc = subprocess.Popen([str(self.wrapper), '-c', probe, 'bash', '--tty-probe'], cwd=self.project,
-                    env=environment, stdin=slave, stdout=slave, stderr=subprocess.PIPE)
-                os.close(slave); slave = -1
-                _, error = proc.communicate(timeout=30)
-                self.assertEqual(proc.returncode, 37, error.decode())
-                output = b''
-                while True:
-                    try:
-                        data = os.read(master, 65536)
-                    except OSError:
-                        break
-                    if not data: break
-                    output += data
-                records = [json.loads(line) for line in output.decode().splitlines() if line.startswith('{"argv"')]
-                self.assertEqual(records, [{'argv':['--tty-probe'], 'stdin':'', 'tty':True}])
-            finally:
-                if slave >= 0: os.close(slave)
-                os.close(master)
+            with self.subTest(terminal=True, isolated=bool(state)):
+                # Through an older client, a Podman 5 server gives the container a read-only
+                # /dev, where no terminal can attach (guard_terminal_probe). The piped case
+                # above still runs.
+                if read_only_dev(IMAGE):
+                    self.skipTest(SKIP_REASON)
+                master, slave = pty.openpty()
+                try:
+                    proc = subprocess.Popen([str(self.wrapper), '-c', probe, 'bash', '--tty-probe'], cwd=self.project,
+                        env=environment, stdin=slave, stdout=slave, stderr=subprocess.PIPE)
+                    os.close(slave); slave = -1
+                    _, error = proc.communicate(timeout=30)
+                    self.assertEqual(proc.returncode, 37, error.decode())
+                    output = b''
+                    while True:
+                        try:
+                            data = os.read(master, 65536)
+                        except OSError:
+                            break
+                        if not data: break
+                        output += data
+                    records = [json.loads(line) for line in output.decode().splitlines() if line.startswith('{"argv"')]
+                    self.assertEqual(records, [{'argv':['--tty-probe'], 'stdin':'', 'tty':True}])
+                finally:
+                    if slave >= 0: os.close(slave)
+                    os.close(master)
 
     def test_windows_workspace_ordinary_files_and_restricted_modes(self):
         parent = ROOT / '.test-state'
