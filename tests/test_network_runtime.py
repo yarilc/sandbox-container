@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox_profile import (AGENT_FIXTURE, PROFILE as FIXTURE, REAL_PROFILE, REAL_ROOT as ROOT,  # noqa: E402
                              env as fixture_env, fixture_root, real_env)
 from revisions import TLS_ENFORCEMENT  # noqa: E402
-from guard_terminal_probe import SKIP_REASON, read_only_dev  # noqa: E402
+from guard_terminal_probe import terminal_skip_reason  # noqa: E402
 IMAGE = os.environ.get(real_env('IMAGE'), REAL_PROFILE.image('agent', 'latest'))
 HARNESS = ROOT / 'tests/provider_session.py'
 EGRESS_LABEL = FIXTURE.label('egress')
@@ -788,11 +788,12 @@ os.execv(real,[real,*args])
             self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
             self.assertEqual(json.loads(result.stdout), {'argv':arguments, 'stdin':'synthetic stdin\n', 'tty':False})
             with self.subTest(terminal=True, isolated=bool(state)):
-                # Through an older client, a Podman 5 server gives the container a read-only
-                # /dev, where no terminal can attach (guard_terminal_probe). The piped case
+                # Through the runner's older client, a Podman 5.8 server with crun 1.27 cannot
+                # attach a terminal to a read-only /dev (guard_terminal_probe). The piped case
                 # above still runs.
-                if read_only_dev(IMAGE):
-                    self.skipTest(SKIP_REASON)
+                reason = terminal_skip_reason(IMAGE)
+                if reason:
+                    self.skipTest(reason)
                 master, slave = pty.openpty()
                 try:
                     proc = subprocess.Popen([str(self.wrapper), '-c', probe, 'bash', '--tty-probe'], cwd=self.project,

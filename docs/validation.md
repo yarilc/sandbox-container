@@ -1,5 +1,44 @@
 # Validation record
 
+## Reference tag `sandbox-ref-35`: 2026-11-25
+
+Change `fix-runtime-test-portability` (tasks 4.1 and 4.2). The runner suites
+now run on kernels without IPv6, on engines without the `cpu` controller, and
+where the runner's Podman client gives `--read-only` containers a read-only
+`/dev`. Only tests, the new shared probe `tests/guard_terminal_probe.py` and
+`AGENTS.md` changed. No product code changed.
+
+### Rocky 9 lab host (task 4.2)
+
+The operator ran every mode on the lab host of the next section: kernel
+`5.14.0-687.12.1.el9_8` without IPv6, Podman 5.8.0, crun 1.27, and `systemd`
+with `[memory pids]`. The checkout was branch `fix-runtime-test-portability`
+at `e9fecbb` (`sandbox-ref-34-10-ge9fecbb`). The images were those of the next
+section: runtime `ae925a03d71f`, engine `12895fbaa9ea` and guard toolchain
+`c6562a3f25f8`.
+
+| Mode | Result |
+| --- | --- |
+| unit discovery, in the runtime image | Passed: 567 tests, 82 skipped |
+| runtime (default mode) | Passed: 23 tests, 2 skipped (the process rlimit cases) |
+| `--setup` | Passed: 93 tests |
+| `--setup-runtime` | Passed: 2 tests. The offline case trusted the CA bundle copied into the test state. The 29 image tags were identical before and after the mode. `:setup-` tags from earlier runs, present before it, remained |
+| `--qualification` | Passed: 34 tests, 1 skipped |
+| `--wrapper` | Passed: 117 tests, 1 skipped |
+| `--network-feasibility` | Passed: 1 test, on the kernel without IPv6. `tools/propagate.py` does not print this mode for the fixture |
+| `--network-policy`, `--mux` | Passed: 15 and 26 tests |
+| `--network` | Passed: 19 tests, 4 skipped. The budget test checked the memory and process budgets, and found `cpu` undelegated. **Unavailable:** the two terminal cases of `test_guarded_arguments_stdin_status_and_tty_both_state_modes`, skipped by the probe. Its piped cases passed in both state modes. The other skips are the opt-in toolchain examples and the proxy's rlimit case |
+| `--guard` | Passed: 25 tests, 3 skipped. `test_production_filter_and_landlock_on_real_rootless_kernel` passed without IPv6. **Unavailable:** `test_terminal_interrupt_is_delivered_once` and `test_terminal_interrupt_reaches_an_application_without_a_handler`, skipped by the probe. The third skip is the opt-in 305-second idle check |
+| `tools/shellcheck.sh .`, `tools/powershell.sh .` | Passed: no finding, 62 shim cases |
+
+**Manual terminal evidence.** The operator opened an interactive offline
+session with the host's own client (`sandbox-container --container-shell`,
+recorded with `script`). The terminal attached at `/dev/pts/0` and the shell
+started. `/dev/pts` was present, and `/dev/shm` was mounted `ro` and empty.
+This is the evidence for the `container-isolation` scenario "Terminal attaches
+on an engine that mounts /dev read-only". Ctrl-C was not exercised: the
+commands were pasted as one block, so `sleep 30` ran to its end.
+
 ## Native Linux with the `systemd` manager (`replace-podman-delegation-with-session-engine`, task 8.2): 2026-11-25
 
 The operator ran the checks on the Rocky 9 lab host:

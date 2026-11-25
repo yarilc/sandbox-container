@@ -200,13 +200,13 @@ shell/build/worktree composition, the session container engine and its
 containment in both state modes, engine errors, argument/stdin forwarding, name
 races, exit codes, signals, and owned cleanup. Record runtime and
 internal sandbox checks as passed, failed, or unavailable with versions.
-Where the runner's Podman client gives `--read-only` containers a read-only
-`/dev` (the runtime image's Podman 4.3.1 against a Podman 5 server), no terminal
-can attach, and the guarded terminal tests skip with that reason
-(`tests/guard_terminal_probe.py`). Record them as unavailable there. Then record
-an interactive session opened on that host with its own client: it is the
-evidence for the `container-isolation` scenario "Terminal attaches on an engine
-that mounts /dev read-only".
+Where no terminal attaches to a `--read-only` container through the runner's
+Podman client, because the engine gives it a read-only `/dev` (the runtime
+image's Podman 4.3.1 against Podman 5.8 with crun 1.27), the guarded terminal
+tests skip with the engine's error (`tests/guard_terminal_probe.py`). Record
+them as unavailable there. Then record an interactive session opened on that
+host with its own client: it is the evidence for the `container-isolation`
+scenario "Terminal attaches on an engine that mounts /dev read-only".
 
 Run `bash tests/run-runtime.sh --network-feasibility`, `--network-policy`, and
 `--network` for the isolated topology, trusted policy/proxy tests, and production

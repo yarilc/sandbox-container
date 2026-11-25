@@ -76,20 +76,26 @@ Alternative: catch any `OSError` on creation. Rejected, because it would also
 accept a guard denial on a host with IPv6, which is not what the check
 proves.
 
-### D2. A shared probe for a read-only `/dev`
+### D2. A shared probe for terminal attach on a read-only `/dev`
 
-A new shared module `tests/guard_terminal_probe.py` runs one `--read-only`
-container from the test's image through the runner's Podman client. It reads
-the `/dev` line of `/proc/mounts` and reports whether `/dev` is read-only. The
-result is cached per image for the test process.
+A new shared module `tests/guard_terminal_probe.py` starts one `--read-only`
+container from the test's image with `--tty`, through the runner's Podman
+client on a pseudo-terminal, as the terminal tests do. The result is cached
+per image for the test process.
 
-- If the probe container cannot run, or no `/dev` line is found, the probe
-  raises. A broken probe never turns into a skip.
+- If that container starts, the probe reports no reason, and the terminal
+  tests run.
+- If it fails, the probe starts the same container without a terminal and
+  reads the `/dev` line of `/proc/mounts`. It reports a skip reason only
+  when that container starts and `/dev` is read-only. The reason names the
+  runner client's read-only `/dev`, carries the engine's error, and points
+  to the manual check.
+- Any other outcome raises: the container also fails without a terminal, no
+  `/dev` line is found, or `/dev` is writable. A broken probe never turns
+  into a skip.
 - The two terminal tests in `tests/test_guard.py`, and the terminal case of
   `test_guarded_arguments_stdin_status_and_tty_both_state_modes`, call it and
-  skip when `/dev` is read-only. The skip message names the cause, the
-  runner client's read-only `/dev` under `--read-only`, and points to the
-  manual check.
+  skip with its reason.
 - The non-terminal part of that network test still runs.
 
 The module is listed in `SHARED_TESTS` (`tests/test_alignment.py`). Its
@@ -101,7 +107,14 @@ module and the `SHARED_TESTS` entry.
 
 Alternative: compare client and server versions. Rejected. The failing
 versions are not measured (4.9.3 and 6.2.0 pass, 5.8.0 fails), and the probe
-measures the condition that breaks the terminal.
+measures the failure itself.
+
+Alternative: skip whenever `/dev` is read-only. Implemented first, and
+rejected after the WSL run of task 4.1. Through the same old client, Podman
+4.9.3 also gives a read-only `/dev`, but crun 1.14.1 attaches the terminal
+there: the tests skipped on a host where they had passed on 2026-11-21. A
+read-only `/dev` is necessary for the failure, not sufficient. The failure
+needs a runtime that replaces `/dev/console`, as crun 1.27 does.
 
 Alternative: the probe in `sandbox_profile.py`. Rejected, because that module
 is the profile view, and a change there maps only to `--shared`.
@@ -153,8 +166,9 @@ unique per run, so these tags belong to the test.
 ### D6. The manual terminal check is part of the testing guidance
 
 `AGENTS.md` (Testing Guidelines) states:
-- where the runner's Podman client gets a read-only `/dev`, the terminal
-  tests skip;
+- where no terminal attaches through the runner's Podman client, because
+  the engine gives it a read-only `/dev`, the terminal tests skip with the
+  engine's error;
 - validation records them as unavailable;
 - the operator's interactive session on that host is the evidence for the
   `container-isolation` scenario "Terminal attaches on an engine that mounts
@@ -164,10 +178,10 @@ The wrappers carry the same sentence in their adoption of the tag.
 
 ## Risks / Trade-offs
 
-- [The probe reports read-only on a host where a terminal would attach] →
-  The terminal tests skip needlessly there. The probe measures the
-  precondition of the failure, not a proxy for it, and the other runners
-  keep the coverage.
+- [A terminal fails for another reason on a host with a read-only `/dev`] →
+  The probe would classify it as this failure and skip. The skip reason
+  carries the engine's error, and validation records it, so a different
+  cause shows in the record.
 - [A guard regression in signal handling ships unnoticed on Podman 5 hosts]
   → The guard binary is the same everywhere, and the tests still run on WSL,
   the Podman machine and the session engine. The manual session covers
@@ -185,7 +199,7 @@ The wrappers carry the same sentence in their adoption of the tag.
 ## Migration Plan
 
 1. Implement in `sandbox-container`, on a branch.
-2. Run on WSL, where IPv6 is present and the client matches:
+2. Run on WSL, where IPv6 is present and a terminal attaches through the runner's client:
    - the unit discovery, `--network-feasibility`, `--guard` and `--network`;
    - `--setup-runtime` and the default mode, for the per-wrapper tests.
 
@@ -209,5 +223,6 @@ merge and not adopting the tag restores the previous behavior.
   `tests/network_fixture.py` and `tests/test_network_feasibility.py` to
   `--network-feasibility`. It does not change this design: the mode is
   listed by hand until then.
-- Which Podman server versions give the old client a read-only `/dev`. The
-  probe does not depend on the answer.
+- Which runtimes fail to attach a terminal on a read-only `/dev`. So far,
+  crun 1.14.1 attaches and crun 1.27 fails. The probe does not depend on the
+  answer.

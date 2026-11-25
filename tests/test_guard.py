@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox_profile import AGENT_COMMAND, AGENT_HOME, AGENT_IMAGE, PROFILE, ROOT, env as profile_env
 from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, TLS_ENFORCEMENT
 from qualification_records import ipv6_state
-from guard_terminal_probe import SKIP_REASON, read_only_dev
+from guard_terminal_probe import terminal_skip_reason
 ENABLED = os.environ.get('SANDBOX_GUARD_TESTS') == '1'
 
 
@@ -231,10 +231,11 @@ class GuardTests(unittest.TestCase):
         import pty
         import select
         import time
-        # Through an older client, a Podman 5 server gives the container a read-only
-        # /dev, where no terminal can attach (guard_terminal_probe).
-        if read_only_dev(os.environ.get(profile_env('IMAGE'), AGENT_IMAGE)):
-            self.skipTest(SKIP_REASON)
+        # Through the runner's older client, a Podman 5.8 server with crun 1.27 cannot
+        # attach a terminal to a read-only /dev (guard_terminal_probe).
+        reason = terminal_skip_reason(os.environ.get(profile_env('IMAGE'), AGENT_IMAGE))
+        if reason:
+            self.skipTest(reason)
         command = self.production_command(None, extra=('--tty',), program=program)
         pid, fd = pty.fork()
         if pid == 0:

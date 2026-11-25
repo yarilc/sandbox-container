@@ -51,10 +51,12 @@ hide real failures and prevent a clean record of all modes on native Linux.
   (`tests/test_setup_runtime.py`) removes the runtime tag recorded in
   `setup.json`, but not the `…-engine:setup-<release>` tag. Each run leaves
   one engine tag per test. `clean_tags` also removes the engine tag.
-- **Terminal tests skipped where the runner's client gets a read-only
-  `/dev`.** The runner's Podman 4.3.1 client talks to the host's Podman 5.8
+- **Terminal tests skipped where no terminal attaches through the runner's
+  client.** The runner's Podman 4.3.1 client talks to the host's Podman 5.8
   server. A `--read-only` container then gets a read-only `/dev`, while the
-  host's 5.8 client gets `rw`. With a terminal, crun 1.27 fails with
+  host's 5.8 client gets `rw`. Podman 4.9.3 also gives the old client a
+  read-only `/dev`, but crun 1.14.1 attaches the terminal there. With a
+  terminal, crun 1.27 fails with
   `unlink /dev/console: Read-only file system`, the case recorded on
   2026-11-10 (`allow-terminal-on-read-only-dev`). An explicit
   `--read-only-tmpfs=true` from the old client does not help. Three tests
@@ -70,10 +72,11 @@ hide real failures and prevent a clean record of all modes on native Linux.
 
   The tests stay, because they back the scenarios "Interrupt from the
   terminal" and "One interrupt" (`network-egress`) and "Guarded pipeline and
-  terminal" (`container-launcher`). A direct probe runs a `--read-only`
-  container through the runner's client and reads the `/dev` mount. When
-  `/dev` is read-only, the three cases skip with that reason, and validation
-  records them as unavailable, never as passed. Elsewhere they run as
+  terminal" (`container-launcher`). A direct probe starts a `--read-only`
+  container with a terminal through the runner's client. When it fails, the
+  same container starts without a terminal, and its `/dev` is read-only, the
+  three cases skip with the engine's error. Validation records them as
+  unavailable, never as passed. Elsewhere they run as
   before: they pass on WSL (Podman 4.9.3), on the Podman machine (6.1.4) and
   through the session engine (6.2.0).
 
@@ -115,12 +118,13 @@ validation records only, so the change sets `skip_specs: true`.
 
 - **Shared tests**, which need the new tag `sandbox-ref-35`:
   - `tests/network_fixture.py` and `tests/guard_runtime_fixture.py` (IPv6);
-  - `tests/test_guard.py` (the read-only `/dev` probe and the two skips).
+  - `tests/test_guard.py` (the terminal probe and the two skips).
 
   Before tagging, run the unit discovery, `--network-feasibility`, `--guard`
   and `--network`, on the Rocky 9 lab host and on WSL. The lab host is so far
-  the only host without IPv6 and without `cpu` delegation. WSL has IPv6 and a
-  matching client, and shows that nothing regresses there.
+  the only host without IPv6 and without `cpu` delegation. WSL has IPv6, and a
+  terminal attaches there through the runner's client, so it shows that
+  nothing regresses.
 - **Per-wrapper tests** in this repository:
   - `tests/test_network_runtime.py`: the budgets, and the terminal case skip;
   - `tests/test_setup_runtime.py`: the CA copy, and the engine tag cleanup.
@@ -137,11 +141,12 @@ validation records only, so the change sets `skip_specs: true`.
 
 ## Decisions
 
-- **Terminal tests against Podman 5 servers.** The tests skip where the
-  runner's client gets a read-only `/dev`. This is detected by a direct probe
-  rather than by comparing versions, because the condition is what breaks
-  the terminal, and which server versions show it is not measured: Podman
-  4.9.3 and 6.2.0 passed, 5.8.0 failed. Terminal attach on Podman 5 with
+- **Terminal tests against Podman 5 servers.** The tests skip where no
+  terminal attaches through the runner's client on a read-only `/dev`. This
+  is detected by a direct probe rather than by comparing versions, because
+  the probe measures the failure itself, and which versions show it is not
+  measured: Podman 4.9.3 and 6.2.0 passed, 5.8.0 failed. A read-only `/dev`
+  alone is not enough: Podman 4.9.3 gives one, and its terminal attaches. Terminal attach on Podman 5 with
   crun 1.27 keeps manual evidence. A newer client in the runtime image is
   left to a separate change.
 - **CA bundle in the setup acceptance test.** The test copies the runner's
