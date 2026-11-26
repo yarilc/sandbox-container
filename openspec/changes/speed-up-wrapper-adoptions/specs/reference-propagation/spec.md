@@ -26,7 +26,7 @@ The checklist SHALL always name the reference-copy and alignment tests. For the 
 - **THEN** the checklist's host unit command lists `tests.test_engine` and `tests.test_toolchains` beside the reference-copy and alignment tests
 
 #### Scenario: Shared test helper changed
-- **WHEN** the range changes `tests/fake_podman.py`, and the target's `tests/test_launcher.py` imports it
+- **WHEN** the range changes `tests/fake_podman.py`, and the target's `tests/test_launcher.py` names it
 - **THEN** the checklist names `--wrapper`, the mode that runs `tests/test_launcher.py`
 
 #### Scenario: Windows files changed
@@ -54,7 +54,7 @@ It SHALL write nothing and SHALL NOT require a clean tree. A target on another t
 - **THEN** it exits nonzero naming the manifest's tag, and prints no entry
 
 ### Requirement: Review warnings for listed shared files
-When the range adds or removes a shared file, the plan SHALL list each line of the target's own tracked files that names another shared file of the same directory, with path and line number. Shared files, the manifest, `docs/validation.md`, `CHANGELOG.md` and the target's `openspec/` directory SHALL be excluded. The warnings SHALL NOT block a dry or an applied run.
+When the range adds or removes a shared file, the plan SHALL list each line of the target's own tracked files that names a shared file of the same directory, the added or removed one included, with path and line number. Shared files, the manifest, `docs/validation.md`, `CHANGELOG.md` and the target's `openspec/` directory SHALL be excluded. The warnings SHALL NOT block a dry or an applied run.
 
 #### Scenario: Hand-written list of engine inputs
 - **WHEN** the range adds `launcher/engine/start.sh`, and the target's own `tests/test_network_runtime.py` names `launcher/engine/entrypoint.sh` on line 90

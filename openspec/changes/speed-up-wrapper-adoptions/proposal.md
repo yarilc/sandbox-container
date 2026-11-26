@@ -36,14 +36,14 @@ Codex, Antigravity, OpenCode and Pi still have to adopt `sandbox-ref-36` from
     `--qualification`, as the tagging rule already requires;
   - **a changed shared test module:** its runner mode, or, without one, the
     host unit tests with private temporary storage;
-  - **a changed shared test helper:** the modules that import it;
+  - **a changed shared test helper:** the test modules that name it;
   - **Windows files:** a manual step on Windows.
 
   The existing mappings for `setup/`, qualification, guard and network code
   stay.
 - **Review warnings in the plan.** When a tag adds or removes a shared file,
-  the dry run lists the target's own files that name another shared file of
-  the same directory, with file and line. The applied run lists them too.
+  the dry run lists the target's own files that name a shared file of the
+  same directory, with file and line. The applied run lists them too.
   Such a file may hold a hand-written list of that directory. The warnings do
   not block the run.
 - **Reference changes of the range.** The plan lists the reference's OpenSpec
