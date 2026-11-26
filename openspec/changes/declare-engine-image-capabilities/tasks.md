@@ -2,11 +2,11 @@
 
 ## 1. The engine image's capability label
 
-- [ ] 1.1 Commit this change directory on `main`, then create the branch `declare-engine-image-capabilities`. Verify: `openspec validate declare-engine-image-capabilities --strict` passes, and `git status` is clean on the new branch.
-- [ ] 1.2 Add `LABEL io.containers.capabilities="SETUID,SETGID,SYS_CHROOT"` to `launcher/engine/Containerfile`, beside `USER podman`, with a comment that names `container_options()` in `setup/engine.py` (design decisions 1 and 2). In `tests/test_engine.py`, the recipe check compares the label with the `--cap-add=` value of `engine.container_options()`. Verify:
+- [x] 1.1 Commit this change directory on `main`, then create the branch `declare-engine-image-capabilities`. Verify: `openspec validate declare-engine-image-capabilities --strict` passes, and `git status` is clean on the new branch.
+- [x] 1.2 Add `LABEL io.containers.capabilities="SETUID,SETGID,SYS_CHROOT"` to `launcher/engine/Containerfile`, beside `USER podman`, with a comment that names `container_options()` in `setup/engine.py` (design decisions 1 and 2). In `tests/test_engine.py`, the recipe check compares the label with the `--cap-add=` value of `engine.container_options()`. Verify:
   - `python3 -m unittest tests.test_engine` passes;
   - new mutation cases fail the check: a recipe without the label, a label with `CHOWN` added, and a label with `SYS_CHROOT` removed.
-- [ ] 1.3 In the README's hardening exceptions paragraph (Container tests), say that the engine image declares the same three capabilities, so that Podman reports no capability error (design decision 3). Verify:
+- [x] 1.3 In the README's hardening exceptions paragraph (Container tests), say that the engine image declares the same three capabilities, so that Podman reports no capability error (design decision 3). Verify:
   - the paragraph names `io.containers.capabilities`;
   - `python3 -m unittest tests.test_alignment tests.test_engine` and `git diff --check` pass;
   - commit on the branch.

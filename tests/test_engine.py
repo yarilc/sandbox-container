@@ -46,6 +46,12 @@ def recipe_violations(recipe):
         found.append('the engine must run as the unprivileged podman user')
     if 'COPY containers.conf /etc/containers/containers.conf' not in recipe:
         found.append('does not replace containers.conf')
+    # session-container-engine: Engine image declares its capabilities.
+    options = engine.container_options(name='recipe-check', seccomp='/seccomp.json', store='/store')
+    granted = next(value.removeprefix('--cap-add=') for value in options if value.startswith('--cap-add='))
+    labels = re.findall(r'(?m)^LABEL io\.containers\.capabilities="([^"]*)"$', recipe)
+    if labels != [granted]:
+        found.append(f'the capability label must be exactly {granted!r}, the engine options; found {labels}')
     return found
 
 
@@ -78,6 +84,10 @@ class EngineRecipeTests(unittest.TestCase):
             'host /proc kept': self.recipe.replace(REMOVED[1], '/nonexistent'),
             'secrets passthrough kept': self.recipe.replace(': > ' + EMPTIED[0], 'true'),
             'root engine': self.recipe.replace('USER podman', 'USER root'),
+            # The base image's label, kept, asks for capabilities the options drop.
+            'base capability label': re.sub(r'(?m)^LABEL io\.containers\.capabilities=.*\n', '', self.recipe),
+            'wider capability label': self.recipe.replace('SYS_CHROOT,CHOWN"', 'SYS_CHROOT,CHOWN,KILL"'),
+            'narrower capability label': self.recipe.replace('SYS_CHROOT,CHOWN"', 'SYS_CHROOT"'),
         }
         for name, mutated in cases.items():
             with self.subTest(name=name):

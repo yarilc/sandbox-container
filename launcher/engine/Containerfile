@@ -36,5 +36,10 @@ COPY --chmod=0755 entrypoint.sh /usr/local/bin/sandbox-engine
 # network get Podman's generated file over it.
 COPY resolv.conf /etc/resolv.conf
 ENV XDG_RUNTIME_DIR=/run/user/1000
+# The capabilities the engine is started with (container_options() in
+# setup/engine.py); the startup program keeps CHOWN only in the bounding set.
+# The base labels itself with Podman's defaults, which the engine drops, so
+# Podman would log an error at every engine start.
+LABEL io.containers.capabilities="SETUID,SETGID,SYS_CHROOT,CHOWN"
 USER podman
 ENTRYPOINT ["/usr/local/bin/sandbox-engine-start"]
