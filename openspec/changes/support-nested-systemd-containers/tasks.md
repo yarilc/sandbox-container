@@ -55,7 +55,7 @@
   - **`ENGINE_STATE`:** runs as `--user podman`, and expects `CapBnd: 00000000000400c1`, PID 1 `Uid` 1000, `NoNewPrivs: 1` and `Seccomp: 2`.
   - **Report:** the eligibility answer is recorded in the engine section, bound to the engine image identity (`network/qualification_records.py`).
   - **Verify:** `tests/test_qualification.py` cases for a passing probe, the old bounding set (rejected), a root PID 1 (rejected), and a report without the eligibility field (stale).
-- [ ] 3.2 Add the cgroup containment checks to `engine_case` (spec "Engine containment is qualified").
+- [x] 3.2 Add the cgroup containment checks to `engine_case` (spec "Engine containment is qualified").
   - **Every engine:** write-back of each limit file of the engine's cgroup root, never `cgroup.kill` or `cgroup.freeze`:
     - from the engine user with all capabilities cleared;
     - from a nested root on the probe root file system with `--cgroupns=host --security-opt=unmask=ALL`.
@@ -85,7 +85,7 @@
 
 ## 5. Integration validation
 
-- [ ] 5.1 Run the suites on the Rocky Linux lab host (native Linux, `systemd` manager), from the host: `bash tests/run-runtime.sh`, `--guard` and `--qualification`.
+- [x] 5.1 Run the suites on the Rocky Linux lab host (native Linux, `systemd` manager), from the host: `bash tests/run-runtime.sh`, `--guard` and `--qualification`.
   - **Guard:** run from the host, `--guard` uses the host engine and no nested container, so it is a regression check. The nested limits that its multiplex tests request inside a session are covered by the runtime delegation case (task 4.2).
   - **Record:** the results in `docs/validation.md`, with the spike results of the proposal.
 - [ ] 5.2 Run the same suites on the Windows Podman machine.
