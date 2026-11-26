@@ -13,7 +13,7 @@
 
 ## 2. Validation on the native hosts
 
-- [ ] 2.1 Have the operator run the branch on WSL. Full logs go to files, collected in one archive in the workspace root.
+- [x] 2.1 Have the operator run the branch on WSL. Full logs go to files, collected in one archive in the workspace root.
   - **Before:** build the branch's recipe twice (design decision 4):
     - without its label line, as `localhost/sandbox-container-engine:before-label`;
     - as it is, as `localhost/sandbox-container-engine:latest`, which the runner uses.
@@ -36,7 +36,7 @@
   - only the session with the image without the label prints a `Capabilities requested` line, and both sessions exit with status 0;
   - the modes pass, with the guarded terminal tests unavailable as recorded for `sandbox-ref-35`.
 
-- [ ] 2.3 Have the operator run `--setup` and `--setup-runtime` on both hosts, from the branch. `sandbox-ref-36` also carries `support-nested-systemd-containers`, which changed `setup/common.py`, `setup/engine.py` and `setup/toolchains.py`. For those files the propagation checklist names these two modes, and that change's records do not list them (`reference-propagation`, "Reference runs the adoption suites before tagging"). Verify:
+- [x] 2.3 Have the operator run `--setup` and `--setup-runtime` on both hosts, from the branch. `sandbox-ref-36` also carries `support-nested-systemd-containers`, which changed `setup/common.py`, `setup/engine.py` and `setup/toolchains.py`. For those files the propagation checklist names these two modes, and that change's records do not list them (`reference-propagation`, "Reference runs the adoption suites before tagging"). Verify:
   - both modes pass on WSL and on the Rocky 9 lab host;
   - `podman images --format '{{.Repository}}:{{.Tag}}'` is identical before and after `--setup-runtime`.
 
