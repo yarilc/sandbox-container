@@ -26,7 +26,43 @@ ENGINE_IMAGE = os.environ.get('SANDBOX_CONTAINER_ENGINE_IMAGE', 'localhost/sandb
 # A small local image the library copies into its store (pinned, already in the engine).
 SAMPLE = os.environ.get('SANDBOX_TEST_ENGINE_SAMPLE', 'docker.io/library/alpine@sha256:'
                         'c64c687cbea9300178b30c95835354e34c4e4febc4badfe27102879de0483b5e')
+# The systemd cases' image (support-nested-systemd-containers, design D6): an image that starts
+# /sbin/init, else the fixture built from its recipe on the pinned Rocky Linux 9 init image.
+SYSTEMD_SAMPLE = os.environ.get('SANDBOX_TEST_SYSTEMD_SAMPLE', '')
+SYSTEMD_RECIPE = ROOT / 'tests/systemd-sample.Containerfile'
+# The launch notice of an ineligible engine.
+INELIGIBLE = 'systemd containers and explicit limits for nested containers are unavailable'
+# Write each limit file of the cgroup namespace root back with its own value (never cgroup.kill
+# or cgroup.freeze), as the session-engine qualification probe does.
+LIMIT_PROBE = ('for f in memory.max memory.high pids.max cpu.max cgroup.max.descendants cgroup.max.depth; do '
+               '[ -e /sys/fs/cgroup/$f ] || continue; v=$(cat /sys/fs/cgroup/$f); '
+               'if { printf "%s\\n" "$v" > /sys/fs/cgroup/$f; } 2>/dev/null; then echo "limit=$f:writable"; '
+               'else echo "limit=$f:denied"; fi; done')
 ENABLED = os.environ.get('SANDBOX_RUNTIME_TESTS') == '1'
+
+
+def systemd_sample(test):
+    """The systemd image of the runtime cases: the override, else the fixture built offline."""
+    def exists(image):
+        return not subprocess.run(['podman', 'image', 'exists', image], capture_output=True).returncode
+    if SYSTEMD_SAMPLE:
+        if not exists(SYSTEMD_SAMPLE):
+            test.skipTest('prepare ' + SYSTEMD_SAMPLE + ' in the engine first')
+        return SYSTEMD_SAMPLE
+    recipe = SYSTEMD_RECIPE.read_bytes()
+    tag = 'localhost/sandbox-test-systemd-sample:' + hashlib.sha256(recipe).hexdigest()[:16]
+    if exists(tag):
+        return tag
+    base = next(line.split()[1] for line in recipe.decode().splitlines() if line.startswith('FROM '))
+    if '@sha256:' not in base:
+        test.skipTest('pin the base of ' + SYSTEMD_RECIPE.name + ' by digest (maintenance procedure in docs/validation.md)')
+    if not exists(base):
+        test.skipTest('prepare ' + base + ' in the engine first (maintenance procedure in docs/validation.md)')
+    # No build step: an empty context and no network.
+    with tempfile.TemporaryDirectory(dir=os.environ.get('SANDBOX_TEST_STATE_ROOT')) as context:
+        subprocess.run(['podman', 'build', '--pull=never', '--network=none', '--quiet', '--file', str(SYSTEMD_RECIPE),
+                        '--tag', tag, context], check=True, capture_output=True, text=True, timeout=300)
+    return tag
 
 
 def engine_budgets(env):
@@ -641,11 +677,12 @@ class SessionEngineTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
 
-    def add_image(self, name, reference):
+    def add_image(self, name, reference, image_id=None):
         recipe = self.native / (name + '.json')
+        image_id = image_id or self.sample_id
         recipe.write_text(json.dumps({
             'schema': 2, 'name': name, 'version': '1', 'default': False,
-            'images': [{'local': 'sha256:' + self.sample_id.removeprefix('sha256:'), 'name': reference}],
+            'images': [{'local': 'sha256:' + image_id.removeprefix('sha256:'), 'name': reference}],
             'check': ['podman', 'run', '--rm', '--network=none', reference, 'true']}))
         self.toolchain('add', str(recipe))
         self.addCleanup(subprocess.run, [sys.executable, '-I', str(ROOT / 'setup/toolchains.py'), 'remove', name],
@@ -717,6 +754,117 @@ echo ENGINE_SESSION_OK
         result = self.shell('test -z "${CONTAINER_HOST+x}${DOCKER_HOST+x}"\necho NO_ENGINE_OK\n')
         self.assert_success(result)
         self.assertNotIn('container engine', result.stderr)
+
+    def eligibility(self):
+        """The engine's delegation as a session launch reports it: None when delegated, else the reason."""
+        result = self.shell('echo ELIGIBILITY_PROBE\n')
+        self.assert_success(result)
+        notice = next((line for line in result.stderr.splitlines() if INELIGIBLE in line), None)
+        return None if notice is None else notice.split(INELIGIBLE + ': ', 1)[-1]
+
+    def test_systemd_runs_in_nested_containers(self):
+        # support-nested-systemd-containers: Systemd in nested containers / Unit and journal; the
+        # README's systemd commands, as written, with the sample image.
+        sample = systemd_sample(self)
+        reason = self.eligibility()
+        if reason is not None:
+            self.skipTest('the engine is ineligible: ' + reason)
+        image_id = subprocess.run(['podman', 'image', 'inspect', '--format', '{{.Id}}', sample],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+        self.add_image('systemd', 'localhost/sandbox-test-systemd:1', image_id)
+        result = self.shell(r"""
+podman run --detach --name target --systemd=always localhost/sandbox-test-systemd:1 >/dev/null
+# The README's wait: is-system-running --wait needs D-Bus, which an init image may lack.
+if ! podman exec target timeout 120 sh -c 'until systemctl is-system-running | grep -qE "^(running|degraded)$"; do sleep 1; done'; then
+  echo "SYSTEM_STATE $(podman exec target systemctl is-system-running || true)"
+  podman exec target systemctl --failed --no-pager || true
+  exit 1
+fi
+echo "SYSTEM_STATE $(podman exec target systemctl is-system-running || true)"
+podman exec target systemd-run --unit=probe --property=Type=oneshot /bin/true
+podman exec target systemd-run --unit=journaled --property=Type=oneshot --property=RemainAfterExit=yes \
+  /bin/sh -c 'echo journaled-output'
+test "$(podman exec target systemctl is-active journaled)" = active
+podman exec target journalctl -u journaled --no-pager -o cat | grep -q journaled-output
+podman rm --force --time 0 target >/dev/null
+echo SYSTEMD_OK
+""", timeout=300)
+        self.assert_success(result)
+        self.assertIn('SYSTEMD_OK', result.stdout)
+        self.assertNotIn(INELIGIBLE, result.stderr)
+        self.assertEqual(self.engines(), [])
+
+    def test_engine_cgroup_delegation_in_sessions(self):
+        # support-nested-systemd-containers: Delegated engine cgroup subtree / Explicit limits for
+        # nested containers / Engine startup step / Ineligible engines are announced.
+        reason = self.eligibility()
+        if reason is not None:
+            # An ineligible engine: the session starts, and nested limits fail.
+            result = self.shell('! podman run --rm --network=none --memory=64m localhost/sandbox-test-sample:1 true\n'
+                                'echo INELIGIBLE_SESSION_OK\n')
+            self.assert_success(result)
+            self.assertIn('INELIGIBLE_SESSION_OK', result.stdout)
+            self.skipTest('the engine is ineligible: ' + reason)
+        controllers = engine_budgets(self.env)[0]
+        limited = 'memory' in controllers and 'pids' in controllers
+        marker = self.project / '.inspected'
+        session = subprocess.Popen([str(WRAPPER), '--container-shell'], cwd=self.project, env=self.env,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: session.poll() is None and session.kill())
+        session.stdin.write(r"""set -Eeuo pipefail
+own=$(podman run --rm --network=none --cgroupns=host localhost/sandbox-test-sample:1 cat /proc/self/cgroup)
+case $own in 0::/engine|0::/) echo "NESTED_AT $own"; exit 1 ;; 0::/?*) echo "NESTED_OWN_CGROUP $own" ;; *) exit 1 ;; esac
+podman run --rm --network=none --cgroupns=host --security-opt=unmask=ALL localhost/sandbox-test-sample:1 \
+  sh -c '""" + LIMIT_PROBE.replace("'", "'\\''") + r"""' | sed 's/^/NESTED_/'
+if limits=$(podman run --rm --network=none --memory=64m --pids-limit=32 localhost/sandbox-test-sample:1 \
+    sh -c 'echo "$(cat /sys/fs/cgroup/memory.max) $(cat /sys/fs/cgroup/pids.max)"' 2>&1); then
+  echo "NESTED_LIMITS $limits"
+else
+  echo "NESTED_LIMITS refused"
+fi
+echo SESSION_READY
+while [ ! -e .inspected ]; do sleep 0.2; done
+echo DELEGATION_SESSION_OK
+""")
+        session.stdin.close()
+        session.stdin = None
+        ready = []
+        for line in session.stdout:
+            ready.append(line.strip())
+            if line.strip() == 'SESSION_READY':
+                break
+        self.assertIn('SESSION_READY', ready, '\n'.join(ready) + (session.stderr.read() if session.poll() else ''))
+        # No engine process runs as root, and none holds CHOWN outside its bounding set in the
+        # engine's user namespace. Rootless Podman re-executes some of its processes in a user
+        # namespace of its own, where they hold every capability of that namespace only.
+        engine = self.engines()
+        self.assertEqual(len(engine), 1, engine)
+        listing = subprocess.run(['podman', 'exec', '--user', 'podman', engine[0], 'sh', '-c',
+                                  'init=$(readlink /proc/1/ns/user); for p in /proc/[0-9]*; do '
+                                  '[ "$(readlink "$p/ns/user" 2>/dev/null)" = "$init" ] || continue; '
+                                  'grep -E "^(Uid|CapPrm|CapEff|CapAmb):" "$p/status" 2>/dev/null '
+                                  '| tr -s "\t" " " | tr "\n" " "; echo; done'],
+                                 capture_output=True, text=True, timeout=60)
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        processes = [line.split() for line in listing.stdout.splitlines() if line.strip()]
+        self.assertTrue(processes)
+        for fields in processes:
+            with self.subTest(process=' '.join(fields)):
+                self.assertNotEqual(fields[fields.index('Uid:') + 1], '0')
+                for name in ('CapPrm:', 'CapEff:', 'CapAmb:'):
+                    self.assertFalse(int(fields[fields.index(name) + 1], 16) & 1, 'CAP_CHOWN in ' + name)
+        marker.touch()
+        stdout, stderr = session.communicate(timeout=180)
+        self.assertEqual(session.returncode, 0, stdout + stderr)
+        output = '\n'.join(ready) + '\n' + stdout
+        self.assertIn('DELEGATION_SESSION_OK', output)
+        self.assertNotIn(INELIGIBLE, stderr)
+        self.assertIn('NESTED_OWN_CGROUP 0::/', output)
+        nested = [line[len('NESTED_limit='):] for line in output.splitlines() if line.startswith('NESTED_limit=')]
+        self.assertGreaterEqual(len(nested), 2, output)
+        self.assertTrue(all(result.endswith(':denied') for result in nested), nested)
+        self.assertIn('NESTED_LIMITS 67108864 32' if limited else 'NESTED_LIMITS refused', output)
+        self.assertEqual(self.engines(), [])
 
     def test_live_image_and_isolated_concurrent_sessions(self):
         # session-container-engine: Image added during a session / Two sessions.

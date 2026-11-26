@@ -222,5 +222,41 @@ class ToolchainRecipeTests(unittest.TestCase):
         self.assertIn('!podman-build-secret*', ignore)
 
 
+SYSTEMD_SAMPLE = 'tests/systemd-sample.Containerfile'
+
+
+def systemd_sample_violations(recipe):
+    """What makes the systemd sample unrepeatable: an unpinned base, or any build step."""
+    lines = [line for line in recipe.replace('\\\n', ' ').splitlines() if line.strip() and not line.startswith('#')]
+    bases = [line.split()[1] for line in lines if line.startswith('FROM ')]
+    found = []
+    if len(bases) != 1 or not re.fullmatch(
+            r'docker\.io/rockylinux/rockylinux:9-ubi-init@sha256:[a-f0-9]{64}', bases[0]):
+        found.append("the base must be Rocky Linux 9's init image pinned by digest")
+    for line in lines:
+        if line.split()[0].upper() not in ('FROM', 'STOPSIGNAL', 'CMD', 'LABEL'):
+            found.append('build step: ' + line)
+    return found
+
+
+class SystemdSampleRecipeTests(unittest.TestCase):
+    # support-nested-systemd-containers, design D6: the fixture of the systemd cases.
+    def test_systemd_sample_is_pinned_and_has_no_build_step(self):
+        recipe = (ROOT / SYSTEMD_SAMPLE).read_text()
+        self.assertEqual(systemd_sample_violations(recipe), [])
+        base = re.search(r'(?m)^FROM (\S+)$', recipe).group(1)
+        cases = {
+            'tag only': recipe.replace(base, base.split('@')[0]),
+            'other base': recipe.replace('rockylinux:9-ubi-init@', 'rockylinux:9-minimal@'),
+            'package install': recipe + 'RUN dnf -y install systemd\n',
+            'copied file': recipe + 'COPY unit.service /etc/systemd/system/\n',
+            'second base': recipe + 'FROM docker.io/library/alpine@sha256:' + 'a' * 64 + '\n',
+        }
+        for name, mutated in cases.items():
+            with self.subTest(name=name):
+                self.assertNotEqual(mutated, recipe)
+                self.assertTrue(systemd_sample_violations(mutated))
+
+
 if __name__ == '__main__':
     unittest.main()

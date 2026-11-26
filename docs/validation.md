@@ -1,5 +1,84 @@
 # Validation record
 
+## SELinux and AppArmor (`support-nested-systemd-containers`, task 5.4): 2026-11-26
+
+Untested. Neither validation host of the change enforces a security module:
+SELinux is disabled on the Rocky Linux lab host and not active in the Windows
+Podman machine, and neither runs AppArmor. No other host was available. The
+engine keeps `label=disable` and the standard OCI seccomp profile with its
+documented exception; active SELinux or AppArmor policies are preserved, not
+guaranteed, as for the rest of the sandbox. Systemd containers, the cgroup
+delegation and the new qualification checks remain untested under them.
+
+## Nested systemd on the Windows Podman machine (`support-nested-systemd-containers`, task 5.2): 2026-11-26
+
+The operator ran the suites in the Podman machine's shell
+(`wsl -d podman-machine-default`) from the Windows checkout of the branch
+`support-nested-systemd-containers` at `7700ebe`:
+- Fedora 44 machine, WSL kernel `6.18.58.1-microsoft-standard-WSL2`, rootless
+  Podman 6.1.4 with crun;
+- cgroup v2 with the `cgroupfs` manager and no controllers;
+- SELinux not active.
+
+The engine image was rebuilt from the branch for the runner
+(`e228c69045d6`, tagged `localhost/sandbox-container-engine:latest`). The
+machine had no `localhost/sandbox-container:latest` at first, so the runner
+tried to pull it from a `localhost` registry; the runtime image of the
+reference shell, which this change does not modify, was then tagged for the
+runner. The operator reported the summaries only.
+
+| Mode | Result |
+| --- | --- |
+| runtime (default mode) | Passed: 25 tests, none skipped. The engine was eligible without controllers and delegated: systemd booted in the Rocky Linux 9 init fixture, and the delegation case found nested `--memory`/`--pids-limit` refused, as the spec requires without the controllers. The process rlimit case ran, because this engine uses the fallback |
+| `--guard` | 25 tests, 1 skipped, 4 failed, as recorded for this machine before the change: the AF_VSOCK control of `test_existing_late_sockets_and_aliases_across_bind_roots` (`socket(AF_VSOCK)`: `Operation not permitted`), and the 3 multiplex tests that request explicit `--memory` limits from the host engine, which has no `memory` controller (`crun: open memory.max for writing: No such file or directory`). No regression |
+| `--qualification` | Passed: 34 tests, 1 skipped, with the new `session-engine` checks |
+
+## Nested systemd on native Linux (`support-nested-systemd-containers`, task 5.1): 2026-11-26
+
+The operator ran the suites on the Rocky Linux lab host, from the host, on the
+branch `support-nested-systemd-containers`:
+- Rocky Linux 9.8, kernel `5.14.0-687.12.1.el9_8`, rootless Podman 5.8.0 with
+  crun;
+- cgroup v2 with the `systemd` manager, delegated controllers `[memory pids]`
+  (no `cpu`);
+- SELinux disabled. The change's design assumed an enforcing host; this one
+  is not, so SELinux remains unverified (task 5.4).
+
+The engine image was rebuilt from the branch's `launcher/engine` and tagged
+`localhost/sandbox-container-engine:latest` for the runner; its ID was not
+recorded. The runtime suite ran at `3f80b2d`, the qualification suite at
+`30c2fdc`. The operator reported the summaries only, so the skipped tests are
+named below from the counts of successive runs, not from the runner's output.
+
+The spike that preceded the change ran on this host and on the Windows Podman
+machine on 2026-11-25 and 2026-11-26. Its results are in the change's proposal,
+and its logs in the untracked `.test-state/logs/systemd-spike-*.txt`.
+
+| Mode | Result |
+| --- | --- |
+| runtime (default mode) | Passed: 25 tests, 2 skipped. The engine was eligible and delegated: no ineligibility notice. `test_systemd_runs_in_nested_containers`: the fixture built offline from `tests/systemd-sample.Containerfile` (Rocky Linux 9 init, base `docker.io/rockylinux/rockylinux:9-ubi-init@sha256:99cbe0f1…1086`) booted to `running` or `degraded`, the README's commands ran, and a transient unit became active with its output in the journal. `test_engine_cgroup_delegation_in_sessions`: a nested container ran in a cgroup of its own, `--memory=64m --pids-limit=32` applied (`67108864`, `32`), every limit file of the engine's cgroup root refused a write from a nested root, and no process in the engine's user namespace ran as root or held `CAP_CHOWN` outside its bounding set. The skips: the process rlimit case, which does not apply with the `systemd` manager, and the one skipped before this change |
+| `--guard` | Passed: 25 tests, 3 skipped, as at `sandbox-ref-35`: the two terminal cases skipped by the probe and the opt-in 305-second idle check. Run from the host, it uses no nested container, so it is a regression check; the nested limits its multiplex tests request inside a session are covered by the runtime delegation case |
+| `--qualification` | Passed: 34 tests, 1 skipped (not named in the summary). The gates passed the new `session-engine` checks: PID 1 as the engine user with bounding set `00000000000400c1`, no root process, an accepted delegation state, and every limit file refusing writes from the engine user without capabilities and from a nested root. The gate accepts `delegated` and `ineligible: <reason>` alike; that engines on this host are delegated is shown by the runtime suite |
+
+Problems found and fixed during the runs:
+- **Check engine readiness** (`e8acabd`): the toolchain command's check engine
+  ran its readiness query as the engine's startup root, and never answered, so
+  every image toolchain `add` failed. It now runs as the engine user.
+- **Stale runner image:** `localhost/sandbox-container-engine:latest` still
+  named the old engine image (`12895fbaa9ea`). The new options started its old
+  entrypoint as root, and the check engine never answered. Rebuilding it with
+  `podman build --pull=never --tag localhost/sandbox-container-engine:latest
+  launcher/engine` fixed it; setup builds the engine image itself.
+- **Boot wait** (`3f80b2d`): `systemctl is-system-running --wait` waits through
+  D-Bus, which the Rocky Linux 9 init image lacks: `Failed to connect to bus`
+  although systemd ran. The test and the README now poll
+  `systemctl is-system-running`.
+- **Qualification fixtures** (`30c2fdc`): the runtime qualification and network
+  fixtures listed the engine files by hand and lacked `cgroup.sh` and
+  `start.sh`; they now take `setup/engine.py INPUTS`.
+- **Disk space:** one run stopped with `no space left on device` while copying
+  the systemd image into the image store; the operator freed space.
+
 ## Parity history kept by `tools/propagate.py`: 2026-11-26
 
 Change `keep-parity-history-in-propagation`. `--apply` had replaced every

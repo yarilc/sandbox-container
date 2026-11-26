@@ -77,7 +77,7 @@ whose controller is not delegated is not requested and is announced. Without
 `pids`, the process budget falls back to a process rlimit of 128 on engine
 kernels from Linux 5.14, like the agent's. On that fallback the first process of
 the agent, the proxy and the session engine sets the limit inside the
-container, through a fixed `/bin/sh` step or the engine's entrypoint, and the
+container, through a fixed `/bin/sh` step or the engine's startup program, and the
 engine applies no process rlimit: one applied at creation counts every
 container of the user. `podman exec` processes get the engine's default
 limits; only trusted host-side checks start them. With the fallback, the
@@ -222,20 +222,37 @@ A session whose toolchain library holds images gets a private container engine
   limited to the workspace, the library's read-only image store and the CA
   bundle when trusted. No Podman socket, state, configuration or credential is
   mounted, and `/run/secrets` is masked.
+- **Cgroup delegation:** an eligible engine (private cgroup namespace, cgroup v2
+  root mounted read-write with `nsdelegate` and owned by its user namespace's
+  root) gets its own cgroup subtree, delegated to the engine user by its startup
+  step, so nested containers can run systemd and take explicit limits
+  (`support-nested-systemd-containers`). The step is the only root process of
+  the engine and holds `CHOWN` only to delegate; afterwards `CHOWN` stays only in
+  the bounding set. The session budgets stay on the engine's cgroup: the kernel's
+  `nsdelegate` rule forbids writes to the limit files of a cgroup namespace root
+  from inside it, whoever owns them.
 - **Qualification:** restricted qualification adds the `session-engine` check. A
   probe engine configured like a session's must show its documented hardening
-  (bounding set `cap_setuid,cap_setgid,cap_sys_chroot`, no-new-privileges, the derived seccomp
-  profile, the keep-id mapping, the FUSE and TUN devices) and a read-only store;
-  a nested container started with `--network=host` must see its own procfs and
-  host name, no secrets, no route and no TCP path out. The report binds the engine
-  image ID and the seccomp profile digest, and a launch that starts an engine runs
-  `qualify.py check --engine`, which refuses an installation without them.
+  (PID 1 as the engine user with `cap_setuid,cap_setgid,cap_sys_chroot` and the
+  bounding set with `cap_chown` as well, no root process, no-new-privileges, the
+  derived seccomp profile, the keep-id mapping, the FUSE and TUN devices) and a
+  read-only store; a nested container started with `--network=host` must see its
+  own procfs and host name, no secrets, no route and no TCP path out. Every limit
+  file of the engine's cgroup root must refuse a write, both from the engine user
+  without capabilities and from a nested root that mounts the engine's cgroup
+  namespace read-write; on a delegated engine that nested container must run in a
+  cgroup of its own. The engine's delegation state (`delegated`, or `ineligible:
+  <reason>`, which is no failure) is recorded in the report. The report binds the
+  engine image ID and the seccomp profile digest, and a launch that starts an
+  engine runs `qualify.py check --engine`, which refuses an installation without
+  them.
 
 | Check | Tests |
 | --- | --- |
 | No path out of an offline session | `tests/test_network_runtime.py::test_offline_session_engine_has_no_external_path`; the `session-engine` probe (`tests/test_qualification.py::test_engine_case_checks_hardening_views_and_reach`, `run-runtime.sh --qualification`) |
 | Private views, no secrets, read-only store | `tests/test_runtime.py::SessionEngineTests`; the `session-engine` probe |
 | Hardening exceptions | `tests/test_engine.py::EngineOptionsTests`; the `session-engine` probe |
+| Cgroup delegation and unwritable budgets | `tests/test_engine.py::EngineCgroupTests` and the startup program tests; the `session-engine` probe (`tests/test_qualification.py::test_engine_case_checks_hardening_views_and_reach`); `tests/test_runtime.py::SessionEngineTests` |
 | Qualification binding | `tests/test_qualification.py::test_engine_identity_requires_the_engine_checks`, `test_engine_launch_requires_a_qualified_engine` |
 
 ## Reference shell examples
