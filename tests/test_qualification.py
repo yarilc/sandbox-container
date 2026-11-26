@@ -737,10 +737,9 @@ class QualificationRuntime(unittest.TestCase):
         (self.install/'network').mkdir(mode=0o700)
         shutil.copyfile(REAL_ROOT/REAL_PROFILE.wrapper, self.install/REAL_PROFILE.wrapper)
         # The wrapper may read its recipe and declared agent files on every launch.
+        # The engine's build inputs from their one list (setup/engine.py), so a new input is never missing.
         for relative in ('Containerfile', '.containerignore', 'launcher/core.sh', 'agent/launcher.sh',
-                         'launcher/engine/Containerfile', 'launcher/engine/.containerignore',
-                         'launcher/engine/containers.conf', 'launcher/engine/entrypoint.sh', 'launcher/engine/resolv.conf', 'launcher/engine/storage.conf',
-                         *REAL_PROFILE.install_files):
+                         *qualify.engine_module.INPUTS, *REAL_PROFILE.install_files):
             (self.install/relative).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             shutil.copyfile(REAL_ROOT/relative, self.install/relative)
         (self.install/'agent/policies').mkdir(mode=0o700, parents=True)
