@@ -91,9 +91,6 @@
 - [x] 5.2 Run the same suites on the Windows Podman machine.
   - **Expected:** systemd cases pass; the delegation case finds no controller, so nested limits are refused; `--guard` from the host is a regression check, as in task 5.1.
   - **Record:** the results in `docs/validation.md`.
-- [ ] 5.3 Run an Ansible test from a session on both platforms, against the `orbit-e2e-lab` Rocky Linux 9 and Amazon Linux 2023 targets: Molecule's Podman driver through `CONTAINER_HOST`, and the lab's own flow.
-  - **Scope:** a playbook that manages units and handlers of packages already in the images. Package installation needs `add-read-only-dependency-mirror`.
-  - **Record:** the commands and results in `docs/validation.md`.
 - [x] 5.4 Run the runtime and qualification suites on a host with SELinux enforcing and on one with AppArmor active, where available.
   - **Record:** the results in `docs/validation.md`, or record them as unavailable, with the reason.
 
@@ -102,3 +99,4 @@
 - Tag the release and propagate the shared files to the sibling wrappers with `tools/propagate.py` (dry run, then `--apply`), following `docs/propagation.md`.
 - Operators rerun setup to build the new engine image and requalify.
 - Archive the change after review, and verify the archived `session-container-engine` spec.
+- Run an Ansible test with the project after propagation to `claude-container`, from a session on both platforms, against the `orbit-e2e-lab` Rocky Linux 9 and Amazon Linux 2023 targets (formerly task 5.3, moved here by the operator's decision). Its controller image has `ansible-core` 2.14 with `ssh` and `sshpass` and no Podman client; the targets run `sshd` and `python3`, so the playbook reaches targets started with `--systemd=always` over SSH. Scope: units and handlers of packages already in the images; package installation needs `add-read-only-dependency-mirror`. Record the commands and results in `docs/validation.md`.
