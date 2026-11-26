@@ -7,9 +7,13 @@ options for every engine:
 - the session's engine (`launcher/core.sh`);
 - the qualification probe engine (`network/qualify.py`).
 
-The options include `--cap-drop=all --cap-add=SETUID,SETGID,SYS_CHROOT`.
-Qualification checks the engine's state, and requires `CapBnd:
-00000000000400c0`, which is exactly those three capabilities.
+The options include `--cap-drop=all --cap-add=SETUID,SETGID,SYS_CHROOT,CHOWN`,
+as `support-nested-systemd-containers` (merged on 2026-11-26) set them. The
+engine's startup program starts as the root of its user namespace, delegates
+the engine's cgroup subtree with `CHOWN`, and runs everything else as the
+engine user with the other three capabilities. Qualification checks PID 1's
+state: `CapBnd: 00000000000400c1` (the four), and the other three in its
+permitted, effective and ambient sets (`00000000000400c0`).
 
 **The recipe.** `launcher/engine/Containerfile` has no `LABEL`. The image
 therefore inherits the base's label:
@@ -29,7 +33,7 @@ with them:
   keeps its own set.
 
 The recorded error lists exactly the eight capabilities that the options
-removed.
+removed before `CHOWN` was added; the same engine start now names seven.
 
 **Where the message appears.** Podman logs it where the container is created:
 - with the local client, as in an unrestricted session from a checkout, in
@@ -65,16 +69,19 @@ changes. It is also a qualification input (`network/qualification_records.py`).
 ## Decisions
 
 1. **The recipe sets the label to the launcher's set.**
-   - **How:** `LABEL io.containers.capabilities="SETUID,SETGID,SYS_CHROOT"`
+   - **How:** `LABEL io.containers.capabilities="SETUID,SETGID,SYS_CHROOT,CHOWN"`
      in `launcher/engine/Containerfile`, beside `USER podman`, with a
      comment naming `container_options()`. Podman then finds the label within
-     its computed set, and gives the engine the same three capabilities
+     its computed set, and gives the engine the same four capabilities
      without an error.
    - **Alternatives rejected:**
      - Silencing Podman, with `--log-level` or a `containers.conf` setting:
        it would also hide real errors.
      - An empty label: Podman reads it as no capabilities at all, and the
-       engine would lose the three it needs.
+       engine would lose the four it needs.
+     - A label of the three capabilities that the engine user keeps: Podman
+       would narrow the engine to the label, and the startup program would
+       lose `CHOWN`.
      - Granting the capabilities through the label instead of the options:
        the options are the documented exceptions, which tests and
        qualification check.
@@ -85,29 +92,37 @@ changes. It is also a qualification input (`network/qualification_records.py`).
    `tests/test_engine.py` reads the label from the recipe and compares it
    with the `--cap-add=` value of `engine.container_options()`. A second
    check makes sure that a recipe without the label fails, and so does one
-   with a wider label.
+   with a wider or a narrower label. The check caught the drift when this
+   change was rebased on `support-nested-systemd-containers`.
 
 3. **The README names the label.** The hardening exceptions paragraph says
-   that the engine image declares the same three capabilities. The paragraph
+   that the engine image declares the same four capabilities. The paragraph
    on shell containers is unchanged.
 
 4. **Host evidence compares both images, with the local client.**
-   - **The comparison:** on each native host, the operator starts the current
-     and the new engine image with the engine's capability options, and
-     prints `CapBnd` from `/proc/self/status`.
-     - **Expected:** the current image logs the error, at least with Podman
-       5.8.0. The new image logs nothing. Both report `00000000000400c0`.
+   - **The comparison:** on each native host, the operator builds the
+     branch's recipe twice: once with the label line removed, once as it is.
+     Only the label differs. They start both images with the engine's
+     capability options, and print `CapBnd` from `/proc/self/status`.
+     - **Expected:** the image without the label logs the error, at least
+       with Podman 5.8.0. The new image logs nothing. Both report
+       `00000000000400c1`.
    - **The session:** an unrestricted session that starts an engine,
      opened from the branch on the Rocky 9 lab host, shows no error.
    - **The runner:**
      - the default runtime mode (`SessionEngineTests`), `--network` and
        `--qualification` pass with the rebuilt image;
-     - the qualification engine case checks `CapBnd` again.
+     - the qualification engine case checks the capability sets again.
 
-5. **A new tag, in the usual procedure.**
+5. **One new tag with `support-nested-systemd-containers`, in the usual procedure.**
+   - **Scope:** `sandbox-ref-36` carries both changes. That change's own
+     host validation is in its record; this change's runs repeat the modes
+     that exercise the engine, with both changes in the image.
    - **Before tagging:** the recipe is a qualification input, so
      `--qualification` must pass (`reference-propagation`, "Reference runs
-     the adoption suites before tagging"), and so must the shared suite.
+     the adoption suites before tagging"), and so must the shared suite. The
+     setup files of `support-nested-systemd-containers` add `--setup` and
+     `--setup-runtime` to the checklist for the tag.
    - **On the main branch:** the reference parity cell moves to
      `sandbox-ref-36` in the merge that the tag points to.
 

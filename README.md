@@ -364,7 +364,14 @@ with its storage when the session ends. Without images in the library, or with
   where no-new-privileges keeps it unreachable. The engine user is unprivileged
   and mapped to you (`--userns=keep-id:uid=1000,gid=1000`), which needs 65535
   of your subordinate IDs in one contiguous range. A tool that needs more
-  privilege is unsupported.
+  privilege is unsupported. The engine image declares these four capabilities
+  (`SETUID`, `SETGID`, `SYS_CHROOT` and `CHOWN`) in its
+  `io.containers.capabilities` label, so Podman starts the engine without a
+  capability error. An engine image built before `sandbox-ref-36` keeps its
+  base's label, and Podman logs `Capabilities requested by user or image are
+  not allowed by default` at each start. The message is harmless, because
+  Podman keeps the engine's capabilities. Rerun `--container-setup` to rebuild
+  the image.
 - **Systemd containers and nested limits:** on an eligible engine, nested
   containers get cgroups of their own, so an image that starts systemd runs it
   as PID 1, for example to test Ansible roles that manage services:

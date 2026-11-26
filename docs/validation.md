@@ -1,5 +1,105 @@
 # Validation record
 
+## Reference tag `sandbox-ref-36`: 2026-11-26
+
+The tag carries two changes:
+- `support-nested-systemd-containers`, merged as `d7d2608`. Its own host
+  records are the next three sections.
+- `declare-engine-image-capabilities`. Before it,
+  the engine image kept the capability label of `quay.io/podman/stable`, which
+  names Podman's eleven defaults. The engine starts with
+  `--cap-add=SETUID,SETGID,SYS_CHROOT,CHOWN`. So at each engine start Podman
+  logged `Capabilities requested by user or image are not allowed by default`,
+  naming the other seven, then kept the launcher's set. `launcher/engine/Containerfile`
+  now sets `io.containers.capabilities` to the same four capabilities.
+  `tests/test_engine.py` compares the label with the engine options. Rebased
+  on the nested systemd change, which added `CHOWN`, that check first failed
+  on the three-capability label, as it should.
+
+The error was first recorded by Claude's `adopt-sandbox-ref-35` validation, in
+an unrestricted session on the Rocky 9 lab host.
+
+Shared files changed since `sandbox-ref-35`:
+- `launcher/core.sh` and, in `launcher/engine/`, `.containerignore`,
+  `Containerfile`, `cgroup.sh`, `entrypoint.sh` and `start.sh`;
+- `network/qualification_records.py`, `network/qualify.py`,
+  `setup/common.py`, `setup/engine.py` and `setup/toolchains.py`;
+- the tests `tests/fake_podman.py`, `tests/test_engine.py`,
+  `tests/test_launcher.py`, `tests/test_qualification.py` and
+  `tests/test_toolchains.py`.
+
+For these files the propagation checklist names the shared suite, `--setup`,
+`--setup-runtime` and `--qualification`. The default runtime mode and
+`--network` ran as well, because they start engines.
+
+**The image comparison.** On each host the operator built the branch's recipe
+twice: once without its label line, as
+`localhost/sandbox-container-engine:before-label`, and once as it is. Each
+image then ran with the engine's capability options:
+
+```
+podman run --rm --cap-drop=all --cap-add=SETUID,SETGID,SYS_CHROOT,CHOWN \
+  --security-opt=no-new-privileges --entrypoint sh <image> -c 'grep CapBnd /proc/self/status'
+```
+
+| Host | Image without the label | Image of the branch |
+| --- | --- | --- |
+| Rocky 9 lab host, Podman 5.8.0, crun 1.27 | `d708ac08c054`, the engine image of `main` (same ID). The base's 11 capabilities. `level=error msg="Capabilities requested by user or image are not allowed by default: \"CAP_DAC_OVERRIDE,CAP_FOWNER,CAP_FSETID,CAP_KILL,CAP_NET_BIND_SERVICE,CAP_SETFCAP,CAP_SETPCAP\""`, then `CapBnd: 00000000000400c1` | `3157ca16a73f`, `SETUID,SETGID,SYS_CHROOT,CHOWN`. No error, `CapBnd: 00000000000400c1` |
+| WSL, Podman 4.9.3, crun 1.14.1 | `83c9b823ff2b`, the engine image of `main`. The same error, with the same seven capabilities, and `CapBnd: 00000000000400c1` | `5f8a47ee207e`, `SETUID,SETGID,SYS_CHROOT,CHOWN`. No error, `CapBnd: 00000000000400c1` |
+
+On the Rocky 9 lab host, two unrestricted sessions from the checkout,
+`SANDBOX_CONTAINER_NETWORK=unrestricted ./sandbox-container.sh -c true`,
+started an engine and exited with status 0:
+- with `SANDBOX_CONTAINER_ENGINE_IMAGE` set to the image without the label,
+  the session printed the error line;
+- with the image of the branch, it printed none.
+
+### Rocky 9 lab host
+
+Kernel `5.14.0-687.12.1.el9_8` without IPv6, `systemd` with `[memory pids]`.
+The checkout was branch `declare-engine-image-capabilities` at `37dea4a`. The
+images:
+- runtime `ae925a03d71f`;
+- engine of the branch `3157ca16a73f`;
+- guard toolchain `c6562a3f25f8`.
+
+`/home` had 1.3 GB free. No run reported `no space left on device`.
+
+| Mode | Result |
+| --- | --- |
+| unit discovery, in the runtime image | Passed: 581 tests, 84 skipped |
+| runtime (default mode) | Passed: 25 tests, 2 skipped (the process rlimit cases). `test_systemd_runs_in_nested_containers` and `test_engine_cgroup_delegation_in_sessions` passed |
+| `--network` | Passed: 19 tests, 4 skipped. **Unavailable:** the two terminal cases, skipped by the probe with `crun: unlink /dev/console: Read-only file system`, as at `sandbox-ref-35`. The other skips are the opt-in toolchain examples and the proxy's rlimit case |
+| `--qualification` | Passed: 34 tests, 1 skipped (the TLS gate: the profile declares no authentication method) |
+| `--setup` | Passed: 93 tests |
+| `--setup-runtime` | Passed: 2 tests. The tags before the mode were saved, but the operator did not save them after it. The comparison ran later against the current list, with no Podman use on the host in between: identical |
+
+### WSL
+
+WSL2 x86_64 `6.18.58.1-microsoft-standard-WSL2`, `systemd` with
+`[cpu memory pids]`, IPv6 present. The checkout was a native clone at
+`37dea4a`. The images:
+- runtime `28417a77299e`;
+- engine of the branch `5f8a47ee207e`;
+- guard toolchain `101d7cadcd1c`.
+
+| Mode | Result |
+| --- | --- |
+| unit discovery, in the runtime image | Passed: 581 tests, 84 skipped |
+| runtime (default mode) | Passed: 25 tests, 2 skipped (the process rlimit cases). `test_systemd_runs_in_nested_containers` and `test_engine_cgroup_delegation_in_sessions` passed |
+| `--network` | Passed: 19 tests, 2 skipped (the opt-in toolchain examples and the proxy's rlimit case). Both terminal cases ran and passed |
+| `--qualification` | Passed: 34 tests, 1 skipped (the TLS gate) |
+| `--setup` | Passed: 93 tests |
+| `--setup-runtime` | Passed: 2 tests. The 93 image tags were identical before and after the mode |
+
+**Not run for this tag:** `--guard`, `--wrapper`, `--network-feasibility`,
+`--network-policy` and `--mux`. The checklist does not name them for these
+files. The nested systemd records below ran `--guard` on the Rocky 9 lab host
+and on the Windows Podman machine. The change was written in a container
+without Podman. There 17 cases of `tests/test_engine.py` fail, because they
+need a rootless engine or root. They fail the same way on `main`, and pass in
+the discovery on both hosts.
+
 ## SELinux and AppArmor (`support-nested-systemd-containers`, task 5.4): 2026-11-26
 
 Untested. Neither validation host of the change enforces a security module:
