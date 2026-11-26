@@ -393,7 +393,8 @@ with its storage when the session ends. Without images in the library, or with
   containers. When an engine is not eligible, for example on a host with
   cgroup v1, the launch says `systemd containers and explicit limits for nested
   containers are unavailable` with the reason, and the session starts without
-  them.
+  them. Systemd containers and the delegation are untested with SELinux
+  enforcing or an active AppArmor profile.
 - **Host `/sys` in the session:** the session joins the engine's network
   namespace, and a rootless container that joins another namespace cannot
   mount a sysfs of its own: Podman bind-mounts the host's `/sys` read-only

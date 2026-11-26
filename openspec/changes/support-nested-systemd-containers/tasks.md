@@ -94,7 +94,7 @@
 - [ ] 5.3 Run an Ansible test from a session on both platforms, against the `orbit-e2e-lab` Rocky Linux 9 and Amazon Linux 2023 targets: Molecule's Podman driver through `CONTAINER_HOST`, and the lab's own flow.
   - **Scope:** a playbook that manages units and handlers of packages already in the images. Package installation needs `add-read-only-dependency-mirror`.
   - **Record:** the commands and results in `docs/validation.md`.
-- [ ] 5.4 Run the runtime and qualification suites on a host with SELinux enforcing and on one with AppArmor active, where available.
+- [x] 5.4 Run the runtime and qualification suites on a host with SELinux enforcing and on one with AppArmor active, where available.
   - **Record:** the results in `docs/validation.md`, or record them as unavailable, with the reason.
 
 ## Workflow follow-up

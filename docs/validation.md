@@ -1,5 +1,15 @@
 # Validation record
 
+## SELinux and AppArmor (`support-nested-systemd-containers`, task 5.4): 2026-11-26
+
+Untested. Neither validation host of the change enforces a security module:
+SELinux is disabled on the Rocky Linux lab host and not active in the Windows
+Podman machine, and neither runs AppArmor. No other host was available. The
+engine keeps `label=disable` and the standard OCI seccomp profile with its
+documented exception; active SELinux or AppArmor policies are preserved, not
+guaranteed, as for the rest of the sandbox. Systemd containers, the cgroup
+delegation and the new qualification checks remain untested under them.
+
 ## Nested systemd on the Windows Podman machine (`support-nested-systemd-containers`, task 5.2): 2026-11-26
 
 The operator ran the suites in the Podman machine's shell
