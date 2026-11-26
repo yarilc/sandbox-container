@@ -85,10 +85,11 @@
 
 ## 5. Integration validation
 
-- [ ] 5.1 Run the suites on the Rocky Linux lab host (native Linux, `systemd` manager): `bash tests/run-runtime.sh`, `--guard` (the three multiplex tests that request nested limits must now pass) and `--qualification`.
+- [ ] 5.1 Run the suites on the Rocky Linux lab host (native Linux, `systemd` manager), from the host: `bash tests/run-runtime.sh`, `--guard` and `--qualification`.
+  - **Guard:** run from the host, `--guard` uses the host engine and no nested container, so it is a regression check. The nested limits that its multiplex tests request inside a session are covered by the runtime delegation case (task 4.2).
   - **Record:** the results in `docs/validation.md`, with the spike results of the proposal.
 - [ ] 5.2 Run the same suites on the Windows Podman machine.
-  - **Expected:** systemd cases pass; nested limits are unavailable, so the three `--guard` multiplex tests still fail there.
+  - **Expected:** systemd cases pass; the delegation case finds no controller, so nested limits are refused; `--guard` from the host is a regression check, as in task 5.1.
   - **Record:** the results in `docs/validation.md`.
 - [ ] 5.3 Run an Ansible test from a session on both platforms, against the `orbit-e2e-lab` Rocky Linux 9 and Amazon Linux 2023 targets: Molecule's Podman driver through `CONTAINER_HOST`, and the lab's own flow.
   - **Scope:** a playbook that manages units and handlers of packages already in the images. Package installation needs `add-read-only-dependency-mirror`.
