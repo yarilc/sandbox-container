@@ -15,31 +15,39 @@ unrestricted session on the Rocky 9 lab host (Podman 5.8.0).
 The cause is the engine image's base. `quay.io/podman/stable` labels itself
 `io.containers.capabilities=CHOWN,DAC_OVERRIDE,FOWNER,FSETID,KILL,NET_BIND_SERVICE,SETFCAP,SETGID,SETPCAP,SETUID,SYS_CHROOT`,
 which the operator confirmed on that host. `launcher/engine/Containerfile` keeps
-the label. The launcher starts the engine with `--cap-drop=all
---cap-add=SETUID,SETGID,SYS_CHROOT`. Podman sees the label asking for eight
-capabilities that the options removed. It logs an error and keeps the
-launcher's set.
+the label. Podman sees the label asking for capabilities that the engine
+options removed. It logs an error and keeps the launcher's set.
 
-The engine's capabilities are therefore already right: qualification checks
-that its bounding set is exactly `SETGID`, `SETUID` and `SYS_CHROOT`. But every
-engine start reports an error that is not one, in the terminal of a session
-that uses the local Podman, such as an unrestricted session.
+The engine options are `--cap-drop=all` and:
+- **when the error was recorded:** `--cap-add=SETUID,SETGID,SYS_CHROOT`, so
+  Podman named eight capabilities;
+- **since `support-nested-systemd-containers`, merged on 2026-11-26:**
+  `--cap-add=SETUID,SETGID,SYS_CHROOT,CHOWN`. The startup program keeps
+  `CHOWN` only in the bounding set. Podman now names seven.
 
-Codex, Antigravity, OpenCode and Pi have not adopted `sandbox-ref-35` yet. A
-tag now lets them adopt the fix in the same step.
+The engine's capabilities are therefore already right. Qualification checks
+the bounding set (`00000000000400c1`), and that the engine user's
+capabilities are the other three. But every engine start reports an error
+that is not one, in the terminal of a session that uses the local Podman,
+such as an unrestricted session.
+
+`support-nested-systemd-containers` is not tagged yet, and Codex, Antigravity,
+OpenCode and Pi have not adopted `sandbox-ref-35`. One tag for both changes
+lets every wrapper adopt them, and rebuild its engine image, in one step.
 
 ## What Changes
 
 - **The engine image declares its capabilities.** `launcher/engine/Containerfile`
-  sets `io.containers.capabilities` to `SETUID,SETGID,SYS_CHROOT`, the set the
-  launcher grants (`setup/engine.py`).
+  sets `io.containers.capabilities` to `SETUID,SETGID,SYS_CHROOT,CHOWN`, the
+  set the launcher grants (`setup/engine.py`).
   - Podman then finds nothing to refuse and prints no error.
-  - The engine runs with the same three capabilities as today.
+  - The engine runs with the same capabilities as today.
 - **A shared test keeps the label and the options together.** The engine
   recipe check in `tests/test_engine.py` fails when the label differs from the
   capabilities of the engine options.
 - **README.** The hardening exceptions name the label.
-- **New reference tag `sandbox-ref-36`.**
+- **New reference tag `sandbox-ref-36`,** together with
+  `support-nested-systemd-containers`.
   - **Before tagging:** the reference runs the modes the propagation rules
     require. The recipe is a qualification input, so `--qualification` is one
     of them.
