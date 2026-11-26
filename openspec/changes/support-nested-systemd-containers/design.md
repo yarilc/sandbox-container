@@ -147,7 +147,9 @@ enabled controllers.
 
 `podman exec` now defaults to the container's configured user, which is root.
 Every launcher command in the engine passes `--user podman`: readiness, the
-rlimit read and the eligibility report. So do qualification's `exec` calls.
+rlimit read and the eligibility report. So do qualification's `exec` calls,
+and the readiness query of the toolchain command's check engine
+(`setup/toolchains.py`), which starts the engine image with the same options.
 
 The rlimit check reads `/proc/1/limits`, because PID 1 set the limit and kept
 it through its `exec` calls. On the rlimit fallback, `created_command_starts`
