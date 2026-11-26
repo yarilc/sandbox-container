@@ -7,13 +7,16 @@ Reference-only: this tool lives in sandbox-container and is never copied.
 It reads the tags from this checkout, verifies that the target is a clean,
 unforked adopter of <old-tag>, and prints (dry run) or applies the changes:
 shared files, the tests/test_reference_copy.py manifest and the tag/commit
-references in current-state documents. It never runs suites, commits, merges,
-tags or pushes. See docs/propagation.md.
+references in current-state documents. In docs/network-contract.md these are
+the reference line and the contract adoption cells of the target's and the
+reference's parity rows; the rest of the table is history. It never runs
+suites, commits, merges, tags or pushes. See docs/propagation.md.
 """
 import argparse
 import ast
 import datetime
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -27,6 +30,12 @@ ALIGNMENT_FILE = 'tests/test_alignment.py'
 # Current-state documents; history (docs/validation.md, CHANGELOG.md, todo.md,
 # openspec/) is never rewritten.
 DOCUMENTS = ('README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'docs/setup.md', 'docs/network-contract.md')
+# In the network contract only the reference line and two parity cells are
+# current state; the rest of the parity table records history.
+CONTRACT = 'docs/network-contract.md'
+PROFILE_FILE = 'agent/profile.json'
+PARITY_HEADER = ['Wrapper', 'Contract adoption']
+REFERENCE_ROW = ' (reference)'
 SKIPPED_PARTS = ('__pycache__', 'bin')
 TAG_LINE = re.compile(r"^REFERENCE_TAG = '([^']+)'$", re.M)
 COMMIT_LINE = re.compile(r"^REFERENCE_COMMIT = '([0-9a-f]{40})'$", re.M)
@@ -150,13 +159,13 @@ def plan(target, old, new):
     changed = {p for p in (old_shared | new_shared) if old_files.get(p) != new_files.get(p)}
     not_adopted += sorted(changed - set(adopted) - set(added) - set(not_adopted))
     documents = {}
-    for name in DOCUMENTS if old != new else ():
+    for name in DOCUMENTS:
         path = target / name
         if path.is_file():
-            text = path.read_text()
-            count = len(tag_pattern(old).findall(text)) + text.count(old_commit)
-            if count:
-                documents[name] = count
+            # Also for the same tag, so that a contract the tool cannot read is refused.
+            _, replaced, kept = rewrite(target, name, path.read_text(), old, new, old_commit, new_commit)
+            if old != new and (replaced or kept):
+                documents[name] = (replaced, kept)
     return dict(target=target, old=old, new=new, old_commit=old_commit, new_commit=new_commit, branch=branch,
                 modified=modified, added=added, removed=removed, not_adopted=sorted(not_adopted),
                 documents=documents, modes=checklist(target, modified + added + removed), new_files=new_files,
@@ -166,6 +175,93 @@ def plan(target, old, new):
 def tag_pattern(tag):
     # Whole word: sandbox-ref-1 must not match sandbox-ref-10.
     return re.compile(r'(?<![\w-])' + re.escape(tag) + r'(?![\w-])')
+
+
+def rewrite(target, name, text, old, new, old_commit, new_commit):
+    """(new text, references replaced, old-tag mentions kept or None) for a current-state document."""
+    if name == CONTRACT:
+        return rewrite_contract(target, text, old, new, old_commit, new_commit)
+    tag = tag_pattern(old)
+    replaced = len(tag.findall(text)) + text.count(old_commit)
+    return tag.sub(new, text).replace(old_commit, new_commit), replaced, None
+
+
+def row_cells(line):
+    """The cells of a Markdown table row such as '| a | b |', or None for any other line."""
+    body = line.rstrip('\r\n')
+    if not (body.startswith('| ') and body.endswith(' |')):
+        return None
+    return body[2:-2].split(' | ')
+
+
+def display_name(target):
+    """The target's parity row label: its profile's display_name, read as data."""
+    try:
+        value = json.loads((target / PROFILE_FILE).read_text())
+    except (OSError, ValueError) as error:
+        raise PropagationError(f'cannot read {PROFILE_FILE} in {target} to find its parity row in {CONTRACT}: '
+                               f'{error}') from None
+    name = value.get('display_name') if isinstance(value, dict) else None
+    if not isinstance(name, str) or not name.strip():
+        raise PropagationError(f'{PROFILE_FILE} in {target} has no display_name to find its parity row in {CONTRACT}')
+    return name
+
+
+def parity_table(target, lines):
+    """None without a parity table; else its adoption column, the indexes of the
+    target's and the reference's rows, and the table's line range."""
+    headers = [i for i, line in enumerate(lines) if (row_cells(line) or [])[:2] == PARITY_HEADER]
+    if not headers:
+        return None
+    if len(headers) > 1:
+        raise PropagationError(f'{CONTRACT} has {len(headers)} parity tables; expected one')
+    start = headers[0]
+    header = row_cells(lines[start])
+    end, labels = start + 2, []
+    while end < len(lines) and lines[end].startswith('|'):
+        cells = row_cells(lines[end])
+        if cells is None or len(cells) != len(header):
+            raise PropagationError(f'{CONTRACT} line {end + 1}: a parity row needs the {len(header)} cells of the '
+                                   'header, separated by " | "')
+        labels.append((end, cells[0]))
+        end += 1
+    name = display_name(target)
+    own = [i for i, label in labels if label == name]
+    if len(own) != 1:
+        raise PropagationError(f'{CONTRACT} has {len(own)} parity rows for {name!r}, the display_name of '
+                               f'{PROFILE_FILE}; expected one')
+    reference = [i for i, label in labels if label.endswith(REFERENCE_ROW)]
+    if len(reference) > 1:
+        raise PropagationError(f'{CONTRACT} has {len(reference)} reference parity rows; expected at most one')
+    return PARITY_HEADER.index('Contract adoption'), own + reference, range(start, end)
+
+
+def rewrite_contract(target, text, old, new, old_commit, new_commit):
+    """Replace only the current references of the network contract.
+
+    In the parity table, the old tag moves only in the contract adoption cell of
+    the target's row and of the reference row: the other cells, such as real
+    enforcement, record the tag each result ran at. Elsewhere it moves only where
+    the reference line names it with its commit. The old commit moves anywhere."""
+    lines = text.splitlines(keepends=True)
+    table = parity_table(target, lines)
+    tag = tag_pattern(old)
+    pair = re.compile('`' + re.escape(old) + r'`(?= \(commit `' + re.escape(old_commit) + r'`\))')
+    replaced = 0
+    for index, line in enumerate(lines):
+        if table and index in table[1]:
+            cells = row_cells(line)
+            cells[table[0]], count = tag.subn(new, cells[table[0]])
+            lines[index] = '| ' + ' | '.join(cells) + ' |' + line[len(line.rstrip('\r\n')):]
+        elif table and index in table[2]:
+            continue
+        else:
+            lines[index], count = pair.subn(f'`{new}`', line)
+        replaced += count
+    kept = len(tag.findall(text)) - replaced
+    result = ''.join(lines)
+    replaced += result.count(old_commit)
+    return result.replace(old_commit, new_commit), replaced, kept
 
 
 def runner_modes(target):
@@ -241,9 +337,12 @@ def apply(result):
         manifest = target / MANIFEST_FILE
         write_atomic(manifest, text.encode(), manifest.stat().st_mode & 0o7777)
         written.append(MANIFEST_FILE)
-        for name in result['documents']:
+        for name, (replaced, _) in result['documents'].items():
+            if not replaced:
+                continue
             path = target / name
-            text = tag_pattern(result['old']).sub(new, path.read_text()).replace(result['old_commit'], result['new_commit'])
+            text, _, _ = rewrite(target, name, path.read_text(), result['old'], new,
+                                 result['old_commit'], result['new_commit'])
             write_atomic(path, text.encode(), path.stat().st_mode & 0o7777)
             written.append(name)
     except BaseException as error:
@@ -257,7 +356,8 @@ def report(result, applied):
         out.append(f"Branch: {result['branch']} (uncommitted; review with git diff)")
     for label in ('modified', 'added', 'removed', 'not_adopted'):
         out.append(f"{label.replace('_', ' ')}: " + (', '.join(result[label]) or 'none'))
-    out.append('documents: ' + (', '.join(f'{n} ({c})' for n, c in result['documents'].items()) or 'none'))
+    out.append('documents: ' + (', '.join(f'{n} ({r})' if k is None else f'{n} ({r}, {k} kept)'
+                                          for n, (r, k) in result['documents'].items()) or 'none'))
     out.append('manifest: ' + MANIFEST_FILE + f" -> {result['new']} ({result['new_commit']})")
     if result['sibling'] != result['reference_name']:
         out.append(f"manifest: names {result['reference_name']} instead of {result['sibling']}")

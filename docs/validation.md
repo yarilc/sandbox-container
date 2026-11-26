@@ -1,5 +1,42 @@
 # Validation record
 
+## Parity history kept by `tools/propagate.py`: 2026-11-26
+
+Change `keep-parity-history-in-propagation`. `--apply` had replaced every
+mention of the old tag in a wrapper's `docs/network-contract.md`, against the
+"Current-state references only" requirement. It replaced:
+- the history entries of the "Real enforcement" cells;
+- the "Contract adoption" cells of other wrappers that hold the same tag.
+
+Claude's adoption of `sandbox-ref-35` restored three such entries by hand.
+Before the fix, a dry run against Codex from `sandbox-ref-28` to `sandbox-ref-35`
+counted 11 references in the contract, of which 3 were current.
+
+The tool now replaces, in the contract:
+- the old tag only where the reference line names it with its commit;
+- the old commit wherever it appears;
+- the old tag in the "Contract adoption" cell of two rows: the wrapper's own
+  row, found by the `display_name` of its `agent/profile.json`, and the
+  reference row.
+
+It refuses a contract whose parity table has no single row for that name, or a
+row without the header's cells. The dry run counts the mentions it keeps.
+`docs/propagation.md` describes the cells by column. Only reference-only files
+changed (`tools/propagate.py`, `tests/test_propagate.py`, the procedure), so
+no tag is needed.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_propagate tests.test_alignment` | Passed: 34 tests, 13 of them for the tool. With the previous `tools/propagate.py`, the new and updated cases fail: 8 failures and 1 error |
+| Dry runs from `sandbox-ref-28` to `sandbox-ref-35` against `codex-container`, `antigravity-container`, `opencode-container` and `pi-container` | Each printed `docs/network-contract.md (3, 8 kept)`. The three: the tag and the commit of the reference line, and the wrapper's own adoption cell. The eight kept: the history entries of five rows, and the adoption cells of the three other wrappers on `sandbox-ref-28`. Each tree was unchanged afterwards |
+| `--apply` on a disposable clone of `codex-container`, same tags | The contract diff has two lines: the reference line, and cell 1 of the Codex row. 8 mentions of `sandbox-ref-28` remain. The README, `AGENTS.md` and `docs/setup.md` name `sandbox-ref-35` |
+| `--apply` on a disposable clone of `claude-container` at `ae6af89`, from `sandbox-ref-34` to `sandbox-ref-35` | `docs/network-contract.md (2, 3 kept)`. Only cell 1 of the reference row and of the Claude row changed. The three "Real enforcement" entries restored by hand in `adopt-sandbox-ref-35` still name `sandbox-ref-34` |
+| `openspec validate keep-parity-history-in-propagation --strict`, `git diff --check` | Passed |
+
+The full unit discovery was not run: no shared, runtime or setup file
+changed, and `tests/test_propagate.py` is the only test of the tool. Here it
+also fails for the environment: the workspace drive allows no `chmod`.
+
 ## Reference tag `sandbox-ref-35`: 2026-11-25
 
 Change `fix-runtime-test-portability` (tasks 4.1 and 4.2). The runner suites

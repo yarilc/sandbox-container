@@ -34,6 +34,22 @@ def differences(root):
 def skip():
     return 'no sibling claude-container checkout'
 '''
+# Same structure as a wrapper's docs/network-contract.md: the reference line, a
+# prose line naming the tag as history, and the parity table, whose target row
+# is the profile's display_name (Pi).
+CONTRACT = """The shared components come from `sandbox-container` at tag
+`{tag}` (commit `{commit}`).
+
+The guard fix arrived in `{tag}`, as recorded below.
+
+| Wrapper | Contract adoption | Implementation | Real enforcement | Auth compatibility |
+| --- | --- | --- | --- | --- |
+| Sandbox (reference) | Reference (`{tag}`, shared core) | Guard integrated | WSL: `{tag}` modes passed (2026-11-01) | Not applicable |
+| Codex | Adopted `{tag}`: shared core | Guard integrated | WSL: all modes passed on `{tag}` (2026-11-02) | Pending |
+| Pi | Adopted `{tag}`: shared core | Guard integrated | WSL: all modes passed on `{tag}` (2026-11-03) | Pending |
+
+Commit `{commit}` is the copied state.
+"""
 RUNNER = """case "${1:-}" in
     --wrapper) pattern=test_wrapper.py ;;
     --shared) pattern='' ;;
@@ -87,8 +103,8 @@ class Propagation(unittest.TestCase):
             'tests/test_reference_copy.py': self.manifest('sandbox-ref-1', self.old_commit, adopted),
             'tests/run-runtime.sh': RUNNER,
             'README.md': 'Copied from tag `sandbox-ref-1`; see sandbox-ref-10 and sandbox-ref-1x.\n',
-            'docs/network-contract.md': f'Reference `sandbox-ref-1` (commit `{self.old_commit}`).\n'
-                                        '| Pi | Ported from `sandbox-ref-1`; shared files unchanged |\n',
+            'agent/profile.json': '{"name": "pi-container", "display_name": "Pi"}\n',
+            'docs/network-contract.md': CONTRACT.format(tag='sandbox-ref-1', commit=self.old_commit),
             'docs/validation.md': 'Adoption of `sandbox-ref-1`.\n',
             'CHANGELOG.md': 'Shared files now come from `sandbox-ref-1`.\n',
             'openspec/changes/archive/x/design.md': 'Copy from `sandbox-ref-1`.\n'})
@@ -176,7 +192,9 @@ class Propagation(unittest.TestCase):
         self.assertIn('added: network/c.py, tests/test_new.py\n', result.stdout)
         self.assertIn('removed: network/gone.py\n', result.stdout)
         self.assertIn('not adopted: setup/common.py\n', result.stdout)
-        self.assertIn('documents: README.md (1), docs/network-contract.md (3)', result.stdout)
+        # The contract: the tag and the commit of the reference line, the Pi and
+        # reference adoption cells, and the last commit; five history mentions stay.
+        self.assertIn('documents: README.md (1), docs/network-contract.md (5, 5 kept)\n', result.stdout)
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(git(self.target, 'branch', '--show-current').strip(), 'main')
 
@@ -199,14 +217,71 @@ class Propagation(unittest.TestCase):
         self.assertTrue(manifest.endswith("def skip():\n    return 'no sibling reference checkout'\n"))
         readme = (self.target / 'README.md').read_text()
         self.assertEqual(readme, 'Copied from tag `sandbox-ref-2`; see sandbox-ref-10 and sandbox-ref-1x.\n')
-        contract = (self.target / 'docs/network-contract.md').read_text()
-        self.assertIn(f'`sandbox-ref-2` (commit `{self.new_commit}`)', contract)
-        self.assertIn('Ported from `sandbox-ref-2`', contract)
+        self.assertEqual((self.target / 'docs/network-contract.md').read_text(), self.adopted_contract())
         for name in ('docs/validation.md', 'CHANGELOG.md', 'openspec/changes/archive/x/design.md'):
             self.assertIn('sandbox-ref-1`', (self.target / name).read_text(), name)
         # No version-control side effects beyond the branch.
         self.assertEqual(git(self.target, 'log', '--oneline').count('\n'), 1)
         self.assertTrue(git(self.target, 'status', '--porcelain').strip())
+
+    def adopted_contract(self):
+        """The fixture contract after adopting sandbox-ref-2: only its current references moved."""
+        return (CONTRACT.format(tag='sandbox-ref-1', commit=self.old_commit)
+                .replace('`sandbox-ref-1` (commit', '`sandbox-ref-2` (commit')
+                .replace('| Reference (`sandbox-ref-1`,', '| Reference (`sandbox-ref-2`,')
+                .replace('| Pi | Adopted `sandbox-ref-1`:', '| Pi | Adopted `sandbox-ref-2`:')
+                .replace(self.old_commit, self.new_commit))
+
+    def test_contract_keeps_parity_history_and_other_rows(self):
+        result = self.run_tool('--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = (self.target / 'docs/network-contract.md').read_text().splitlines()
+        self.assertIn('The guard fix arrived in `sandbox-ref-1`, as recorded below.', lines)
+        rows = {line.split(' | ')[0][2:]: line.split(' | ') for line in lines if line.startswith('| ')}
+        # Real enforcement cells name the tag each result ran at.
+        for label in ('Sandbox (reference)', 'Codex', 'Pi'):
+            self.assertIn('`sandbox-ref-1`', rows[label][3], label)
+        # Another wrapper holding the same tag keeps its adoption.
+        self.assertEqual(rows['Codex'][1], 'Adopted `sandbox-ref-1`: shared core')
+        self.assertEqual(rows['Pi'][1], 'Adopted `sandbox-ref-2`: shared core')
+        self.assertEqual(rows['Sandbox (reference)'][1], 'Reference (`sandbox-ref-2`, shared core)')
+
+    def test_contract_without_parity_table_moves_its_reference_line(self):
+        contract = self.target / 'docs/network-contract.md'
+        contract.write_text(CONTRACT.format(tag='sandbox-ref-1', commit=self.old_commit).split('| Wrapper')[0])
+        (self.target / 'agent/profile.json').unlink()
+        git(self.target, 'commit', '-qam', 'no parity table')
+        result = self.run_tool('--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('docs/network-contract.md (2, 1 kept)\n', result.stdout)
+        text = contract.read_text()
+        self.assertIn(f'`sandbox-ref-2` (commit `{self.new_commit}`)', text)
+        self.assertIn('The guard fix arrived in `sandbox-ref-1`', text)
+
+    def test_contract_that_names_no_target_row_is_refused(self):
+        contract = self.target / 'docs/network-contract.md'
+        profile = self.target / 'agent/profile.json'
+        pi_row = next(line for line in contract.read_text().splitlines(keepends=True) if line.startswith('| Pi |'))
+        cases = (
+            ('cannot read agent/profile.json', lambda: profile.unlink()),
+            ('has no display_name', lambda: profile.write_text('{"name": "pi-container"}\n')),
+            ("has 0 parity rows for 'Pi'", lambda: contract.write_text(contract.read_text().replace('| Pi |', '| Py |'))),
+            ("has 2 parity rows for 'Pi'", lambda: contract.write_text(contract.read_text().replace(pi_row, pi_row * 2))),
+            ('a parity row needs the 5 cells', lambda: contract.write_text(
+                contract.read_text().replace('| Codex | Adopted', '| Codex | x | Adopted'))))
+        for message, edit in cases:
+            with self.subTest(message=message):
+                edit()
+                git(self.target, 'add', '-A')
+                git(self.target, 'commit', '-qm', 'break the parity row')
+                before = self.snapshot()
+                for args in ((), ('--apply',)):
+                    result = self.run_tool(*args)
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual(self.snapshot(), before)
+                    self.assertEqual(git(self.target, 'branch', '--show-current').strip(), 'main')
+                git(self.target, 'reset', '-q', '--hard', 'HEAD~1')
 
     def test_checklist_follows_the_changed_files_and_runner(self):
         result = self.run_tool()
