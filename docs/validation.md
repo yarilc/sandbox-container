@@ -1,5 +1,28 @@
 # Validation record
 
+## Nested systemd on the Windows Podman machine (`support-nested-systemd-containers`, task 5.2): 2026-11-26
+
+The operator ran the suites in the Podman machine's shell
+(`wsl -d podman-machine-default`) from the Windows checkout of the branch
+`support-nested-systemd-containers` at `7700ebe`:
+- Fedora 44 machine, WSL kernel `6.18.58.1-microsoft-standard-WSL2`, rootless
+  Podman 6.1.4 with crun;
+- cgroup v2 with the `cgroupfs` manager and no controllers;
+- SELinux not active.
+
+The engine image was rebuilt from the branch for the runner
+(`e228c69045d6`, tagged `localhost/sandbox-container-engine:latest`). The
+machine had no `localhost/sandbox-container:latest` at first, so the runner
+tried to pull it from a `localhost` registry; the runtime image of the
+reference shell, which this change does not modify, was then tagged for the
+runner. The operator reported the summaries only.
+
+| Mode | Result |
+| --- | --- |
+| runtime (default mode) | Passed: 25 tests, none skipped. The engine was eligible without controllers and delegated: systemd booted in the Rocky Linux 9 init fixture, and the delegation case found nested `--memory`/`--pids-limit` refused, as the spec requires without the controllers. The process rlimit case ran, because this engine uses the fallback |
+| `--guard` | 25 tests, 1 skipped, 4 failed, as recorded for this machine before the change: the AF_VSOCK control of `test_existing_late_sockets_and_aliases_across_bind_roots` (`socket(AF_VSOCK)`: `Operation not permitted`), and the 3 multiplex tests that request explicit `--memory` limits from the host engine, which has no `memory` controller (`crun: open memory.max for writing: No such file or directory`). No regression |
+| `--qualification` | Passed: 34 tests, 1 skipped, with the new `session-engine` checks |
+
 ## Nested systemd on native Linux (`support-nested-systemd-containers`, task 5.1): 2026-11-26
 
 The operator ran the suites on the Rocky Linux lab host, from the host, on the
