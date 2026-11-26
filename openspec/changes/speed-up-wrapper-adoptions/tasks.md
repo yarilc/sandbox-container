@@ -112,7 +112,7 @@
     - `python3 -I tools/propagate.py ../claude-container sandbox-ref-35 sandbox-ref-36 --checklist` prints exactly the entries of the spec scenario "Claude's adoption of sandbox-ref-36", plus the engine preparation and the two images;
     - a dry run against `../codex-container` from `sandbox-ref-28` to `sandbox-ref-36` succeeds. Its review lines and reference changes are recorded for the Codex adoption.
   - **Verify:** all pass.
-- [ ] 4.2 Have the operator run the runner on both hosts, from the branch in `~/sandboxes/sandbox-container`, against `~/sandboxes/claude-container` on `main` (`sandbox-ref-36`).
+- [x] 4.2 Have the operator run the runner on both hosts, from the branch in `~/sandboxes/sandbox-container`, against `~/sandboxes/claude-container` on `main` (`sandbox-ref-36`).
   - **WSL:**
     - `bash tools/adoption-run.sh ../claude-container sandbox-ref-35 sandbox-ref-36`;
     - then `--only unit`;

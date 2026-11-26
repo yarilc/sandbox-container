@@ -1,5 +1,86 @@
 # Validation record
 
+## Adoption checklist and runner (`speed-up-wrapper-adoptions`): 2026-11-26
+
+`tools/propagate.py` names the commands that exercise each changed file:
+- the launcher core adds `--wrapper` and the default runtime mode;
+- the engine inputs add the engine image rebuild and the engine cases, or the
+  full modes for a target without them;
+- `SHARED_CODE` adds `--qualification`;
+- changed shared test modules and helpers add their modes, or host unit tests
+  with private temporary storage.
+
+The plan also lists the target's own lines to review and the reference's
+OpenSpec changes of the range. `--checklist` prints the commands of an adopted
+target for the new `tools/adoption-run.sh`. Only reference-only files changed
+(`tools/`, its tests, the procedure, `AGENTS.md` and the README), so no tag is
+needed.
+
+### Development environment (task 4.1)
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_propagate tests.test_adoption_run tests.test_alignment`, with `SANDBOX_TEST_TMPDIR` on executable storage | Passed: 56 tests, 27 for `tools/propagate.py` and 8 for the runner. Removing any of the 11 checklist rules fails its test |
+| `python3 -I tools/propagate.py ../claude-container sandbox-ref-35 sandbox-ref-36 --checklist` | The entries of the spec scenario "Claude's adoption of sandbox-ref-36": `unit` (`test_reference_copy`, `test_alignment`, `test_engine`, `test_toolchains`), `setup`, `setup-runtime`, `qualification`, `wrapper`, `runtime` and `network-engine`, plus the engine rebuild and the runtime and guard toolchain images |
+| Dry run on a fresh clone of `claude-container` at `339bddc` (`sandbox-ref-35`) | `review:` `tests/test_network_runtime.py:89` and `:90`, the hand-written list that the adoption fixed, and two lines that only mention an engine file (`tests/run-runtime.sh:10`, a comment, and `docs/setup.md:271`). The four reference changes of the range, `reference-propagation` marked as not in the target and `add-read-only-dependency-mirror` as active |
+| Dry run against `codex-container` from `sandbox-ref-28` to `sandbox-ref-36` | Succeeded. 19 review lines in 9 files, mostly the delegation and engine passages the adoption rewrites, 5 of them in `tests/test_network_runtime.py`. 9 reference changes. The full default runtime and `--network` modes, because Codex has no engine cases yet, and the Windows manual step. Recorded for the Codex adoption |
+| `openspec validate speed-up-wrapper-adoptions --strict`, `git diff --check`, `bash -n tools/adoption-run.sh` | Passed |
+
+### Runner on both hosts (task 4.2)
+
+Both runs used `claude-container` on `main` at `7524d7b` (`sandbox-ref-36`),
+from the branch's reference checkout.
+
+**WSL**, kernel `6.18.58.1-microsoft-standard-WSL2`, Podman 4.9.3, crun
+1.14.1, `systemd` with `[cpu memory pids]`, Python 3.12.3:
+
+| Entry | Result | Time |
+| --- | --- | --- |
+| prepare `engine` | `5f8a47ee207e`, label `SETUID,SETGID,SYS_CHROOT,CHOWN`, a cache hit | under 1 minute |
+| `unit` (host) | Passed: 113 tests | 7 s |
+| `setup` | Passed: 93 tests | 17 s |
+| `setup-runtime` | Passed: 2 tests; image tags equal before and after | 449 s |
+| `qualification` | Passed: 34 tests | 247 s |
+| `wrapper` | Passed: 121 tests, 1 skipped (no drive root under `/mnt` in the runner container) | 766 s |
+| `runtime` | Passed: 23 tests, 2 skipped (no process rlimit fallback) | 472 s |
+| `network-engine` | Passed: 1 test | 77 s |
+
+The run took about 38 minutes, 12:47:59 to 13:25. A rerun with `--only unit`
+wrote a new archive and passed, in about a minute. `bash tools/shellcheck.sh .`
+found nothing.
+
+**Rocky 9 lab host**, kernel `5.14.0-687.12.1.el9_8`, Podman 5.8.0, crun 1.27,
+`systemd` with `[memory pids]`, Python 3.9.25, 1.5 GB free in `/home`, with
+`--only unit,setup,qualification`:
+
+| Entry | Result | Time |
+| --- | --- | --- |
+| prepare `engine` | `3157ca16a73f`, the reference's `sandbox-ref-36` engine on this host (it replaced `12895fbaa9ea`), label `SETUID,SETGID,SYS_CHROOT,CHOWN` | under 1 minute |
+| `unit` (runtime image, host Python 3.9.25) | Passed: 113 tests, none skipped, the sibling check against the read-only reference included | 3 s |
+| `setup` | Passed: 93 tests | 3 s |
+| `qualification` | Passed: 34 tests | 49 s |
+
+`--checklist` ran on the host's Python 3.9. The run took about a minute and a
+half. Apart from the engine image's ID, the image tags were unchanged.
+
+### Compared with the manual run of 2026-11-26
+
+Claude's adoption of `sandbox-ref-36` ran the same entries by hand on WSL that
+morning: one maintainer-written line of about 2,000 characters, a second line
+after the unit tests failed without private storage, and the archives copied
+back by the operator. Its suites took about 20 minutes. The runner needs one
+line per host, which the procedure gives, and the unit tests had their private
+storage from the start.
+
+Every entry took about 1.5 times its morning time on the same host:
+`wrapper` 766 s against 535 s, `setup-runtime` 449 s against 280 s, and
+`qualification` 247 s against 165 s. The runner adds only its preflight and
+archive around the same commands, so the host was most likely slower that
+afternoon; its load was not recorded. The one added entry is the full
+default runtime mode, 472 s against 58 s for `SessionEngineTests` alone. The
+checklist selects it because `launcher/core.sh` changed. `wrapper` and
+`setup-runtime` remain the longest entries on WSL.
+
 ## Reference tag `sandbox-ref-36`: 2026-11-26
 
 The tag carries two changes:
