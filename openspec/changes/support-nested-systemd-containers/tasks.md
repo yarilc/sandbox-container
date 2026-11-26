@@ -71,7 +71,7 @@
 - [ ] 4.1 Add the systemd fixture and the systemd cases to `SessionEngineTests` in `tests/test_runtime.py` (design D6).
   - **Fixture:** `tests/systemd-sample.Containerfile`, from Rocky Linux 9's init image (`docker.io/rockylinux/rockylinux:9-ubi-init`) pinned by digest through the maintenance procedure in `docs/validation.md`. It has no build step, so it builds without network (`--pull=never`, an empty context), under a tag derived from the recipe's digest. `SANDBOX_TEST_SYSTEMD_SAMPLE` overrides it. The tests skip with guidance when the base image is missing.
   - **Pins:** `tests/test_image_pins.py` checks that the recipe has one digest-pinned base and no build step.
-  - **Cases:** on an eligible engine, `systemctl is-system-running --wait` is `running` or `degraded`, a transient unit becomes active, and `journalctl` shows its output; the README's systemd commands run as written.
+  - **Cases:** on an eligible engine, `systemctl is-system-running` is `running` or `degraded` once boot completes (without `--wait`, which needs D-Bus in the image), a transient unit becomes active, and `journalctl` shows its output; the README's systemd commands run as written.
   - **Verify:**
     - `python3 -m unittest discover -s tests -p test_image_pins.py -v`;
     - `SANDBOX_RUNTIME_TESTS=1 python3 -m unittest discover -s tests -p test_runtime.py -v` on an eligible engine.

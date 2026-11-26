@@ -372,9 +372,13 @@ with its storage when the session ends. Without images in the library, or with
   ```bash
   # an image toolchain whose image starts /sbin/init, such as a Rocky Linux 9 init image
   podman run --detach --name target --systemd=always docker.io/rockylinux/rockylinux@sha256:<digest>
-  podman exec target systemctl is-system-running --wait   # running or degraded
+  podman exec target timeout 120 sh -c 'until systemctl is-system-running | grep -qE "^(running|degraded)$"; do sleep 1; done'
   podman exec target systemd-run --unit=probe --property=Type=oneshot /bin/true
   ```
+
+  The second command waits until boot completes (`running` or `degraded`).
+  `systemctl is-system-running --wait` does the same only when the image
+  has D-Bus; init images without it answer `Failed to connect to bus`.
 
   An engine is eligible when its cgroup namespace is private and its cgroup
   v2 root is mounted read-write with `nsdelegate` and belongs to the root of

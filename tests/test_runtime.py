@@ -774,9 +774,13 @@ echo ENGINE_SESSION_OK
         self.add_image('systemd', 'localhost/sandbox-test-systemd:1', image_id)
         result = self.shell(r"""
 podman run --detach --name target --systemd=always localhost/sandbox-test-systemd:1 >/dev/null
-state=$(podman exec target systemctl is-system-running --wait || true)
-echo "SYSTEM_STATE $state"
-case $state in running|degraded) ;; *) podman exec target systemctl --failed --no-pager || true; exit 1 ;; esac
+# The README's wait: is-system-running --wait needs D-Bus, which an init image may lack.
+if ! podman exec target timeout 120 sh -c 'until systemctl is-system-running | grep -qE "^(running|degraded)$"; do sleep 1; done'; then
+  echo "SYSTEM_STATE $(podman exec target systemctl is-system-running || true)"
+  podman exec target systemctl --failed --no-pager || true
+  exit 1
+fi
+echo "SYSTEM_STATE $(podman exec target systemctl is-system-running || true)"
 podman exec target systemd-run --unit=probe --property=Type=oneshot /bin/true
 podman exec target systemd-run --unit=journaled --property=Type=oneshot --property=RemainAfterExit=yes \
   /bin/sh -c 'echo journaled-output'

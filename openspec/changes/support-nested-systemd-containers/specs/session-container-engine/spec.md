@@ -48,11 +48,11 @@ On an eligible engine, a nested container started in systemd mode with a systemd
 
 #### Scenario: Rocky Linux 9 target
 - **WHEN** a session runs a Rocky Linux 9 image that starts `/sbin/init` with `podman run --systemd=always` on an eligible engine
-- **THEN** `systemctl is-system-running --wait` reports `running` or `degraded`
+- **THEN** once boot completes, `systemctl is-system-running` reports `running` or `degraded`
 
 #### Scenario: Amazon Linux 2023 target
 - **WHEN** a session runs an Amazon Linux 2023 image that starts `/sbin/init` with `podman run --systemd=always` on an eligible engine
-- **THEN** `systemctl is-system-running --wait` reports `running` or `degraded`
+- **THEN** once boot completes, `systemctl is-system-running` reports `running` or `degraded`
 
 #### Scenario: Unit and journal
 - **WHEN** a test starts a unit in a running nested systemd container
