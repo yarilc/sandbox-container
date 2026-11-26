@@ -50,6 +50,27 @@ The guard fix arrived in `{tag}`, as recorded below.
 
 Commit `{commit}` is the copied state.
 """
+# A runner like Claude's: [[ ... ]] conditions, no --shared mode.
+CLAUDE_RUNNER = """if [[ "${1:-}" == --wrapper ]]; then
+    pattern=w
+elif [[ "${1:-}" == --setup ]]; then
+    pattern=s
+elif [[ "${1:-}" == --setup-runtime ]]; then
+    pattern=sr
+elif [[ "${1:-}" == --qualification ]]; then
+    pattern=q
+elif [[ "${1:-}" == --network ]]; then
+    pattern=n
+elif [[ "${1:-}" == --guard || "${1:-}" == --guard-idle ]]; then
+    pattern=g
+fi
+"""
+PROFILE_WITH_IMAGES = ('{"name": "pi-container", "display_name": "Pi", '
+                       '"images": {"agent": "localhost/pi", "toolchain": "localhost/pi-guard-toolchain"}}\n')
+ENGINE_TESTS = {'tests/test_runtime.py': 'class SessionEngineTests(unittest.TestCase):\n    pass\n',
+                'tests/test_network_runtime.py': ('class NetworkRuntime:\n'
+                                                  '    def test_offline_session_engine_has_no_external_path(self):\n'
+                                                  '        pass\n')}
 RUNNER = """case "${1:-}" in
     --wrapper) pattern=test_wrapper.py ;;
     --shared) pattern='' ;;
@@ -58,6 +79,14 @@ RUNNER = """case "${1:-}" in
     --network) pattern=test_network_runtime.py ;;
 esac
 """
+
+
+def load_tool():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('propagate_tool', TOOL)
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    return tool
 
 
 def git(repo, *args):
@@ -87,6 +116,7 @@ class Propagation(unittest.TestCase):
                'setup/diagnostics.py': 'diagnostics = 1\n', 'setup/common.py': 'common = 1\n',
                'tests/test_alignment.py': ALIGNMENT.format(extra=''), 'tests/test_shared.py': 'shared = 1\n',
                'tests/test_reference_only.py': 'not shared\n'}
+        self.old_files = old
         self.commit_tag(old, 'sandbox-ref-1')
         new = dict(old, **{'network/a.py': 'a = 2\n', 'network/c.py': 'c = 1\n', 'setup/common.py': 'common = 2\n',
                            'tests/test_alignment.py': ALIGNMENT.format(extra=", 'tests/test_new.py'"),
@@ -305,17 +335,143 @@ class Propagation(unittest.TestCase):
 
     def test_runner_modes_in_if_conditions(self):
         # Claude's runner tests modes in [[ ... ]] conditions, two of them joined by ||.
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('propagate_tool', TOOL)
-        tool = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(tool)
+        tool = load_tool()
         runner = self.target / 'tests/run-runtime.sh'
         runner.write_text('if [[ "${1:-}" == --wrapper ]]; then\n    pattern=w\n'
                           'elif [[ "${1:-}" == --setup ]]; then\n    pattern=s\n'
                           'elif [[ "${1:-}" == --guard || "${1:-}" == --guard-idle ]]; then\n    pattern=g\nfi\n')
         self.assertEqual(tool.runner_modes(self.target), {'--wrapper', '--setup', '--guard', '--guard-idle'})
-        self.assertEqual(tool.checklist(self.target, ['network/guard.c']),
-                         ['python3 -m unittest tests.test_reference_copy tests.test_alignment', '--guard'])
+        self.assertEqual(tool.checklist(self.target, ['network/guard.c']), [
+            tool.Entry('unit', 'unit', 'python3 -m unittest tests.test_reference_copy tests.test_alignment'),
+            tool.Entry('mode', 'guard', 'bash tests/run-runtime.sh --guard')])
+
+    def claude_like(self, files=None):
+        """The fixture target with Claude's runner shape, a profile naming images, and extra test files."""
+        write(self.target, dict({'tests/run-runtime.sh': CLAUDE_RUNNER, 'agent/profile.json': PROFILE_WITH_IMAGES},
+                                **(files or {})))
+        return load_tool()
+
+    def names(self, entries):
+        return [entry.name for entry in entries if entry.kind in ('unit', 'mode')]
+
+    def test_launcher_core_selects_wrapper_and_default_runtime(self):
+        tool = self.claude_like()
+        entries = tool.checklist(self.target, ['launcher/core.sh'])
+        self.assertEqual(self.names(entries), ['unit', 'wrapper', 'runtime'])
+        self.assertIn(tool.Entry('mode', 'runtime', 'bash tests/run-runtime.sh'), entries)
+        self.assertNotIn('prepare', [entry.kind for entry in entries])
+
+    def test_engine_inputs_select_the_engine_cases(self):
+        tool = self.claude_like(ENGINE_TESTS)
+        for changed in (['setup/engine.py'], ['launcher/engine/start.sh']):
+            with self.subTest(changed=changed):
+                entries = tool.checklist(self.target, changed)
+                self.assertIn(tool.Entry('prepare', 'engine', 'podman build --pull=never --tag '
+                                         'localhost/pi-engine:latest launcher/engine'), entries)
+                self.assertIn(tool.Entry('mode', 'runtime-engine', 'bash tests/run-runtime.sh -k SessionEngineTests'),
+                              entries)
+                self.assertIn(tool.Entry('mode', 'network-engine', 'bash tests/run-runtime.sh --network '
+                                         '-k test_offline_session_engine_has_no_external_path'), entries)
+                self.assertNotIn('runtime', self.names(entries))
+                self.assertNotIn('network', self.names(entries))
+
+    def test_engine_inputs_without_the_cases_select_the_full_modes(self):
+        tool = self.claude_like()
+        entries = tool.checklist(self.target, ['launcher/engine/Containerfile'])
+        self.assertIn('runtime', self.names(entries))
+        self.assertIn('network', self.names(entries))
+        self.assertFalse({'runtime-engine', 'network-engine'} & set(self.names(entries)))
+
+    def test_full_mode_drops_its_selection(self):
+        tool = self.claude_like(ENGINE_TESTS)
+        entries = tool.checklist(self.target, ['launcher/core.sh', 'launcher/engine/start.sh'])
+        self.assertEqual(self.names(entries), ['unit', 'wrapper', 'runtime', 'network-engine'])
+        self.assertEqual(len(entries), len(set(entries)))
+
+    def test_qualified_file_selects_qualification(self):
+        tool = self.claude_like()
+        self.assertEqual(self.names(tool.checklist(self.target, ['network/a.py'])), ['unit'])
+        self.assertIn('qualification', self.names(tool.checklist(self.target, ['network/a.py'], ('network/a.py',))))
+        # SHARED_CODE is read from the tag; computed entries (the built guard, the profile) are not copied files.
+        current = {path.relative_to(self.reference).as_posix(): path.read_text()
+                   for path in self.reference.rglob('*') if path.is_file() and '.git' not in path.parts}
+        self.commit_tag(dict(current, **{'network/qualification_records.py': (
+            "GUARD = 'guard'\nSHARED_CODE = ('network/a.py', 'network/bin/' + GUARD, 'setup/engine.py')\n")}),
+            'sandbox-ref-3')
+        tool.REFERENCE = self.reference
+        self.assertEqual(tool.qualified_code('sandbox-ref-3'), ('network/a.py', 'setup/engine.py'))
+        self.assertEqual(tool.qualified_code('sandbox-ref-1'), ())
+
+    def test_shared_test_modules_join_their_mode_or_the_unit_tests(self):
+        tool = self.claude_like()
+        entries = tool.checklist(self.target, ['tests/test_engine.py', 'tests/test_toolchains.py', 'tests/test_setup.py'])
+        self.assertEqual(entries[-3:], [
+            tool.Entry('unit', 'unit', 'python3 -m unittest tests.test_reference_copy tests.test_alignment '
+                       'tests.test_engine tests.test_toolchains'),
+            tool.Entry('mode', 'setup', 'bash tests/run-runtime.sh --setup'),
+            tool.Entry('mode', 'setup-runtime', 'bash tests/run-runtime.sh --setup-runtime')])
+        # A module whose mode the runner does not offer runs as a host unit test.
+        entries = tool.checklist(self.target, ['tests/test_mux.py'])
+        self.assertIn('tests.test_mux', next(entry.command for entry in entries if entry.kind == 'unit'))
+
+    def test_helper_selects_the_modules_that_name_it(self):
+        tool = self.claude_like({'tests/test_launcher.py': "FAKE = (TESTS / 'fake_podman.py').read_text()\n",
+                                 'tests/test_other.py': 'fake_podman_like = 1\n'})
+        entries = tool.checklist(self.target, ['tests/fake_podman.py'])
+        self.assertEqual(self.names(entries), ['unit', 'wrapper'])
+        self.assertNotIn('test_other', entries[-2].command)
+
+    def test_windows_files_add_a_manual_step(self):
+        tool = self.claude_like()
+        for changed in (['launcher/windows/core.ps1'], ['sandbox-container.ps1']):
+            with self.subTest(changed=changed):
+                manual = [entry for entry in tool.checklist(self.target, changed) if entry.kind == 'manual']
+                self.assertEqual(len(manual), 1)
+                self.assertIn('windows-validate.ps1', manual[0].command)
+
+    def test_images_follow_the_selected_modes(self):
+        tool = self.claude_like()
+        images = [entry.command for entry in tool.checklist(self.target, ['network/a.py']) if entry.kind == 'image']
+        self.assertEqual(images, ['localhost/pi:latest'])
+        images = [entry.command for entry in tool.checklist(self.target, ['network/proxy.py']) if entry.kind == 'image']
+        self.assertEqual(images, ['localhost/pi:latest', 'localhost/pi-guard-toolchain:development'])
+        (self.target / 'agent/profile.json').write_text('{"name": "pi-container", "display_name": "Pi"}\n')
+        self.assertFalse([entry for entry in tool.checklist(self.target, ['network/proxy.py']) if entry.kind == 'image'])
+        with self.assertRaisesRegex(tool.PropagationError, 'names no images.agent'):
+            tool.checklist(self.target, ['setup/engine.py'])
+
+    def test_report_prints_commands_with_private_storage(self):
+        write(self.target, {'tests/run-runtime.sh': CLAUDE_RUNNER})
+        git(self.target, 'commit', '-qam', 'claude runner')
+        result = self.run_tool()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        line = next(l for l in result.stdout.splitlines() if l.startswith('Run in the target: '))
+        self.assertEqual(line, 'Run in the target: SANDBOX_TEST_TMPDIR=<private directory> python3 -m unittest '
+                               'tests.test_reference_copy tests.test_alignment tests.test_new')
+        self.assertIn(f'On one host, after the adoption: bash tools/adoption-run.sh {self.target.resolve()} '
+                      'sandbox-ref-1 sandbox-ref-2\n', result.stdout)
+        self.assertIn('| `SANDBOX_TEST_TMPDIR=<private directory> python3 -m unittest tests.test_reference_copy '
+                      'tests.test_alignment tests.test_new` | <fill in> |', result.stdout)
+
+    def test_checklist_of_an_adopted_target(self):
+        result = self.run_tool('--checklist')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('adopts sandbox-ref-1', result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertEqual(self.run_tool('--apply').returncode, 0)
+        (self.target / 'README.md').write_text('local edit\n')
+        before = self.snapshot()
+        result = self.run_tool('--checklist')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = [line.split('\t') for line in result.stdout.splitlines()]
+        self.assertTrue(lines)
+        for fields in lines:
+            self.assertEqual(len(fields), 3, fields)
+            self.assertIn(fields[0], ('unit', 'mode', 'prepare', 'image', 'manual'))
+        self.assertEqual(lines[0], ['mode', 'shared', 'bash tests/run-runtime.sh --shared'])
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(git(self.target, 'branch', '--show-current').strip(), 'adopt-sandbox-ref-2')
+        self.assertEqual(self.run_tool('--checklist', '--apply').returncode, 2)
 
     def test_preconditions_refuse_without_writing(self):
         cases = []
@@ -358,8 +514,59 @@ class Propagation(unittest.TestCase):
     def test_same_tag_reports_no_changes(self):
         result = self.run_tool(old='sandbox-ref-1', new='sandbox-ref-1')
         self.assertEqual(result.returncode, 0, result.stderr)
-        for label in ('modified', 'added', 'removed', 'not adopted', 'documents'):
+        for label in ('modified', 'added', 'removed', 'not adopted', 'documents', 'reference changes'):
             self.assertIn(label + ': none\n', result.stdout)
+        self.assertNotIn('review: ', result.stdout)
+
+    def test_review_lists_own_lines_naming_a_changed_directory(self):
+        # The range adds network/c.py and removes network/gone.py: a target line naming
+        # a network file may belong to a hand-written list of that directory.
+        listing = "for name in ('network/a.py', 'network/b.py'):\n    pass\n"
+        write(self.target, {'tests/test_own.py': 'import os\n' + listing, 'docs/validation.md': listing,
+                            'CHANGELOG.md': listing, 'openspec/changes/archive/x/design.md': listing,
+                            'tests/test_reference_copy.py': (self.target / 'tests/test_reference_copy.py').read_text()
+                            + '# network/a.py\n', 'notes/gone.txt': 'see network/gone.py\n'})
+        git(self.target, 'add', '-A')
+        git(self.target, 'commit', '-qm', 'own lists')
+        for args in ((), ('--apply',)):
+            with self.subTest(args=args):
+                result = self.run_tool(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual([line for line in result.stdout.splitlines() if line.startswith('review: ')],
+                                 ['review: notes/gone.txt:1', 'review: tests/test_own.py:2'])
+
+    def test_review_is_silent_without_additions_or_removals(self):
+        write(self.target, {'tests/test_own.py': "NAMES = ('network/a.py', 'network/b.py')\n"})
+        git(self.target, 'add', '-A')
+        git(self.target, 'commit', '-qm', 'own list')
+        self.commit_tag(dict(self.old_files, **{'network/a.py': 'a = 3\n'}), 'sandbox-ref-3')
+        result = self.run_tool(new='sandbox-ref-3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('modified: network/a.py\n', result.stdout)
+        self.assertNotIn('review: ', result.stdout)
+
+    def test_reference_changes_of_the_range(self):
+        write(self.reference, {'openspec/changes/alpha/specs/cap-a/spec.md': 'alpha\n',
+                               'openspec/changes/beta/specs/reference-propagation/spec.md': 'beta\n',
+                               'openspec/changes/gamma/proposal.md': 'gamma\n'})
+        git(self.reference, 'add', '-A')
+        git(self.reference, 'commit', '-qm', 'three changes')
+        (self.reference / 'openspec/changes/archive').mkdir()
+        git(self.reference, 'mv', 'openspec/changes/beta', 'openspec/changes/archive/2026-11-25-beta')
+        git(self.reference, 'commit', '-qm', 'archive beta')
+        git(self.reference, 'tag', '-a', 'sandbox-ref-3', '-m', 'sandbox-ref-3')
+        # Archived after the tag: the plan reads the location at HEAD.
+        git(self.reference, 'mv', 'openspec/changes/alpha', 'openspec/changes/archive/2026-11-26-alpha')
+        git(self.reference, 'commit', '-qm', 'archive alpha')
+        write(self.target, {'openspec/specs/cap-a/spec.md': 'cap-a\n'})
+        git(self.target, 'add', '-A')
+        git(self.target, 'commit', '-qm', 'cap-a')
+        result = self.run_tool(new='sandbox-ref-3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('reference changes: 3\n'
+                      '  alpha: archive/2026-11-26-alpha; specs: cap-a\n'
+                      '  beta: archive/2026-11-25-beta; specs: reference-propagation [not in target]\n'
+                      '  gamma: active; specs: none\n', result.stdout)
 
 
 if __name__ == '__main__':

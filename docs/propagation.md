@@ -16,28 +16,37 @@ published under a new tag and propagated again.
 ## 1. Decide whether a new tag is needed
 
 A change needs a new tag when it modifies, adds or removes a file under
-`network/` or `setup/`, or a test listed in `SHARED_TESTS`. Changes to the
+`network/`, `setup/` or `launcher/`, or a test listed in `SHARED_TESTS`. Changes to the
 wrapper, the agent profile, documentation, `tools/` or per-agent tests do not.
 
 Before tagging, run in this repository at least every runner mode that
 `tools/propagate.py` will print for the wrappers (`checklist()`), for the
-shared files changed since the previous tag:
+shared files changed since the previous tag. Run each mode in full, without
+the `-k` selections a wrapper's checklist may use, on WSL and on the native
+Linux host: the wrappers validate an adoption on one host, and rely on these
+runs for the rest.
 
-| Changed shared files | Modes |
+| Changed shared files | Checklist entries |
 | --- | --- |
-| any | `--shared` (here: the unit discovery), plus `tests/test_agent_profile.py` and `tests/test_alignment.py` |
+| any | `unit`: `tests/test_reference_copy.py` and `tests/test_alignment.py` as host unit tests, with `SANDBOX_TEST_TMPDIR` on private storage. A wrapper whose runner offers `--shared` (the unit discovery) runs that instead. Here: the unit discovery, plus `tests/test_agent_profile.py` and `tests/test_alignment.py` |
 | `setup/`, `tests/test_setup.py` | `--setup`, `--setup-runtime` |
-| `network/qualif*`, `network/platform_check.py`, `network/release_acceptance.json`, `tests/test_qualification.py`, `tests/test_platform.py` | `--qualification` |
+| `network/qualif*`, `network/platform_check.py`, `network/release_acceptance.json`, `tests/test_qualification.py`, `tests/test_platform.py`, or a file listed in `SHARED_CODE` (`network/qualification_records.py`) | `--qualification` |
 | guard, proxy, relay, multiplex, session, control, TLS or policy code and their tests | `--guard`, `--network` |
 | `network/agent_profile.py` | `--wrapper` |
+| `launcher/` outside `engine/` and `windows/` | `--wrapper` and the default runtime mode: the launcher core runs in every session |
+| `launcher/engine/`, `setup/engine.py` | the engine image rebuilt from the checkout, then the engine cases: `-k SessionEngineTests` of the default runtime mode and `--network -k test_offline_session_engine_has_no_external_path`. A target without those tests runs both modes in full. A selection is dropped when its mode is already named in full |
+| `launcher/windows/`, `*.ps1` | a manual step: `tools/windows-validate.ps1` on Windows PowerShell 5.1 |
+| a shared `tests/test_*.py` | the mode that runs it (`test_setup` → `--setup`, `test_qualification` → `--qualification`, `test_launcher` → `--wrapper`, `test_guard` → `--guard`, `test_network_feasibility`, `test_network_policy` and `test_mux` → their modes) when the runner offers it; otherwise the module joins `unit` |
+| a shared test helper (`tests/*.py` that is not a test module) | each of the target's test modules that names the helper, mapped as above; the wrapper's own `test_runtime`, `test_network_runtime`, `test_setup_runtime` and `test_wrapper` map to the default runtime mode, `--network`, `--setup-runtime` and `--wrapper` |
 
-Also run `--qualification` whenever a changed file is listed in
-`SHARED_CODE` (`network/qualification_records.py`), such as a new setup
-module. Qualification digests those files, and the shared runtime fixtures
-must install them.
+The checklist also names the images the entries need: the runtime image
+always, and the guard toolchain for `--qualification`, `--guard` and
+`--network`. `SHARED_CODE` is read from the new tag: qualification digests
+those files, and the shared runtime fixtures must install them.
 
-Record every mode and its result in `docs/validation.md`, under a section that
-names the new tag. A mode that cannot run is recorded as unavailable. Do not
+Record every mode and its result on each host in `docs/validation.md`, under a
+section that names the new tag. A mode or a host that cannot run is recorded as
+unavailable. Do not
 tag while a listed mode fails. Merge into `main`, then create an annotated tag on the merge commit:
 
 ```bash
@@ -80,12 +89,43 @@ The dry run prints:
 - the documents and the number of references to update. For the network
   contract it also counts the old-tag mentions it keeps, for example
   `docs/network-contract.md (3, 8 kept)`;
-- the runner modes to execute;
+- `review: <path>:<line>` for each line of the wrapper's own files that names
+  a shared file of a directory where the tag adds or removes files;
+- the reference's OpenSpec changes touched between the tags, under
+  `reference changes:`;
+- the commands to execute, by changed component (step 1), with the images
+  they need and any manual step, and the runner line for one host
+  (step 3);
 - a validation-record template and a commit message.
 
 "Not adopted" files are expected while a wrapper has adopted only part of the
 shared set, for example `setup/` before its guided-setup change. They are left
 alone; the wrapper's own change that adopts them copies them later.
+
+A review line asks one question: is this line part of a hand-written list of
+that directory, which the added or removed file makes stale? For example, at
+`sandbox-ref-36` Claude's `tests/test_network_runtime.py` copied the engine's
+build inputs from its own list, which lacked the two added files. Fix such a
+list on the adoption branch, preferably by reading the shared list (here
+`engine.INPUTS`); a line that only mentions a file, such as a comment, needs
+nothing. Lines of the shared files, the manifest, `docs/validation.md`,
+`CHANGELOG.md` and `openspec/` are never listed.
+
+Each reference change is listed with its location in this checkout, archived
+or still active, and the capabilities of its delta specs:
+
+```text
+reference changes: 2
+  declare-engine-image-capabilities: archive/2026-11-26-declare-engine-image-capabilities; specs: session-container-engine
+  keep-parity-history-in-propagation: archive/2026-11-26-keep-parity-history-in-propagation; specs: reference-propagation [not in target]
+```
+
+The wrapper's adoption change takes its spec deltas from these files, with the
+wrapper's names. `[not in target]` means the wrapper has no main spec for the
+capability: either it is reference-only, such as `reference-propagation`, and
+the adoption skips it, or the adoption brings it to the wrapper, as
+`session-container-engine` came with the session engine. An active change may
+or may not be part of the tag; check its tasks before taking its deltas.
 
 When the plan is right, apply it:
 
@@ -132,10 +172,54 @@ When a tag introduces or changes them, copy them by hand on the same branch:
 
 ## 3. Verify and record
 
-Review `git diff` in the wrapper. Run every runner mode the tool listed, in the
-wrapper checkout, plus any other mode the change can affect. Fill in the
-validation-record template in the wrapper's `docs/validation.md` with the
-results.
+Review `git diff` in the wrapper, and the `review:` lines of the plan. Commit
+the adoption on its branch and push it, so that the operator's native clone can
+take it.
+
+An adoption is validated on one native host: the one where the wrapper is
+used. The reference ran the modes in full on both hosts before tagging (step
+1), and the copied files are byte-identical to the tag. On that host, in the
+reference checkout beside the wrapper's native clone on the adoption branch,
+run one line:
+
+```bash
+bash tools/adoption-run.sh ../codex-container sandbox-ref-M sandbox-ref-N
+```
+
+The runner takes the commands from `tools/propagate.py --checklist`, which
+refuses a checkout that has not adopted `sandbox-ref-N`. It:
+
+- records the commit, the kernel, Podman, the cgroup manager and controllers,
+  the OCI runtime and the free space;
+- stops before any command when an image the commands need is missing, or
+  when less than 1 GiB is free in the home or temporary directory;
+- rebuilds the wrapper's engine image from the checkout when the tag changes
+  its inputs, and records its ID and its `io.containers.capabilities` label;
+- runs the host unit tests with `SANDBOX_TEST_TMPDIR` on a new private
+  directory: on the host's Python when it is 3.11 or later, otherwise in the
+  wrapper's runtime image (the Rocky 9 lab host has Python 3.9);
+- runs every entry to its own full log, also after a failure, and records the
+  image tags around `--setup-runtime`;
+- writes `summary.txt`: each entry's exit status and result line, then every
+  skipped test with its reason. A skip that asks to prepare an image is marked
+  `NOT PREPARED` and fails the run;
+- packs everything into `~/sbx-logs-<wrapper>-<tag>-<host>-<time>.tar.gz`, a new
+  archive for each run.
+
+It never commits, switches branches, fetches, pushes or removes images. After a
+fix on the adoption branch, rerun only the affected entries, into a new
+archive:
+
+```bash
+bash tools/adoption-run.sh --only unit,network-engine ../codex-container sandbox-ref-M sandbox-ref-N
+```
+
+Fill in the validation-record template in the wrapper's `docs/validation.md`
+with every entry's result, and list the checks not run, citing the reference's
+record of the tag as their evidence. When the adoption also changes the
+wrapper's own files, run the mode that runs them, or its cases that exercise
+the change (`-k`), and record which. Manual steps, such as the Windows
+validation script, are run and recorded separately.
 
 If a suite fails because of shared code, stop: fix it here (step 1) under a new
 tag and adopt that tag instead. Discard the adoption branch first:
@@ -163,6 +247,10 @@ so that the reference row and the five wrapper rows are identical across the
 repositories. The user pushes the branches and the tag.
 
 ## Keeping the tool in step
+
+`tools/adoption-run.sh` reads only the tab-separated lines of
+`tools/propagate.py --checklist` (`kind`, `name`, `command`); a new entry kind or
+name is added to both, with `tests/test_adoption_run.py`.
 
 `tools/propagate.py` parses the wrappers' `tests/test_reference_copy.py` as text
 (`REFERENCE_TAG`, `REFERENCE_COMMIT` and one `'path': 'sha256',` line per

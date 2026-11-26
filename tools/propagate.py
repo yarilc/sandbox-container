@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Propagate a new reference tag of the shared components to a wrapper checkout.
 
-Usage: python3 -I tools/propagate.py <target> <old-tag> <new-tag> [--apply]
+Usage: python3 -I tools/propagate.py <target> <old-tag> <new-tag> [--apply | --checklist]
 
 Reference-only: this tool lives in sandbox-container and is never copied.
 It reads the tags from this checkout, verifies that the target is a clean,
@@ -11,9 +11,16 @@ references in current-state documents. In docs/network-contract.md these are
 the reference line and the contract adoption cells of the target's and the
 reference's parity rows; the rest of the table is history. It never runs
 suites, commits, merges, tags or pushes. See docs/propagation.md.
+
+The plan also names the commands that validate the adoption, by changed
+component, the target's own lines to review, and the reference's OpenSpec
+changes of the range. --checklist prints those commands, one tab-separated
+line each, for a target that has already adopted <new-tag>; tools/adoption-run.sh
+runs them.
 """
 import argparse
 import ast
+import collections
 import datetime
 import hashlib
 import json
@@ -43,6 +50,42 @@ ENTRY = re.compile(r"^    '([^']+)': '([0-9a-f]{64})',$")
 # The reference checkout the manifest's sibling check compares against.
 SIBLING_LINE = re.compile(r"^SIBLING = ROOT\.parent / '([^'/]+)'$", re.M)
 COPY_LINE = re.compile(r'the [\w-]+ reference copy')
+# The qualification gate digests the files of SHARED_CODE (docs/propagation.md).
+QUALIFICATION_FILE = 'network/qualification_records.py'
+RUNNER = 'tests/run-runtime.sh'
+# The runner mode that runs each test module ('' is the default runtime mode).
+# A changed shared module without an offered mode joins the host unit tests.
+MODE_TESTS = {
+    'tests/test_setup.py': '--setup', 'tests/test_setup_runtime.py': '--setup-runtime',
+    'tests/test_qualification.py': '--qualification', 'tests/test_launcher.py': '--wrapper',
+    'tests/test_wrapper.py': '--wrapper', 'tests/test_runtime.py': '',
+    'tests/test_network_feasibility.py': '--network-feasibility', 'tests/test_network_policy.py': '--network-policy',
+    'tests/test_mux.py': '--mux', 'tests/test_guard.py': '--guard', 'tests/test_network_runtime.py': '--network',
+}
+# The order in which the checklist names the runner modes.
+MODE_ORDER = ('--setup', '--setup-runtime', '--qualification', '--wrapper', '', '--network-feasibility',
+              '--network-policy', '--mux', '--guard', '--network')
+ENGINE_INPUTS = ('launcher/engine/', 'setup/engine.py')
+# The engine cases of the default and network runtime modes. Wrappers keep the
+# reference's test names when they port them; a target without them runs the
+# whole mode.
+ENGINE_CASES = (
+    ('', 'runtime-engine', 'tests/test_runtime.py', r'(?m)^class SessionEngineTests\b', '-k SessionEngineTests'),
+    ('--network', 'network-engine', 'tests/test_network_runtime.py',
+     r'(?m)^\s+def test_offline_session_engine_has_no_external_path\b',
+     '-k test_offline_session_engine_has_no_external_path'),
+)
+WINDOWS_STEP = ('on a Windows host, from sandbox-container: .\\tools\\windows-validate.ps1 -Checkout <the Windows '
+                'checkout>, on Windows PowerShell 5.1')
+# Host unit tests need private, executable temporary storage: the toolchain
+# library refuses a world-writable ancestor such as /tmp.
+PRIVATE_STORAGE = 'SANDBOX_TEST_TMPDIR=<private directory> '
+# Lines of the target that are history or planning, never checked for review.
+REVIEW_EXCLUDED = ('docs/validation.md', 'CHANGELOG.md')
+CHANGES = 'openspec/changes'
+
+# One checklist line: kind is unit, mode, prepare, image or manual.
+Entry = collections.namedtuple('Entry', 'kind name command')
 
 
 class PropagationError(Exception):
@@ -168,8 +211,87 @@ def plan(target, old, new):
                 documents[name] = (replaced, kept)
     return dict(target=target, old=old, new=new, old_commit=old_commit, new_commit=new_commit, branch=branch,
                 modified=modified, added=added, removed=removed, not_adopted=sorted(not_adopted),
-                documents=documents, modes=checklist(target, modified + added + removed), new_files=new_files,
-                sibling=sibling, reference_name=REFERENCE.name)
+                documents=documents, entries=checklist(target, modified + added + removed, qualified_code(new)),
+                review=review_lines(target, added + removed, set(adopted) | set(added), old_shared | new_shared),
+                changes=range_changes(target, old, new),
+                new_files=new_files, sibling=sibling, reference_name=REFERENCE.name)
+
+
+def review_lines(target, changed, shared, shared_paths):
+    """'<path>:<line>' of the target's own lines that name a shared file of a directory with additions or removals.
+
+    Such a line may belong to a hand-written list of that directory, which the
+    added or removed file makes stale (docs/propagation.md, step 2).
+    """
+    directories = {str(Path(path).parent) for path in changed}
+    needles = sorted(path for path in shared_paths if str(Path(path).parent) in directories)
+    if not needles:
+        return []
+    found = []
+    for name in git(target, 'ls-files', '-z').split('\0'):
+        if not name or name in shared or name == MANIFEST_FILE or name in REVIEW_EXCLUDED \
+                or name.startswith('openspec/'):
+            continue
+        try:
+            text = (target / name).read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        found += [f'{name}:{number}' for number, line in enumerate(text.splitlines(), 1)
+                  if any(needle in line for needle in needles)]
+    return found
+
+
+def range_changes(target, old, new):
+    """The reference's OpenSpec changes touched between the tags: (name, location, [(capability, in target)]).
+
+    The location is read at this checkout's HEAD, because a change can be
+    archived after its tag.
+    """
+    names = []
+    for path in git(REFERENCE, 'log', '--name-only', '--format=', f'{old}..{new}', '--', CHANGES).splitlines():
+        parts = path.split('/')
+        if len(parts) >= 5 and parts[2] == 'archive':
+            name = re.sub(r'^\d{4}-\d{2}-\d{2}-', '', parts[3])
+        elif len(parts) >= 4 and parts[2] != 'archive':
+            name = parts[2]
+        else:
+            continue
+        if name not in names:
+            names.append(name)
+    found = []
+    for name in sorted(names):
+        root = REFERENCE / CHANGES / name
+        if root.is_dir():
+            location = 'active'
+        else:
+            archived = sorted(path for path in (REFERENCE / CHANGES / 'archive').glob('*-' + name)
+                              if re.fullmatch(r'\d{4}-\d{2}-\d{2}-' + re.escape(name), path.name))
+            root = archived[-1] if archived else None
+            location = 'archive/' + root.name if root else 'not found at HEAD'
+        capabilities = []
+        if root is not None and (root / 'specs').is_dir():
+            for spec in sorted((root / 'specs').rglob('spec.md')):
+                capability = spec.parent.relative_to(root / 'specs').as_posix()
+                capabilities.append((capability, (target / 'openspec/specs' / capability / 'spec.md').is_file()))
+        found.append((name, location, capabilities))
+    return found
+
+
+def adopted_checklist(target, old, new):
+    """The checklist of a target that has already adopted the new tag, for tools/adoption-run.sh."""
+    target = Path(target).resolve()
+    if not (target / '.git').exists():
+        raise PropagationError(f'{target} is not a git checkout')
+    old_commit, new_commit = commit_of(old), commit_of(new)
+    _, _, _, tag, commit, adopted, _ = read_manifest(target)
+    if (tag, commit) != (new, new_commit):
+        raise PropagationError(f'{target} adopts {tag} ({commit}), not {new} ({new_commit})')
+    old_files, new_files = tree(old), tree(new)
+    _, old_shared, _ = shared_set(old, old_files)
+    _, new_shared, _ = shared_set(new, new_files)
+    changed = sorted({path for path in adopted if old_files.get(path) != new_files.get(path)}
+                     | (old_shared - new_shared))
+    return checklist(target, changed, qualified_code(new))
 
 
 def tag_pattern(tag):
@@ -276,23 +398,122 @@ def runner_modes(target):
     return set(labels)
 
 
-def checklist(target, changed):
+def qualified_code(tag):
+    """The copied files the qualification gate digests at the tag (SHARED_CODE), or () without them.
+
+    Only the literal paths: the computed entries name the built guard binary
+    and the wrapper's own profile and policy, which are not copied files.
+    """
+    try:
+        source = git(REFERENCE, 'show', f'{tag}:{QUALIFICATION_FILE}')
+    except PropagationError:
+        return ()
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id == 'SHARED_CODE' and isinstance(node.value, (ast.Tuple, ast.List)):
+            return tuple(element.value for element in node.value.elts
+                         if isinstance(element, ast.Constant) and isinstance(element.value, str))
+    return ()
+
+
+def profile_images(target):
+    """The images of the target's profile, read as data; {} when it names none."""
+    try:
+        images = json.loads((target / PROFILE_FILE).read_text()).get('images')
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return images if isinstance(images, dict) else {}
+
+
+def naming_modules(target, helper):
+    """The target's test modules that name a test helper: by import, or by reading its file."""
+    word = re.compile(r'\b' + re.escape(Path(helper).stem) + r'\b')
+    return sorted('tests/' + path.name for path in (target / 'tests').glob('test_*.py')
+                  if word.search(path.read_text(errors='replace')))
+
+
+def mode_entry(mode, selection=''):
+    name = mode.removeprefix('--') or 'runtime'
+    return Entry('mode', name, ' '.join(['bash', RUNNER] + [part for part in (mode, selection) if part]))
+
+
+def checklist(target, changed, shared_code=()):
+    """The entries that validate an adoption: what exercises each changed file (docs/propagation.md)."""
     offered = runner_modes(target)
-    modes = ['--shared'] if '--shared' in offered else ['python3 -m unittest tests.test_reference_copy tests.test_alignment']
+    has_runner = (target / RUNNER).is_file()
+
+    def available(mode):
+        return has_runner and (mode == '' or mode in offered)
+
     def any_changed(*prefixes):
         return any(path.startswith(prefixes) for path in changed)
+    modes, selections, unit, prepare, manual = set(), {}, ['tests.test_reference_copy', 'tests.test_alignment'], [], []
     if any_changed('setup/', 'tests/test_setup.py'):
-        modes += [m for m in ('--setup', '--setup-runtime') if m in offered]
+        modes |= {'--setup', '--setup-runtime'}
     if any_changed('network/qualif', 'network/platform_check.py', 'network/release_acceptance.json',
-                   'tests/test_qualification.py', 'tests/test_platform.py'):
-        modes += [m for m in ('--qualification',) if m in offered]
+                   'tests/test_qualification.py', 'tests/test_platform.py') \
+            or any(path in shared_code for path in changed):
+        modes.add('--qualification')
     if any_changed('network/guard', 'network/build-guard.sh', 'network/proxy', 'network/relay.py', 'network/mux.py',
                    'network/session.py', 'network/control.py', 'network/tls_client_hello.py', 'network/policy.py',
                    'tests/test_guard.py', 'tests/guard_', 'tests/test_session.py', 'tests/test_mux.py'):
-        modes += [m for m in ('--guard', '--network') if m in offered]
+        modes |= {'--guard', '--network'}
     if any_changed('network/agent_profile.py'):
-        modes += [m for m in ('--wrapper',) if m in offered]
-    return list(dict.fromkeys(modes))
+        modes.add('--wrapper')
+    # The launcher core runs in every session: its shared tests and the default runtime mode.
+    if any(path.startswith('launcher/') and not path.startswith(('launcher/engine/', 'launcher/windows/'))
+           for path in changed):
+        modes |= {'--wrapper', ''}
+    if any_changed(*ENGINE_INPUTS):
+        agent = profile_images(target).get('agent')
+        if not agent:
+            raise PropagationError(f'{PROFILE_FILE} names no images.agent, so the engine image cannot be named')
+        prepare.append(Entry('prepare', 'engine', f'podman build --pull=never --tag {agent}-engine:latest launcher/engine'))
+        for mode, name, path, pattern, selection in ENGINE_CASES:
+            source = target / path
+            if source.is_file() and re.search(pattern, source.read_text(errors='replace')):
+                selections[mode] = (name, selection)
+            else:
+                modes.add(mode)
+    if any_changed('launcher/windows/') or any(path.endswith('.ps1') for path in changed):
+        manual.append(Entry('manual', 'windows', WINDOWS_STEP))
+    for path in sorted(changed):
+        if not (path.startswith('tests/') and path.endswith('.py') and path.count('/') == 1):
+            continue
+        name = Path(path).name
+        for module in [path] if name.startswith('test_') else naming_modules(target, name):
+            mode = MODE_TESTS.get(module)
+            if mode is not None and available(mode):
+                modes.add(mode)
+            else:
+                unit.append('tests.' + Path(module).stem)
+    entries = []
+    if '--shared' in offered:
+        # The target's unit discovery in its runner image, which also runs the changed modules.
+        entries.append(mode_entry('--shared'))
+    else:
+        entries.append(Entry('unit', 'unit', 'python3 -m unittest ' + ' '.join(dict.fromkeys(unit))))
+    for mode in MODE_ORDER:
+        if not available(mode):
+            continue
+        if mode in modes:
+            entries.append(mode_entry(mode))
+        elif mode in selections:
+            name, selection = selections[mode]
+            entries.append(mode_entry(mode, selection)._replace(name=name))
+    images = profile_images(target)
+    needed = []
+    if images.get('agent'):
+        needed.append(Entry('image', 'runtime', images['agent'] + ':latest'))
+    if images.get('toolchain') and any(entry.name in ('qualification', 'guard', 'network', 'network-engine')
+                                       for entry in entries):
+        needed.append(Entry('image', 'toolchain', images['toolchain'] + ':development'))
+    return needed + prepare + entries + manual
+
+
+def display(entry):
+    """How the report prints an entry's command."""
+    return PRIVATE_STORAGE + entry.command if entry.kind == 'unit' else entry.command
 
 
 def write_atomic(path, data, mode):
@@ -359,10 +580,25 @@ def report(result, applied):
     out.append('documents: ' + (', '.join(f'{n} ({r})' if k is None else f'{n} ({r}, {k} kept)'
                                           for n, (r, k) in result['documents'].items()) or 'none'))
     out.append('manifest: ' + MANIFEST_FILE + f" -> {result['new']} ({result['new_commit']})")
+    out += ['review: ' + line for line in result['review']]
+    out.append('reference changes: ' + ('none' if not result['changes'] else str(len(result['changes']))))
+    for name, location, capabilities in result['changes']:
+        specs = ', '.join(capability + ('' if present else ' [not in target]') for capability, present in capabilities)
+        out.append(f'  {name}: {location}; specs: {specs or "none"}')
     if result['sibling'] != result['reference_name']:
         out.append(f"manifest: names {result['reference_name']} instead of {result['sibling']}")
-    out.append('Run in the target: ' + '; '.join(
-        m if m.startswith('python3') else 'bash tests/run-runtime.sh ' + m for m in result['modes']))
+    entries = result['entries']
+    runs = [entry for entry in entries if entry.kind in ('unit', 'mode')]
+    prepared = [entry.command for entry in entries if entry.kind == 'prepare']
+    if prepared:
+        out.append('Prepare in the target: ' + '; '.join(prepared))
+    out.append('Run in the target: ' + '; '.join(display(entry) for entry in runs))
+    images = [entry.command for entry in entries if entry.kind == 'image']
+    if images:
+        out.append('Images needed: ' + ', '.join(images))
+    out += ['Manual: ' + entry.command for entry in entries if entry.kind == 'manual']
+    out.append(f"On one host, after the adoption: bash tools/adoption-run.sh {result['target']} "
+               f"{result['old']} {result['new']}")
     copied = result['modified'] + result['added']
     out += ['', 'Validation record template (docs/validation.md):', '',
             f"## Adoption of `{result['new']}`: {datetime.date.today().isoformat()}", '',
@@ -371,7 +607,8 @@ def report(result, applied):
             + (' Removed: ' + ', '.join(f'`{p}`' for p in result['removed']) + '.' if result['removed'] else ''),
             'The `tests/test_reference_copy.py` manifest moved to the tag.', '',
             '| Check | Result |', '| --- | --- |']
-    out += [f"| `{m if m.startswith('python3') else 'bash tests/run-runtime.sh ' + m}` | <fill in> |" for m in result['modes']]
+    out += [f'| `{display(entry)}` | <fill in> |' for entry in runs]
+    out += [f'| {entry.command} | <fill in> |' for entry in entries if entry.kind == 'manual']
     out += ['', 'Commit message:', '', f"Adopt {result['new']}", '',
             f"Copy the changed shared files from sandbox-container {result['new']} and move",
             'the reference manifest and the current-state references to the tag.']
@@ -384,11 +621,18 @@ def main(argv=None):
     parser.add_argument('target')
     parser.add_argument('old')
     parser.add_argument('new')
-    parser.add_argument('--apply', action='store_true', help='write the changes on a new adopt-<new> branch')
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument('--apply', action='store_true', help='write the changes on a new adopt-<new> branch')
+    action.add_argument('--checklist', action='store_true',
+                        help='print the validation commands of a target that has adopted <new>, one per line')
     parser.add_argument('--reference', default=str(REFERENCE), help=argparse.SUPPRESS)  # tests only
     args = parser.parse_args(argv)
     REFERENCE = Path(args.reference).resolve()
     try:
+        if args.checklist:
+            for entry in adopted_checklist(args.target, args.old, args.new):
+                print('\t'.join(entry))
+            return 0
         result = plan(args.target, args.old, args.new)
         if args.apply:
             apply(result)

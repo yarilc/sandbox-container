@@ -94,7 +94,7 @@ Facts the design relies on:
    | `launcher/engine/`, `setup/engine.py` | `prepare engine`, `runtime-engine` and `network-engine` when the target defines the cases, else `runtime` and `network` |
    | `launcher/windows/`, `*.ps1` | `manual`: `tools/windows-validate.ps1` on Windows PowerShell 5.1 |
    | a shared `tests/test_*.py` | its mode from a fixed table, when the target offers that mode; otherwise the module joins `unit` |
-   | a shared test helper (`tests/*.py` that is not a test module) | each target module that imports it, mapped by the row above |
+   | a shared test helper (`tests/*.py` that is not a test module) | each target test module that names it, mapped by the row above |
 
    - **Mode table:**
      - `test_setup` runs in `--setup` and `test_qualification` in
@@ -109,8 +109,9 @@ Facts the design relies on:
      `class SessionEngineTests` and
      `def test_offline_session_engine_has_no_external_path` in the target's
      tests.
-   - **How helper imports are found:** `^\s*(from|import) <helper>\b` in the
-     target's `tests/test_*.py`.
+   - **How helper users are found:** the helper's file stem as a whole word in
+     the target's `tests/test_*.py`. The wrappers read `tests/fake_podman.py` as
+     text rather than importing it, so an import pattern would miss them.
    - **Image entries:** the runtime image always, and the guard toolchain
      when `qualification`, `guard` or `network` (in full or as a selection)
      is named.
@@ -147,8 +148,9 @@ Facts the design relies on:
 
 4. **Review warnings by directory.**
    - **Trigger:** for each added or removed shared path, with directory `D`.
-   - **Needles:** the full paths of the other shared files under `D` at
-     either tag.
+   - **Needles:** the full paths of the shared files under `D` at either
+     tag, the added or removed one included: a target line naming a removed
+     file is the clearest case to review.
    - **Where it searches:** every tracked file of the target from
      `git ls-files`, except:
      - the shared files and the manifest;
@@ -229,7 +231,7 @@ Facts the design relies on:
 
 - **[Selections rely on test names shared by convention]** → a target without
   the cases gets the full modes. A renamed case falls back the same way.
-- **[Helper import scan misses dynamic imports]** → a helper change also
+- **[Helper name scan misses indirect users]** → a helper change also
   changes a test module in the same tag in practice. A full mode remains one
   `--only` away.
 - **[`tools/propagate.py` on Python 3.9]** → its syntax already parses as 3.9,

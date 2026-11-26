@@ -1232,7 +1232,8 @@ repository. Tags `sandbox-ref-1` to `sandbox-ref-18` were created while
 `claude-container` held this role and keep their commits here. A shared change
 gets a new tag and reaches every wrapper through `tools/propagate.py`, as
 described in [docs/propagation.md](docs/propagation.md); a defect found in a
-wrapper is fixed here first.
+wrapper is fixed here first. `tools/adoption-run.sh` runs the adoption's
+checklist on one host, with full logs and one archive.
 
 ## Verification
 
