@@ -120,7 +120,9 @@ changes. It is also a qualification input (`network/qualification_records.py`).
      that exercise the engine, with both changes in the image.
    - **Before tagging:** the recipe is a qualification input, so
      `--qualification` must pass (`reference-propagation`, "Reference runs
-     the adoption suites before tagging"), and so must the shared suite.
+     the adoption suites before tagging"), and so must the shared suite. The
+     setup files of `support-nested-systemd-containers` add `--setup` and
+     `--setup-runtime` to the checklist for the tag.
    - **On the main branch:** the reference parity cell moves to
      `sandbox-ref-36` in the merge that the tag points to.
 
