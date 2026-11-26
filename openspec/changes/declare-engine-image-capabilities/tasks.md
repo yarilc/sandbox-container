@@ -42,7 +42,7 @@
 
 ## 3. Record, merge and tag
 
-- [ ] 3.1 Record and tag.
+- [x] 3.1 Record and tag.
   - **Record:** the section "Reference tag `sandbox-ref-36`" at the top of `docs/validation.md`, with the results of tasks 1 and 2: Podman versions, image IDs, the comparison output, and every mode.
   - **Parity:** the reference row's contract adoption cell and its real enforcement entry name `sandbox-ref-36`.
   - **Merge and tag:** commit with the co-author trailer, merge into `main`, and create the annotated tag `sandbox-ref-36` on the merge commit.
