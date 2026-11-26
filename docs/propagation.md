@@ -47,9 +47,10 @@ git tag -a sandbox-ref-N -m "Reference sandbox: <one-line summary>"
 In the same merge, update this repository's own parity table in
 `docs/network-contract.md`: change the `Reference (...)` cell of the
 `sandbox-container` row to the new tag. Each wrapper row keeps the tag that
-wrapper has adopted; `--apply` moves a wrapper's own `Ported from ...` cell and
-the reference cell in that wrapper, so the tables stay identical once every
-wrapper has adopted the tag.
+wrapper has adopted (`Adopted sandbox-ref-N: ...`). In a wrapper, `--apply`
+moves only two cells of the "Contract adoption" column: the wrapper's own and
+the reference row's. The "Real enforcement" cells name the tag each result ran
+at, and keep it.
 
 ## 2. Adopt the tag in each wrapper
 
@@ -65,7 +66,10 @@ The tool refuses to change a target when:
 - its manifest names another tag or commit;
 - a tag is missing here;
 - a copied file differs from the old tag (a fork);
-- the branch `adopt-sandbox-ref-N` already exists.
+- the branch `adopt-sandbox-ref-N` already exists;
+- its `docs/network-contract.md` has a parity table, but the tool cannot find
+  the wrapper's row. It looks for one row labeled with the `display_name` of
+  the wrapper's `agent/profile.json`, with the header's number of cells.
 
 The dry run prints:
 
@@ -73,7 +77,9 @@ The dry run prints:
 - files that changed but are outside the wrapper's adopted scope ("not adopted");
   a shared directory that the new tag introduces, such as `launcher/`, is
   adopted with the tag and listed under the added files;
-- the documents and the number of references to update;
+- the documents and the number of references to update. For the network
+  contract it also counts the old-tag mentions it keeps, for example
+  `docs/network-contract.md (3, 8 kept)`;
 - the runner modes to execute;
 - a validation-record template and a commit message.
 
@@ -97,9 +103,18 @@ so the sibling check compares against `sandbox-container`; the dry run reports
 it as `manifest: names ...`. A manifest without a `SIBLING` line is refused. It updates the tag and the full commit
 only in current-state documents:
 
-- `README.md`, `AGENTS.md`, `CONTRIBUTING.md` and `docs/setup.md`;
-- `docs/network-contract.md`, including the parity cells `Reference (...)` and
-  `Ported from ...`.
+- every mention in `README.md`, `AGENTS.md`, `CONTRIBUTING.md` and
+  `docs/setup.md`;
+- in `docs/network-contract.md`:
+  - the old tag where the reference line names it with its commit,
+    `` `sandbox-ref-M` (commit `<full commit>`) ``;
+  - the old commit wherever it appears;
+  - in the parity table, the old tag in the "Contract adoption" cell of the
+    wrapper's row and of the reference row.
+
+  The rest of the contract keeps the old tag: the "Real enforcement" cells,
+  the other wrappers' rows (which may hold the same tag), and prose that names
+  it without its commit.
 
 History stays as written: `docs/validation.md`, `CHANGELOG.md`, `todo.md` and
 archived OpenSpec changes are never rewritten. The tool does not commit, merge,
@@ -136,12 +151,16 @@ test checks, is fixed in the wrapper on the same branch.
 ## 4. Commit, merge and update parity
 
 Commit in each wrapper with the printed message and the co-author trailer, then
-merge `adopt-sandbox-ref-N` into `main`. The tool already moved that wrapper's
-own parity cells; check that the rows of the parity table in
-`docs/network-contract.md` (the reference and the five wrappers) are still
-identical across the repositories, and
-update a row's status text when the adoption changed it. The user pushes the
-branches and the tag.
+merge `adopt-sandbox-ref-N` into `main`. The tool already moved the "Contract
+adoption" cells of that wrapper's row and of the reference row. Before the
+merge, update the parity table in the wrapper's `docs/network-contract.md`:
+- add the adoption's results to the wrapper's "Real enforcement" cell, beside
+  the earlier entries, which keep their tags;
+- copy the reference row from `sandbox-container`.
+
+Then copy the wrapper's row into `sandbox-container` and the other wrappers,
+so that the reference row and the five wrapper rows are identical across the
+repositories. The user pushes the branches and the tag.
 
 ## Keeping the tool in step
 
