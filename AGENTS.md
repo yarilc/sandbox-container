@@ -183,7 +183,7 @@ budget alone falls back to a soft and hard process rlimit when the engine kernel
 mechanism (`cgroup`, `rlimit` or `none`) is one rule in
 `network/agent_budgets.py` and `launcher/core.sh`, verified and qualified like a
 cgroup budget. Each container's first process sets that limit: a fixed
-`/bin/sh` step for the agent and the proxy, the entrypoint for the engine.
+`/bin/sh` step for the agent and the proxy, the startup program for the engine.
 Never use `--ulimit nproc`: the engine applies it before it creates the
 container's user namespace, so the kernel counts every container of the user
 against it. Wrapper tests use synthetic
@@ -269,8 +269,11 @@ directory is intentionally writable because it holds the session history.
 Never expose the host Podman API socket to a session. The session container
 engine shares the session's network namespace, mounts only the workspace and the
 library's read-only image store, holds no secrets, and keeps only its documented
-hardening exceptions (design D4 of the session engine change); never widen them
-to make a nested tool work.
+hardening exceptions (design D4 of the session engine change, and the startup
+step that delegates the engine's own cgroup subtree, design D1 of
+`support-nested-systemd-containers`); never widen them to make a nested tool
+work. Only that startup step runs as the root of the engine's user namespace;
+the launcher's commands in the engine run as its `podman` user.
 
 Host CA trust is opt-in. Mount only the selected CA bundle file, read-only, at
 `/sandbox-home/ca/bundle.pem`. Never mount the host certificate directory

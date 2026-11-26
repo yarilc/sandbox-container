@@ -527,7 +527,15 @@ size.
   (`sandbox-engine.owner=<pid>-<start time>`), derives the seccomp profile when
   the release has none, takes the session's `--network=` options, applies the
   session budgets and verifies them, and waits until the engine answers as a
-  rootless engine. The session then joins with `--network container:<engine>`,
+  rootless engine. The engine's first process is its startup program
+  (`/usr/local/bin/sandbox-engine-start`, no `--init`), which sets the process
+  rlimit, delegates the engine's cgroup subtree when eligible and hands over to
+  the engine user; on the rlimit fallback the launcher reads that limit from
+  PID 1. Every launcher command in the engine runs as `--user podman`. After
+  readiness the launcher reads the delegation state
+  (`/usr/local/bin/sandbox-engine-cgroup`): `delegated` is silent,
+  `ineligible: <reason>` is announced, and any other state stops the launch
+  (`support-nested-systemd-containers`). The session then joins with `--network container:<engine>`,
   a private read-only `/etc/hosts` filled after create, and
   `CONTAINER_HOST`/`DOCKER_HOST=tcp://127.0.0.1:2375`; without an engine both
   are unset. Phase 7 removes the engine and its storage with
