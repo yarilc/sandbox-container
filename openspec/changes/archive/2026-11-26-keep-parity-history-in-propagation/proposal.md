@@ -63,9 +63,10 @@ None.
 ### Modified Capabilities
 
 - `reference-propagation`:
-  - "Current-state references only" defines the network contract rewrite by
-    the reference line and the table's cells. It adds the refusal and the
-    report of kept mentions;
+  - "Current-state references only" points to the new "Network contract
+    references", which defines the network contract rewrite by the reference
+    line and the table's cells, with the report of kept mentions;
+  - the new "Unreadable parity table is refused" adds the refusal;
   - "Parity table names the reference" describes the cells as the tables
     have them, and says that real enforcement entries keep their tags.
 
