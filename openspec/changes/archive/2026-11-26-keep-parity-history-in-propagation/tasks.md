@@ -62,7 +62,7 @@
   No shared, runtime or setup file changes, so no runner mode is required.
 
   Verify: all pass. The full unit discovery is not required for this change; record why.
-- [ ] 3.2 Record the change in `docs/validation.md` with the results of tasks 1 to 3.1, as a new section at the top. Commit with the co-author trailer, then merge into `main` without a tag. Verify:
+- [x] 3.2 Record the change in `docs/validation.md` with the results of tasks 1 to 3.1, as a new section at the top. Commit with the co-author trailer, then merge into `main` without a tag. Verify:
   - the section names the Codex and Claude clone diffs;
   - `git log --oneline -1 main` is the merge;
   - `python3 -m unittest tests.test_propagate` passes on `main`.
@@ -70,5 +70,5 @@
 ## Workflow follow-up
 
 - The operator pushes `main`.
-- Archive this change with spec sync. This updates "Current-state references only" and "Parity table names the reference" in `reference-propagation`.
+- Archive this change with spec sync. This updates "Current-state references only" and "Parity table names the reference" in `reference-propagation`, and adds "Network contract references" and "Unreadable parity table is refused".
 - Codex, Antigravity, OpenCode and Pi then adopt `sandbox-ref-35` with the fixed tool.
