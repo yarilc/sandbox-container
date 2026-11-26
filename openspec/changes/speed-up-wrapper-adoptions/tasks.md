@@ -124,7 +124,7 @@
     - on WSL, every entry passes, the summary lists only the expected skips, and the rerun writes a new archive;
     - ShellCheck finds nothing;
     - on Rocky, `--checklist` runs on Python 3.9, `unit` runs in the runtime image and its engine-case skips are listed, and `setup` and `qualification` pass.
-- [ ] 4.3 Record the change in `docs/validation.md`, with:
+- [x] 4.3 Record the change in `docs/validation.md`, with:
   - the results of 4.1 and 4.2;
   - the runner's run times;
   - the operator's steps compared with the manual run of 2026-11-26.
