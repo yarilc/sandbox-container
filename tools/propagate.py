@@ -591,14 +591,16 @@ def report(result, applied):
     runs = [entry for entry in entries if entry.kind in ('unit', 'mode')]
     prepared = [entry.command for entry in entries if entry.kind == 'prepare']
     if prepared:
-        out.append('Prepare in the target: ' + '; '.join(prepared))
-    out.append('Run in the target: ' + '; '.join(display(entry) for entry in runs))
+        out.append('Prepare in the session: ' + '; '.join(prepared))
+    out.append('Run in the session: ' + '; '.join(display(entry) for entry in runs))
     images = [entry.command for entry in entries if entry.kind == 'image']
     if images:
         out.append('Images needed: ' + ', '.join(images))
-    out += ['Manual: ' + entry.command for entry in entries if entry.kind == 'manual']
-    out.append(f"On one host, after the adoption: bash tools/adoption-run.sh {result['target']} "
-               f"{result['old']} {result['new']}")
+    # Other environments run after the adoption closes; these bullets also go into the change's tasks.md.
+    follow_up = [f"on WSL or the native Linux host, from sandbox-container: bash tools/adoption-run.sh "
+                 f"{result['target']} {result['old']} {result['new']}"]
+    follow_up += [entry.command for entry in entries if entry.kind == 'manual']
+    out += ['Follow-up after closure:'] + ['- ' + item for item in follow_up]
     copied = result['modified'] + result['added']
     out += ['', 'Validation record template (docs/validation.md):', '',
             f"## Adoption of `{result['new']}`: {datetime.date.today().isoformat()}", '',
@@ -608,7 +610,7 @@ def report(result, applied):
             'The `tests/test_reference_copy.py` manifest moved to the tag.', '',
             '| Check | Result |', '| --- | --- |']
     out += [f'| `{display(entry)}` | <fill in> |' for entry in runs]
-    out += [f'| {entry.command} | <fill in> |' for entry in entries if entry.kind == 'manual']
+    out += ['', 'Follow-up after closure:', ''] + [f'- {item}: pending' for item in follow_up]
     out += ['', 'Commit message:', '', f"Adopt {result['new']}", '',
             f"Copy the changed shared files from sandbox-container {result['new']} and move",
             'the reference manifest and the current-state references to the tag.']

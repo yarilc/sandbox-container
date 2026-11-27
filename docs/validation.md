@@ -1,5 +1,66 @@
 # Validation record
 
+## Changes close in the working session (`close-changes-in-working-session`): 2026-11-26
+
+A started change is verified and closed only in its working session. Other
+environments run after closure, as follow-up (capability `change-validation`).
+A tag is created when its change closes in the session, and the native hosts
+verify it afterwards (`reference-propagation`). The six repositories state the
+rule in `AGENTS.md`, under "Change workflow and validation environments", with
+the same body everywhere, and each has a `CLAUDE.md` that imports it.
+`tools/propagate.py` prints the session commands apart from the follow-up.
+Only reference-only files and per-repository guidelines changed, so no tag is
+needed.
+
+### Working session
+
+The change ran in a `claude-container` session that Windows started in the
+Podman machine:
+- WSL2 backend, kernel `6.6.87.2-microsoft-standard-WSL2`, Python 3.11.2;
+- the workspace `D:\Workspace\sandboxes` is a 9p/drvfs mount: executable, but
+  without POSIX permissions;
+- `$HOME`, `/tmp` and `/var/tmp` are `noexec` tmpfs;
+- the toolchain library is empty, so the session has no container engine
+  (`podman`: `operation not permitted`);
+- the session's guard refuses `AF_UNIX` sockets (`EPERM`).
+
+Every test run set `SANDBOX_TEST_TMPDIR` to a new directory on the workspace
+mount.
+
+| Check | Result |
+| --- | --- |
+| `python3 -m unittest tests.test_propagate tests.test_adoption_run` | Passed: 38 tests in 117 s, 3 of them new. Removing the follow-up lines from `report()` fails the two report tests. Dropping manual entries from `--checklist` fails the third |
+| The same two modules with `SANDBOX_TEST_TMPDIR` under `$HOME`, before the change | 6 runner tests failed: the `podman` stub on `noexec` storage cannot run, so bash finds the real client. The rule's "Test storage in a session" comes from this run |
+| `python3 -m unittest tests.test_alignment` in each of the six repositories | Passed in each; 21 tests in the reference |
+| Unit discovery, `python3 -m unittest discover -s tests` | 606 tests in 483 s, 95 skipped. 66 failures and 166 errors, all in `test_launcher`, `test_setup`, `test_setup_wrapper`, `test_toolchains`, `test_windows_enter` and `test_wrapper`. They are environmental: see below |
+| Dry run, `python3 -I tools/propagate.py ../pi-container sandbox-ref-28 sandbox-ref-36` | Prints `Prepare in the session:`, `Run in the session:` and `Images needed:`. It then prints `Follow-up after closure:` with the runner line and the Windows step, and a template whose table holds the session commands and whose follow-up list is pending. `pi-container` is unchanged |
+| Section body in the six `AGENTS.md` | One SHA-256, `3a78f9b0b4fc6d76347b193df67cdec06b0600d03e28c17d72de23add4e0418e` |
+| `CLAUDE.md` in the six repositories | Identical: `@AGENTS.md` |
+| Lines of the six `AGENTS.md` that name another environment | 10, each naming the follow-up after closure |
+| Claude Code loads the guidelines (task 1.3) | Loaded in the running session. After `CLAUDE.md` was added and files of `sandbox-container` were read, Claude Code loaded `CLAUDE.md` and, through the import, the whole `AGENTS.md` with the new section |
+| `openspec validate close-changes-in-working-session --strict`, `openspec validate adoption-runner --type spec --strict`, `git diff --check` | Passed |
+| `tools/shellcheck.sh`, `tools/powershell.sh` | Not required, because no `*.sh` or `*.ps1` file changed. Also unavailable in the session, which has no container engine |
+
+**Environmental failures of the unit discovery.** Three causes, all from the
+session:
+- **`AF_UNIX` refused:** 94 `test_launcher` errors come from
+  `socket.socket(AF_UNIX)` in its `setUp`.
+- **No POSIX permissions on drvfs:** most of the rest are refused paths
+  ("Unsafe protected path: ... use native storage with caller-owned
+  non-writable ancestors") and state directories that cannot be private
+  ("chmod 700; use native Linux storage"). Modes also read as `0o777` or `511`
+  where the tests expect `0o700`, `0o600` or `420`.
+- **Setup errors upstream:** the `test_setup_wrapper` PTYs close because the
+  setup errors happened first.
+
+The session has no storage that is both executable and permission-enforcing.
+The same six modules were run from an export of `main`, before this change, in
+the same session with the same temporary storage. The same 212 tests failed
+there: 66 failures and 166 errors. No module that the change touches failed.
+
+**Follow-up after closure:** none. No runtime code changed, and the six
+modules above exercise no file that this change touches.
+
 ## Adoption checklist and runner (`speed-up-wrapper-adoptions`): 2026-11-26
 
 `tools/propagate.py` names the commands that exercise each changed file:

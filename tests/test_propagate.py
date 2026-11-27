@@ -315,8 +315,8 @@ class Propagation(unittest.TestCase):
 
     def test_checklist_follows_the_changed_files_and_runner(self):
         result = self.run_tool()
-        line = next(l for l in result.stdout.splitlines() if l.startswith('Run in the target: '))
-        self.assertEqual(line, 'Run in the target: bash tests/run-runtime.sh --shared')
+        line = next(l for l in result.stdout.splitlines() if l.startswith('Run in the session: '))
+        self.assertEqual(line, 'Run in the session: bash tests/run-runtime.sh --shared')
         self.assertIn('## Adoption of `sandbox-ref-2`:', result.stdout)
         self.assertIn('Adopt sandbox-ref-2', result.stdout)
         # A setup change selects the setup modes the runner offers; guard sources the guard/network modes.
@@ -329,8 +329,8 @@ class Propagation(unittest.TestCase):
         self.commit_tag(new, 'sandbox-ref-3')
         result = self.run_tool(new='sandbox-ref-3')
         self.assertEqual(result.returncode, 0, result.stderr)
-        line = next(l for l in result.stdout.splitlines() if l.startswith('Run in the target: '))
-        self.assertEqual(line, 'Run in the target: bash tests/run-runtime.sh --shared; bash tests/run-runtime.sh --setup; '
+        line = next(l for l in result.stdout.splitlines() if l.startswith('Run in the session: '))
+        self.assertEqual(line, 'Run in the session: bash tests/run-runtime.sh --shared; bash tests/run-runtime.sh --setup; '
                                'bash tests/run-runtime.sh --guard; bash tests/run-runtime.sh --network')
 
     def test_runner_modes_in_if_conditions(self):
@@ -445,13 +445,57 @@ class Propagation(unittest.TestCase):
         git(self.target, 'commit', '-qam', 'claude runner')
         result = self.run_tool()
         self.assertEqual(result.returncode, 0, result.stderr)
-        line = next(l for l in result.stdout.splitlines() if l.startswith('Run in the target: '))
-        self.assertEqual(line, 'Run in the target: SANDBOX_TEST_TMPDIR=<private directory> python3 -m unittest '
+        line = next(l for l in result.stdout.splitlines() if l.startswith('Run in the session: '))
+        self.assertEqual(line, 'Run in the session: SANDBOX_TEST_TMPDIR=<private directory> python3 -m unittest '
                                'tests.test_reference_copy tests.test_alignment tests.test_new')
-        self.assertIn(f'On one host, after the adoption: bash tools/adoption-run.sh {self.target.resolve()} '
-                      'sandbox-ref-1 sandbox-ref-2\n', result.stdout)
+        self.assertIn('Follow-up after closure:\n- on WSL or the native Linux host, from sandbox-container: '
+                      f'bash tools/adoption-run.sh {self.target.resolve()} sandbox-ref-1 sandbox-ref-2\n', result.stdout)
         self.assertIn('| `SANDBOX_TEST_TMPDIR=<private directory> python3 -m unittest tests.test_reference_copy '
                       'tests.test_alignment tests.test_new` | <fill in> |', result.stdout)
+
+    def windows_tag(self):
+        """Tag sandbox-ref-3, which adds the Windows shim in the new shared directory launcher/."""
+        current = {p.relative_to(self.reference).as_posix(): p.read_text()
+                   for p in self.reference.rglob('*') if p.is_file() and '.git' not in p.parts}
+        newer = dict(current, **{'launcher/windows/core.ps1': 'shim\n', 'tests/test_alignment.py': ALIGNMENT.format(
+            extra=", 'tests/test_new.py'").replace("('network', 'setup')", "('network', 'setup', 'launcher')")})
+        self.commit_tag(newer, 'sandbox-ref-3')
+        return load_tool()
+
+    def test_report_lists_the_follow_up_after_closure(self):
+        tool = self.windows_tag()
+        result = self.run_tool(new='sandbox-ref-3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        runner = ('on WSL or the native Linux host, from sandbox-container: bash tools/adoption-run.sh '
+                  f'{self.target.resolve()} sandbox-ref-1 sandbox-ref-3')
+        start = lines.index('Follow-up after closure:')
+        self.assertEqual(lines[start + 1:start + 3], ['- ' + runner, '- ' + tool.WINDOWS_STEP])
+        template = lines[lines.index('Validation record template (docs/validation.md):'):]
+        rows = [line for line in template if line.startswith('| `')]
+        self.assertTrue(rows)
+        self.assertFalse([row for row in rows if 'windows-validate' in row or 'adoption-run' in row])
+        self.assertIn('- ' + runner + ': pending', template)
+        self.assertIn('- ' + tool.WINDOWS_STEP + ': pending', template)
+        self.assertFalse([line for line in lines if line.startswith(('Manual:', 'On one host'))])
+
+    def test_follow_up_block_is_plain_bullets(self):
+        self.windows_tag()
+        lines = self.run_tool(new='sandbox-ref-3').stdout.splitlines()
+        start = lines.index('Follow-up after closure:')
+        block = lines[start + 1:lines.index('', start)]
+        self.assertEqual(len(block), 2)
+        for line in block:
+            self.assertTrue(line.startswith('- ') and not line.startswith('- ['), line)
+        self.assertFalse([line for line in lines if '[ ]' in line])
+
+    def test_checklist_keeps_manual_steps_for_the_runner(self):
+        tool = self.windows_tag()
+        self.assertEqual(self.run_tool('--apply', new='sandbox-ref-3').returncode, 0)
+        result = self.run_tool('--checklist', new='sandbox-ref-3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(['manual', 'windows', tool.WINDOWS_STEP],
+                      [line.split('\t') for line in result.stdout.splitlines()])
 
     def test_checklist_of_an_adopted_target(self):
         result = self.run_tool('--checklist')
