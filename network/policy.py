@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import stat
 
 # IANA special-purpose inventories reviewed 2026-11-06. Deny special-use
@@ -200,3 +201,23 @@ def public_address(value):
                      (address.ipv4_mapped or address.sixtofour or address.teredo))
             and not (isinstance(address, ipaddress.IPv6Address) and
                      address in ipaddress.ip_network('64:ff9b::/96')))
+
+
+def resolved_addresses(host, port, exception=None):
+    """Resolve once and verify the whole answer before any address is used."""
+    try:
+        records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
+    except OSError:
+        fail('dns-failure')
+    addresses = []
+    for family, kind, proto, _, address in records:
+        ip = ipaddress.ip_address(address[0])
+        if family not in (socket.AF_INET, socket.AF_INET6) or (
+                str(ip) not in exception if exception else not public_address(str(ip))):
+            fail('unsafe-address')
+        item = (family, kind, proto, address)
+        if item not in addresses:
+            addresses.append(item)
+    if not addresses:
+        fail('dns-failure')
+    return addresses

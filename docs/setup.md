@@ -17,7 +17,7 @@ available through `--container-help` without loading preferences or using Podman
 The prompts cover network access, shared/fresh isolated state,
 worktree scope, host CA trust, installation/command paths and the Podman
 endpoint. The reference profile declares no authentication method and no
-permission bypass, so network access offers only `offline` and `unrestricted`
+permission bypass, so network access offers `offline`, `mirror` and `unrestricted`
 and there is no authentication or permission-bypass question; a profile with
 methods (the agent wrappers) also offers `provider`. First-run setup defaults to
 offline mode, shared state, current workspace only and CA trust off. Accept defaults with Enter; invalid choices are requested again. Existing
@@ -221,6 +221,108 @@ and `setdomainname` are always allowed, so nested containers get their own host
 name. The profile is written to `launcher/engine/seccomp.json` in the release,
 and its SHA-256 is saved with the engine image ID; a changed host default
 therefore gives a new profile and a new qualification identity.
+
+### Dependency mirror profiles
+
+Manage profiles from the host with `--container-mirror list`,
+`--container-mirror add <name|profile.json>`, `--container-mirror remove <name>`
+and `--container-mirror verify [<name>]`. Verification uses the trusted HTTPS
+and address checks and reports the result for each upstream. The private library is shared across
+wrappers at `${XDG_DATA_HOME:-$HOME/.local/share}/sandbox-mirrors`. On Windows
+the managed launcher uses that directory inside Podman Machine. A catalog
+name refers to a profile under the protected release's `setup/mirror-catalog/`.
+
+An operator file uses JSON with `schema` set to `1`, a `name`, a `revision`,
+a Boolean `default` and an `upstreams` array. Each upstream has an `id`, an
+`ecosystem` and an HTTPS `base_url` directory prefix. A LAN repository also
+lists its approved IP `addresses`. A Go upstream names its approved
+`module_prefixes`. A split repository can also list `artifact_bases`. Each
+entry names one HTTPS `base_url` and can declare its own LAN `addresses`.
+Keep these files in native protected storage outside the
+workspace and state mounts, including the parent workspace when worktree
+scope is selected. A profile contains only routing information.
+
+In a mirror-enabled session, installed profiles marked as defaults are
+selected in name order. A project can select other installed profiles in
+`.sandbox-mirrors.json` at its workspace root. The file contains a single
+`profiles` array. Selections from the file follow its array order, with
+matching default toolchain declarations appended in toolchain name order.
+The launcher keeps the first occurrence of each name, warns about unknown
+names and reports the selected revisions. Edits apply to subsequent sessions.
+
+For DNF, configure a scenario repository with `baseurl` pointing to the
+active local mirror URL and `gpgcheck=1`. Set `gpgkey` to the distribution or
+operator signing key already trusted inside the target. Enable
+`repo_gpgcheck=1` for repositories that publish signed metadata. Use only the
+scenario repositories during the test. For example:
+
+```ini
+[scenario-rocky]
+name=Rocky Linux 9 BaseOS through the dependency mirror
+baseurl=http://127.0.0.1:18081/mirror/rocky9/baseos/
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9
+```
+
+Run `dnf --disablerepo='*' --enablerepo=scenario-rocky --refresh makecache`,
+then use the same repository selection for package installation. A nested
+Podman container or build step joins this session's network namespace with
+`--network=host` and uses its already registered images with `--pull=never`.
+For a split RPM repository, append the entire upstream base path to the
+mirror URL. This keeps relative RPM paths inside the same local upstream
+route while allowing only approved upstream artifact prefixes.
+
+The catalog ships Rocky Linux 9 x86_64 BaseOS, AppStream and Extras under
+`rocky9`. The `al2023` profile covers Amazon Linux `2023.12.20261120` on
+x86_64. After installing it, use the `core` local route and append the
+`/al2023/core/guids/<guid>/x86_64/` path from its catalog `base_url`.
+When reviewing a new AL2023 release, retrieve its `mirror.list` for the
+specific release and architecture, review the direct HTTPS prefix and the
+linked RPM prefix, then update the catalog and test DNF and signatures with
+that release. The runtime reads the pinned prefixes in the catalog.
+
+Run `python3 -B -I tests/mirror_rpm_runtime.py` from the working session with
+the Rocky Linux 9 init and AL2023 systemd toolchains registered. It starts a
+temporary local HTTPS fixture and checks DNF through the mirror in both target
+containers and build steps. To also exercise package signatures and a service,
+pass `--repo /path/to/signed-repository --package NAME --unit NAME.service`.
+The test repository needs a signed package, signed metadata and its test
+public key at `fixture-key.asc`. The service starts, remains active and writes
+`sandbox-mirror-fixture` to the journal.
+
+For Molecule, run `molecule test` from `tests/fixtures/mirror-molecule/`
+with an Ansible-native controller in the mirror-enabled session. Set
+`MIRROR_TEST_ROCKY_URL` and `MIRROR_TEST_AL2023_URL` to the two active
+loopback repository URLs. Supply the signed fixture's package and service
+as `MIRROR_TEST_PACKAGE` and `MIRROR_TEST_UNIT`, and the absolute public
+key path as `MIRROR_TEST_GPG_KEY`. The scenario uses the session Podman
+client, the registered images, and the fixture marker above.
+
+With an active Maven upstream, the launcher sets Maven 3.9's `MAVEN_ARGS`
+to the generated settings path. To select it explicitly, pass
+`mvn --settings /opt/sandbox-egress/client/maven-settings.xml`. The settings
+apply to dependency and plugin repositories for the Maven invocation.
+
+For PyPI, use the index origin root as `base_url` and approve any separate
+wheel or source-distribution prefixes under `artifact_bases`. The launcher
+sets `PIP_INDEX_URL` to the local `/simple/` route. The mirror preserves the
+hashes and metadata attributes the client needs to verify and select files.
+
+For npm, the launcher sets `npm_config_registry` and disables automatic
+audit requests. Approve any separate tarball origin under `artifact_bases`.
+Use a lockfile generated with the active mirror settings, or a lockfile whose
+resolved URLs already point within its approved routes. Rejecting registry
+write requests is part of the mirror policy.
+
+For Cargo, use `cargo --config /opt/sandbox-egress/client/cargo.toml fetch`.
+The generated file selects the approved sparse index and replaces the default
+crates.io source. Approve the crate download prefix under `artifact_bases`.
+
+For Go, the generated environment uses one `GOPROXY` URL, with the checksum
+database enabled. Approve module prefixes in the Go upstream's operator
+profile. A Go proxy must serve the matching `/sumdb/sum.golang.org/` protocol
+for public module checksum verification. `probe_path` can select a small
+approved verification index when a registry lacks the default sample.
 
 ## Managed installation and launch
 

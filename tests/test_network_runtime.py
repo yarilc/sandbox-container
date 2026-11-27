@@ -95,7 +95,7 @@ class NetworkRuntime(unittest.TestCase):
         (self.install / 'launcher/engine').mkdir(mode=0o700, parents=True, exist_ok=True)
         # The engine's build inputs from their one list (setup/engine.py), so a new input is never missing.
         for name in ('agent/profile.json', 'agent/policies/default.json', 'agent/launcher.sh', 'setup/common.py',
-                     'setup/toolchains.py', 'setup/engine.py', 'Containerfile', '.containerignore', 'launcher/core.sh',
+                     'setup/toolchains.py', 'setup/mirrors.py', 'setup/engine.py', 'Containerfile', '.containerignore', 'launcher/core.sh',
                      *engine.INPUTS):
             shutil.copyfile(ROOT / name, self.install / name)
         shutil.copytree(ROOT / 'setup/toolchain-catalog', self.install / 'setup/toolchain-catalog', dirs_exist_ok=True)
@@ -752,7 +752,7 @@ if args and args[0]=='start':
     ready=paths[0].read_text(); case=os.environ['NETWORK_READY_CASE']
     if case=='tls': ready=re.sub(r' tls=\\S+', '', ready)
     elif case=='guard': ready=ready.replace(' guard=', ' guard=wrong')
-    elif case=='protocol': ready=ready.replace(' mux=1', ' mux=2')
+    elif case=='protocol': ready=ready.replace(' mux=2', ' mux=1')
     else: ready='wrong-policy '+ready
     paths[0].write_text(ready); break
    time.sleep(.02)
@@ -769,6 +769,38 @@ os.execv(real,[real,*args])
                 self.assertIn('identity mismatch', result.stderr)
                 self.assertFalse((self.project / 'agent-started').exists())
                 self.assertFalse(list(self.runtime.iterdir()))
+
+    def test_mirror_listener_is_separate_from_provider_connect(self):
+        _, provider = self.provider_fixture()
+        environment = {real_env('NETWORK'): 'mirror', real_env('NETWORK_RUNTIME_DIR'): str(self.runtime),
+                       real_env('EGRESS_IMAGE'): provider[fixture_env('EGRESS_IMAGE')]}
+        result = self.shell('''python3 - <<'PY'
+import http.client
+import socket
+connection = http.client.HTTPConnection('127.0.0.1', 18081, timeout=5)
+connection.request('GET', '/mirror/unknown/repo/repodata/repomd.xml')
+assert connection.getresponse().status == 403
+connection.close()
+try:
+    socket.create_connection(('127.0.0.1', 18080), timeout=5).close()
+except ConnectionRefusedError:
+    pass
+else:
+    raise AssertionError('unexpected CONNECT listener')
+PY
+''', **environment)
+        self.assert_success(result)
+        self.assertIn('network mode=mirror', result.stderr)
+        self.assertFalse(list(self.runtime.iterdir()))
+
+    @unittest.skipUnless(os.environ.get('SANDBOX_TEST_MIRROR_RPM_RUNTIME') == '1',
+                         'needs registered RPM targets and the session engine loopback')
+    def test_mirror_repository_refresh_in_nested_systemd_and_builds(self):
+        result = subprocess.run([sys.executable, '-I', str(ROOT / 'tests/mirror_rpm_runtime.py')],
+                                text=True, capture_output=True, timeout=250)
+        self.assert_success(result)
+        self.assertEqual(result.stdout.count('DNF nested systemd refresh passed'), 2)
+        self.assertEqual(result.stdout.count('DNF build refresh and network isolation passed'), 2)
 
     def test_guarded_arguments_stdin_status_and_tty_both_state_modes(self):
         import pty

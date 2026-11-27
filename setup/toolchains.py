@@ -30,6 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import PROFILE, WINDOWS_ENTRY, SetupError, absolute, overlap, private  # noqa: E402
 import agent_profile  # noqa: E402  (on the path through common)
 import engine  # noqa: E402
+from mirror_policy import names as mirror_profile_names  # noqa: E402
+from policy import PolicyError  # noqa: E402
 
 INSTALLATION = Path(__file__).resolve().parents[1]
 # Reviewed recipes installed with the release; `add <name>` reads them.
@@ -58,7 +60,7 @@ RECIPE_REQUIRED = {'schema', 'name', 'version', 'check', 'default'}
 RECIPE_OPTIONAL = {'path', 'env', 'requires', 'notes'}
 # Schema 2 recipes may list images for the session container engine, and then
 # need no file sources (session-container-engine).
-RECIPE_OPTIONAL_V2 = {'images'}
+RECIPE_OPTIONAL_V2 = {'images', 'registries'}
 # Required and optional keys of each source kind in schema 2; schema 1 has no
 # URL source, no member path and no target.
 SOURCE_KEYS = {'image': ({'image', 'path'}, {'target'}),
@@ -384,7 +386,16 @@ def validate_recipe(value):
               'notes': list(notes), 'check': list(check), 'default': value['default']}
     if images:
         recipe['images'] = images
+    if 'registries' in value:
+        recipe['registries'] = registry_names(value['registries'])
     return recipe
+
+
+def registry_names(value):
+    try:
+        return mirror_profile_names(value)
+    except PolicyError as error:
+        raise SetupError(f'Toolchain registries: {error}.') from None
 
 
 def load_recipe(path, translate=None):
@@ -1252,6 +1263,8 @@ def entry(name, value):
         # An optional field: the index schema stays the same for older wrappers.
         item['images'] = [{'reference': image.get('image') or image['name'], 'image_id': image['image_id']}
                           for image in value['images']]
+    if value.get('registries'):
+        item['registries'] = value['registries']
     return item
 
 
@@ -1269,6 +1282,11 @@ To use a toolchain in one command, source its env.sh first:
 Default toolchains are also on PATH, after the system tools, in sessions started
 after they were added. Toolchains added during a session are available only
 through their env.sh or full paths until the next session.
+
+An eligible default toolchain can name operator-installed dependency mirror
+profiles in its recipe. Those profiles are selected at launch when the
+operator has enabled the mirror. Image-only and other non-default toolchains
+can list profile names for a workspace to request explicitly.
 
 Toolchains may also provide container images. A session started while the
 library holds images has a private container engine: run the images with
@@ -1293,6 +1311,8 @@ def render(library):
         lines.append('- Environment: ' + env_text)
         lines.append('- Requires: ' + (', '.join(item['requires']) or 'none'))
         lines.append('- Default on PATH in new sessions: ' + ('yes' if item['default'] else 'no'))
+        if item.get('registries'):
+            lines.append('- Mirror profiles: ' + ', '.join(item['registries']))
         for image in item.get('images', ()):
             lines.append('- Image: `' + image['reference'] + '`, for example `podman run --rm ' +
                          image['reference'] + '`')
@@ -1335,6 +1355,8 @@ def launch_env(library, base):
                                 'it is left out of this session')
                 continue
             lines.append(('env', variable, value))
+    for name in sorted(selected):
+        lines.extend(('registry', profile) for profile in registry_names(by_name[name].get('registries', [])))
     return lines, warnings
 
 

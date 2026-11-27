@@ -17,7 +17,7 @@
 
 #include "guard_landlock.h"
 
-#define GUARD_REVISION "abi3-seccomp-mux-v1"
+#define GUARD_REVISION "abi3-seccomp-mux-v2"
 #define GUARD_PROXY_PATH "/run/sandbox-egress/proxy.sock"
 #define GUARD_RUNTIME_PATH "/tmp/sandbox-runtime"
 
@@ -349,14 +349,14 @@ static void supervise(char **command, int provider)
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-        puts("sandbox-egress-guard " GUARD_REVISION " required-abi=3 uapi=linux-v6.6 seccomp=native-x86_64 mux=1");
+        puts("sandbox-egress-guard " GUARD_REVISION " required-abi=3 uapi=linux-v6.6 seccomp=native-x86_64 mux=2");
         return 0;
     }
     int probe = argc == 2 && strcmp(argv[1], "--probe") == 0;
-    int provider = argc >= 4 && strcmp(argv[1], "--provider") == 0;
+    int provider = argc >= 4 && (strcmp(argv[1], "--provider") == 0 || strcmp(argv[1], "--mirror") == 0);
     if (!probe && (argc < 4 || (!provider && strcmp(argv[1], "--offline") != 0) ||
                    strcmp(argv[2], "--") != 0 || argv[3][0] != '/')) {
-        fputs("Usage: sandbox-egress-guard --version | --probe | (--offline|--provider) -- /absolute/program [args...]\n", stderr);
+        fputs("Usage: sandbox-egress-guard --version | --probe | (--offline|--mirror|--provider) -- /absolute/program [args...]\n", stderr);
         return 64;
     }
     prepare_descriptors();

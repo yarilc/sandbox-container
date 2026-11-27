@@ -1,6 +1,6 @@
 """Session-owned CONNECT proxy. Only this process can resolve upstreams."""
 import asyncio
-import ipaddress
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,9 +9,13 @@ import socket
 import sys
 import time
 
-from mux import Channel, IDLE_TIMEOUT as STREAM_IDLE, MAX_DATA, OPEN_OK, OPEN_ERR, StreamClosed, ProtocolError, bridge, bounded
-from policy import PolicyError, hostname, load, public_address, revision, selected
-from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, TLS_ENFORCEMENT as ENFORCEMENT
+from mux import (Channel, CLOSE_TIMEOUT, IDLE_TIMEOUT as STREAM_IDLE, MAX_DATA, OPEN_OK, OPEN_ERR,
+                 StreamClosed, ProtocolError, bridge, bounded)
+import mirror
+from mirror_cache import Cache
+import mirror_policy
+from policy import PolicyError, hostname, load, resolved_addresses, revision, selected
+from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, MUX_PROTOCOL, TLS_ENFORCEMENT as ENFORCEMENT
 from tls_client_hello import ClientHello, ServerHello, TLSRejected, STORAGE, INSPECTION_TIMEOUT, NO_RETRY, RETRY
 
 
@@ -52,21 +56,9 @@ def authority(request):
 
 def resolve(host, port, exception=None):
     try:
-        records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
-    except OSError:
-        raise Rejected('dns-failure', host, port) from None
-    addresses = []
-    for family, kind, proto, _, address in records:
-        ip = ipaddress.ip_address(address[0])
-        if family not in (socket.AF_INET, socket.AF_INET6) or (
-                str(ip) not in exception if exception else not public_address(str(ip))):
-            raise Rejected('unsafe-address', host, port)
-        item = (family, kind, proto, address)
-        if item not in addresses:
-            addresses.append(item)
-    if not addresses:
-        raise Rejected('dns-failure', host, port)
-    return addresses
+        return resolved_addresses(host, port, exception)
+    except PolicyError as error:
+        raise Rejected(str(error), host, port) from None
 
 
 class Audit:
@@ -86,12 +78,16 @@ class Audit:
 
 
 class Proxy:
-    def __init__(self, profile, audit):
-        self.rules = {(d['host'], d['port']): d.get('addresses') for d in profile['destinations']}
+    def __init__(self, profile, audit, *, mirror_profiles=None, mirror_client=None, mirror_cache=None):
+        self.provider = profile is not None
+        self.rules = {(d['host'], d['port']): d.get('addresses') for d in (profile or {}).get('destinations', ())}
         self.audit = audit
         self.active = 0
         self.dns_pending = 0
         self.inspection_storage = 0
+        self.mirror_profiles = mirror_profiles
+        self.mirror_client = mirror_client
+        self.mirror_cache = mirror_cache
 
     def reserve(self):
         if self.inspection_storage + STORAGE > STORAGE * MAX_CONNECTIONS:
@@ -253,6 +249,33 @@ class Proxy:
             if upstream_writer:
                 upstream_writer.close()
 
+    async def dependency(self, stream, data):
+        try:
+            request = mirror.parse_request(data)
+            destination = mirror.route(request.target, self.mirror_profiles)
+        except mirror.Rejected as error:
+            self.audit.record(str(error))
+            await stream.channel.frame(OPEN_ERR, stream.ident, b'denied')
+            return
+        stream.opened = True
+        await stream.channel.frame(OPEN_OK, stream.ident)
+        started = False
+
+        async def sink(data):
+            nonlocal started
+            started = True
+            await stream.send(data)
+
+        try:
+            await self.mirror_client.transfer(request, destination, sink, self.mirror_cache)
+        except (mirror.Rejected, OSError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError) as error:
+            self.audit.record(str(error) if isinstance(error, mirror.Rejected) else 'mirror-upstream-failure')
+            if not started:
+                await stream.send(mirror.response_head((502, {}, 0, False)))
+        await stream.eof()
+        # The relay acknowledges after draining the response to the HTTP client.
+        await bounded(stream.remote_done.wait(), CLOSE_TIMEOUT)
+
     async def handle(self, reader, writer):
         # The proxy is session-owned. Only the single bootstrap channel is used;
         # no channel reconnect or protocol administration is supported.
@@ -260,7 +283,8 @@ class Proxy:
             writer.close()
             return
         self.active += 1
-        channel = Channel(reader, writer, on_open=self.tunnel, audit=self.audit)
+        channel = Channel(reader, writer, on_open=self.tunnel if self.provider else None, audit=self.audit,
+                          on_mirror=self.dependency if self.mirror_profiles is not None else None)
         try:
             await channel.start()
             await channel.receiver
@@ -274,7 +298,7 @@ class Proxy:
 
 def validate_manifest(manifest, policy_identity, profile, session):
     if (manifest.get('policy') != policy_identity or manifest.get('profile') != profile or
-            manifest.get('session') != session or manifest.get('protocol') != 1 or
+            manifest.get('session') != session or manifest.get('protocol') != MUX_PROTOCOL or
             manifest.get('tls_enforcement') != ENFORCEMENT or
             manifest.get('revision') != GUARD_REVISION or manifest.get('required_abi') != GUARD_REQUIRED_ABI or
             manifest.get('filter') != 'native-x86_64-v1' or
@@ -282,15 +306,40 @@ def validate_manifest(manifest, policy_identity, profile, session):
         raise ValueError('invalid protected session manifest')
 
 
-async def main():
-    policy = load('/config/policy.json')
-    profile = selected(policy, os.environ['EGRESS_PROFILE'])
+async def main(*, mirror_resolver=None):
     manifest = json.loads(Path('/config/manifest.json').read_text())
-    validate_manifest(manifest, revision(policy), os.environ['EGRESS_PROFILE'], os.environ['EGRESS_SESSION'])
+    mode = manifest.get('mode', 'provider')
+    if mode not in ('provider', 'mirror') or mode != os.environ.get('EGRESS_MODE', 'provider'):
+        raise ValueError('invalid protected egress mode')
+    profile, policy_identity = None, 'mirror'
+    if mode == 'provider':
+        policy = load('/config/policy.json')
+        profile, policy_identity = selected(policy, os.environ['EGRESS_PROFILE']), revision(policy)
+    validate_manifest(manifest, policy_identity, os.environ['EGRESS_PROFILE'], os.environ['EGRESS_SESSION'])
+    profiles = client = cache = None
     os.umask(0o077)
-    proxy = Proxy(profile, Audit('/logs/denials.jsonl', os.environ['EGRESS_SESSION']))
+    if 'mirror' in manifest:
+        content = Path('/config/mirror.json').read_bytes()
+        if hashlib.sha256(content).hexdigest() != manifest['mirror']:
+            raise ValueError('invalid protected mirror identity')
+        limit = mirror_policy.MAX_PROFILE * mirror_policy.MAX_NAMES
+        profiles = mirror_policy.snapshot(mirror_policy.decode(content, limit))['profiles']
+        ca = Path('/config/ca.pem')
+        ca_identity = hashlib.sha256(ca.read_bytes()).hexdigest() if ca.is_file() else ''
+        if ca_identity != manifest['ca']:
+            raise ValueError('invalid protected mirror CA identity')
+        client = mirror.Client(ca if ca_identity else None,
+                               **({'resolver': mirror_resolver} if mirror_resolver else {}))
+        directory = Path('/logs/cache')
+        directory.mkdir(mode=0o700)
+        cache = Cache(directory)
+        policy_identity += f" mirror={manifest['mirror']} mode={mode} ca={ca_identity}"
+    elif mode == 'mirror':
+        raise ValueError('missing protected mirror snapshot')
+    proxy = Proxy(profile, Audit('/logs/denials.jsonl', os.environ['EGRESS_SESSION']),
+                  mirror_profiles=profiles, mirror_client=client, mirror_cache=cache)
     server = await asyncio.start_unix_server(proxy.handle, '/transport/proxy.sock', limit=MAX_HEADER)
-    Path('/transport/ready').write_text(revision(policy) + ' guard=' + manifest['sha256'] + ' mux=1 tls=' + ENFORCEMENT + '\n')
+    Path('/transport/ready').write_text(f"{policy_identity} guard={manifest['sha256']} mux={MUX_PROTOCOL} tls={ENFORCEMENT}\n")
     async with server:
         await server.serve_forever()
 

@@ -1,0 +1,13 @@
+---
+owner: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') | hash('sha256') | truncate(12, true, '') }}"
+label: "org.sandbox.mirror-test={{ owner }}"
+package: "{{ lookup('ansible.builtin.env', 'MIRROR_TEST_PACKAGE') }}"
+unit: "{{ lookup('ansible.builtin.env', 'MIRROR_TEST_UNIT') }}"
+fixture_key: "{{ lookup('ansible.builtin.env', 'MIRROR_TEST_GPG_KEY') }}"
+targets:
+  - name: "mirror-rocky9-{{ owner }}"
+    image: "docker.io/rockylinux/rockylinux@sha256:99cbe0f114cc4a71cca40a014d690251bb13df65ebc3fb06ff6ec1037e0e1086"
+    url: "{{ lookup('ansible.builtin.env', 'MIRROR_TEST_ROCKY_URL') }}"
+  - name: "mirror-al2023-{{ owner }}"
+    image: "localhost/al2023-systemd:1.0.0"
+    url: "{{ lookup('ansible.builtin.env', 'MIRROR_TEST_AL2023_URL') }}"

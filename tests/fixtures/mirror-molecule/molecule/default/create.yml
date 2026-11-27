@@ -1,0 +1,31 @@
+---
+- name: Start RPM systemd targets for the mirror scenario
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files: [targets.yml]
+  tasks:
+    - name: Check the signed fixture settings
+      ansible.builtin.assert:
+        that:
+          - package is match('^[a-zA-Z0-9][a-zA-Z0-9_.+-]*$')
+          - unit is match('^[a-zA-Z0-9][a-zA-Z0-9_.@-]*[.]service$')
+          - fixture_key is abs and fixture_key is file
+          - item.url is match('^http://127[.]0[.]0[.]1:18081/mirror/[a-zA-Z0-9._/-]+/$')
+      loop: "{{ targets }}"
+    - name: Run the registered images in the session network
+      ansible.builtin.command:
+        argv: [podman, run, --detach, --pull=never, --systemd=always, --network=host, --label,
+               "{{ label }}", --name, "{{ item.name }}", --entrypoint, /sbin/init, "{{ item.image }}"]
+      loop: "{{ targets }}"
+    - name: Check that the signed fixture package is absent initially
+      ansible.builtin.command:
+        argv: [podman, exec, "{{ item.name }}", rpm, -q, "{{ package }}"]
+      register: before
+      failed_when: before.rc != 1
+      changed_when: false
+      loop: "{{ targets }}"
+    - name: Copy the test public signing key into each target
+      ansible.builtin.command:
+        argv: [podman, cp, "{{ fixture_key }}", "{{ item.name }}:/fixture-key.asc"]
+      loop: "{{ targets }}"

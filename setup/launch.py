@@ -13,7 +13,7 @@ except ValueError as error:
     sys.exit(1)
 
 # Options that run on the host without a session and must come first.
-HOST_COMMANDS = ('--container-toolchain',)
+HOST_COMMANDS = ('--container-toolchain', '--container-mirror')
 
 
 def main():

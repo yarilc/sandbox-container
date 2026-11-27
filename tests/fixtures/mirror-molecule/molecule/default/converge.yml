@@ -1,0 +1,35 @@
+---
+- name: Install the fixture through the mirror and start its unit
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files: [targets.yml]
+  tasks:
+    - name: Read the installed package state
+      ansible.builtin.command:
+        argv: [podman, exec, "{{ item.name }}", rpm, -q, "{{ package }}"]
+      register: installed
+      failed_when: installed.rc not in [0, 1]
+      changed_when: false
+      loop: "{{ targets }}"
+    - name: Install an absent fixture package with RPM and index signature checks
+      ansible.builtin.command:
+        argv: [podman, exec, "{{ item.item.name }}", dnf, -y, --disablerepo=*,
+               "--repofrompath=mirror-fixture,{{ item.item.url }}", --enablerepo=mirror-fixture,
+               --setopt=mirror-fixture.skip_if_unavailable=false, --setopt=mirror-fixture.gpgcheck=1,
+               --setopt=mirror-fixture.repo_gpgcheck=1, --setopt=mirror-fixture.gpgkey=file:///fixture-key.asc,
+               install, "{{ package }}"]
+      when: item.rc == 1
+      loop: "{{ installed.results }}"
+    - name: Read the service state
+      ansible.builtin.command:
+        argv: [podman, exec, "{{ item.name }}", systemctl, is-active, "{{ unit }}"]
+      register: running
+      failed_when: running.rc not in [0, 3]
+      changed_when: false
+      loop: "{{ targets }}"
+    - name: Start the inactive fixture service
+      ansible.builtin.command:
+        argv: [podman, exec, "{{ item.item.name }}", systemctl, start, "{{ unit }}"]
+      when: item.rc == 3
+      loop: "{{ running.results }}"

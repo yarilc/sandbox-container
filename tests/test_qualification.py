@@ -30,7 +30,7 @@ REAL_QUALIFICATION_LABEL = REAL_PROFILE.label('qualification')
 REAL_WORK_GLOB = '.' + REAL_PROFILE.name + '-qualification-*'
 # Setup modules the installed runtime fixture needs: qualification digests the
 # shared ones, and ordinary launches run the toolchain module.
-FIXTURE_SETUP_FILES = ('setup/common.py', 'setup/toolchains.py', 'setup/engine.py')
+FIXTURE_SETUP_FILES = ('setup/common.py', 'setup/toolchains.py', 'setup/mirrors.py', 'setup/engine.py')
 
 
 class QualificationContracts(unittest.TestCase):
@@ -38,6 +38,15 @@ class QualificationContracts(unittest.TestCase):
         shared = {path for path in records.SHARED_CODE if path.startswith('setup/')}
         self.assertTrue(shared)
         self.assertLessEqual(shared, set(FIXTURE_SETUP_FILES))
+
+    def test_mirror_reports_require_installed_mirror_controls(self):
+        identity = self.identity() | {'mode': 'mirror', 'policy': ''}
+        report = self.report() | {'identity': identity, 'fingerprint': records.digest(records.canonical(identity)),
+                                  'checks': {name: 'passed' for name in records.expected_checks(False, mirror=True)}}
+        records.validate_report(report, identity)
+        report['checks'].pop('mirror-credential-stripping')
+        with self.assertRaisesRegex(records.PolicyError, 'qualification'):
+            records.validate_report(report, identity)
 
     def identity(self):
         return dict(mode='provider', revision=records.REVISION, runtime='a'*64, proxy='b'*64, engine='',
@@ -777,6 +786,19 @@ class QualificationRuntime(unittest.TestCase):
     def command(self, *args, input=None, timeout=325):
         return subprocess.run(['bash', str(self.install/REAL_PROFILE.wrapper), *args],
             cwd=self.project, env=self.env, input=input, capture_output=True, text=True, timeout=timeout)
+
+    def test_installed_mirror_qualification_requires_its_own_report(self):
+        self.env.update({real_env('NETWORK'): 'mirror', real_env('EGRESS_IMAGE'): self.proxy_image})
+        result = self.command('--container-shell', input='touch agent-started\n')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.project / 'agent-started').exists())
+        result = self.command('--container-qualify')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        reports = list((self.install / 'qualification').glob('*.json'))
+        self.assertEqual(len(reports), 1)
+        report = json.loads(reports[0].read_text())
+        self.assertEqual(report['identity']['mode'], 'mirror')
+        self.assertTrue(all(report['checks'].get(name) == 'passed' for name in records.MIRROR_CHECKS))
 
     def test_installed_offline_qualification_missing_stale_and_unsafe_reports(self):
         result=self.command('--container-shell', input='touch agent-started\n')

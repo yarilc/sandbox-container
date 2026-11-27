@@ -138,7 +138,30 @@ if config['provider']:
         raw.sendall(b'CONNECT qualification-denied.invalid:443 HTTP/1.1\r\n\r\n')
         assert b'502' in raw.recv(1024)
 
-if config['tls']:
+if config.get('mirror'):
+    def mirror_request(method, target, headers=()):
+        connection = http.client.HTTPConnection('127.0.0.1', 18081, timeout=5)
+        try:
+            connection.request(method, target, headers=dict(headers))
+            response = connection.getresponse()
+            return response.status, response.read(256)
+        finally:
+            connection.close()
+
+    target = '/mirror/qualification/repo/repodata/repomd.xml'
+    assert mirror_request('GET', target, [('Authorization', 'fixture'), ('Cookie', 'fixture'),
+                                           ('X-Api-Key', 'fixture')]) == (200, b'qualification-mirror-positive')
+    assert mirror_request('POST', target)[0] == 403
+    assert mirror_request('GET', '/mirror/qualification/repo/unsupported')[0] == 403
+    if not config['provider']:
+        try:
+            socket.create_connection(('127.0.0.1', 18080), 3).close()
+        except ConnectionRefusedError:
+            pass
+        else:
+            raise AssertionError('mirror mode admitted a CONNECT listener')
+
+if config['tls'] and config['provider']:
     def tunnel():
         raw = socket.create_connection(('127.0.0.1', 18080), 3)
         raw.settimeout(4)
@@ -168,16 +191,22 @@ if config['tls']:
             assert raw.recv(1) == b''
         except ConnectionResetError:
             pass
+if config['tls']:
     print('qualification-proxy-loss-ready', flush=True)
     assert sys.stdin.readline().strip() == 'proxy-removed'
-    try:
-        with socket.create_connection(('127.0.0.1', 18080), 3) as raw:
-            raw.settimeout(3)
-            raw.sendall(b'CONNECT qualification.invalid:8443 HTTP/1.1\r\n\r\n')
-            response = raw.recv(1024)
-            assert b'200' not in response
-    except OSError as error:
-        assert error.errno in (errno.ECONNREFUSED, errno.ECONNRESET, errno.EPIPE), error
+    probes = []
+    if config['provider']:
+        probes.append((18080, b'CONNECT qualification.invalid:8443 HTTP/1.1\r\n\r\n'))
+    if config.get('mirror'):
+        probes.append((18081, b'GET /mirror/qualification/repo/repodata/repomd.xml HTTP/1.1\r\nHost: 127.0.0.1:18081\r\n\r\n'))
+    for port, request in probes:
+        try:
+            with socket.create_connection(('127.0.0.1', port), 3) as raw:
+                raw.settimeout(3)
+                raw.sendall(request)
+                assert b'200' not in raw.recv(1024)
+        except OSError as error:
+            assert error.errno in (errno.ECONNREFUSED, errno.ECONNRESET, errno.EPIPE), error
 
 Path('/workspace/qualification-owned').write_text('persistent')
 assert Path('/workspace/qualification-owned').stat().st_uid == os.getuid()

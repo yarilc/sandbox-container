@@ -415,6 +415,9 @@ class ToolchainTests(unittest.TestCase):
             'empty member path': ({'schema': 2, 'sources': [{**member, 'path': ''}]}, 'directory inside the archive'),
             'absolute target': ({'schema': 2, 'sources': [{**good, 'target': '/opt'}]}, 'relative'),
             'parent target': ({'schema': 2, 'sources': [{**good, 'target': '../x'}]}, 'relative'),
+            'URL in registries': ({'schema': 2, 'sources': [good], 'registries': ['https://packages.test/']},
+                                  'registries'),
+            'registries in schema 1': ({'registries': ['rocky9']}, 'unknown key registries'),
             'strip on an image': ({'schema': 2, 'sources': [{'image': DIGEST, 'path': '/opt', 'strip_components': 1}]},
                                   'unknown keys'),
             'target in schema 1': ({'source': {**good, 'target': 'lib'}}, 'unknown keys'),
@@ -1238,6 +1241,20 @@ class ToolchainTests(unittest.TestCase):
         self.assertEqual(lines, [])
         self.assertEqual(len(warnings), 2)
         self.assertTrue(all('verify' in warning for warning in warnings))
+
+    def test_mirror_profiles_from_eligible_defaults(self):
+        source = self.archive_source(tool_archive(), strip_components=1)
+        self.add(schema=2, name='base', sources=[source], registries=['rpm'])
+        image = self.image_recipe(registries=['image-rpm'])
+        toolchains.add(self.library, image, self.env)
+        entries = {item['name']: item for item in self.index()['toolchains']}
+        self.assertEqual(entries['base']['registries'], ['rpm'])
+        self.assertEqual(entries['db']['registries'], ['image-rpm'])
+        self.assertIn('Mirror profiles: image-rpm', (self.library / 'toolchains.md').read_text())
+        lines, _ = toolchains.launch_env(self.library, BASE)
+        self.assertEqual([item for item in lines if item[0] == 'registry'], [('registry', 'rpm')])
+        lines, _ = toolchains.launch_env(self.library, 'docker.io/library/other@sha256:' + 'e' * 64)
+        self.assertFalse([item for item in lines if item[0] == 'registry'])
 
     def test_launch_env_rejects_xdg_variables_in_the_index(self):
         # A wrapper may place its state with XDG variables; Podman keeps the last

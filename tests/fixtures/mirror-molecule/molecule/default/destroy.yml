@@ -1,0 +1,16 @@
+---
+- name: Remove only targets with this scenario's label
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files: [targets.yml]
+  tasks:
+    - name: Find the scenario's container IDs
+      ansible.builtin.command:
+        argv: [podman, ps, --all, --quiet, --no-trunc, --filter, "label={{ label }}"]
+      register: owned
+      changed_when: false
+    - name: Remove only the owned IDs
+      ansible.builtin.command:
+        argv: [podman, rm, --force, --time=1, --ignore, "{{ item }}"]
+      loop: "{{ owned.stdout_lines }}"

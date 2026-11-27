@@ -297,10 +297,10 @@ Node/Python subprocesses, the agent's `--version` and the sole provider preconne
 These are component results, not complete IP/IPC/lifecycle or authenticated agent
 acceptance. See docs/validation.md and tasks 1.6–1.8 and 4–7.
 
-## Multiplex data protocol v1
+## Multiplex data protocol v2
 
 The only outside channel is the bootstrap's connected AF_UNIX stream FD 3. Both
-peers send and verify `SANDBOX-EGRESS\x00\x01` within 10 seconds. This is an
+peers send and verify `SANDBOX-EGRESS\x00\x02` within 10 seconds. This is an
 identity/version check inside the operator-protected session transport, not a
 replacement for launcher policy/session readiness verification. A proxy accepts
 one channel for its lifetime. Lost channels require a new session.
@@ -321,8 +321,9 @@ unsafe/mixed addresses, and connects numerically without a second lookup.
 | HALF_CLOSE | 5 | Empty; EOF in one direction, exactly once |
 | CLOSE | 6 | Empty; cancel/complete stream, peer acknowledges with CLOSE |
 | WINDOW_UPDATE | 7 | Unsigned 32-bit nonzero consumed-byte credit |
+| MIRROR_OPEN | 8 | 1–8192 byte HTTP request header for an independently authorized dependency read |
 
-At most 64 streams are active. Each direction begins with 256 KiB of credit per
+At most 64 streams are active, including up to 48 mirror streams. Each direction begins with 256 KiB of credit per
 stream; returned credit cannot exceed that window. Received bytes cannot exceed
 outstanding credit, 256 KiB per-stream buffers, or the 16 MiB session buffer cap.
 Writer buffering is bounded with backpressure; control acknowledgments have a

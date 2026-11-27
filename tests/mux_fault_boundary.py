@@ -7,7 +7,7 @@ import struct
 import threading
 import time
 
-MAGIC = b'SANDBOX-EGRESS\x00\x01'
+MAGIC = b'SANDBOX-EGRESS\x00\x02'
 HEADER = struct.Struct('!BII')
 
 

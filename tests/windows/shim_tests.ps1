@@ -512,7 +512,7 @@ try {
         $r = Invoke-Entry { & $Core -EntryDirectory $WinEntry -Arguments @('x', @('a', 'b'), '--container-help') -PipelineInput }
         Assert-Equal 0 $r.Code 'status'
         foreach ($text in @('FIXTURE_AGENT_WSL_DISTRO', 'FIXTURE_AGENT_WSL_USER', 'FIXTURE_AGENT_WSL_INSTALLATION',
-                'FIXTURE_AGENT_NETWORK           unrestricted, offline or provider (default: the mode setup saved)',
+                'FIXTURE_AGENT_NETWORK           unrestricted, offline, mirror or provider (default: the mode setup saved)',
                 'Host Podman delegation was removed: FIXTURE_AGENT_PODMAN=1 is refused.', 'pipeline input', '--container-install', '--container-uninstall',
                 'Authentication keys forwarded when set: FIXTURE_API_KEY.')) {
             Assert-Text $text $r.Out 'Windows part'

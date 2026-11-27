@@ -77,7 +77,9 @@ def synthetic_install(base, root, wrapper_name):
     shutil.copyfile(root / 'network/proxy_hardening.py', install / 'network/proxy_hardening.py')
     shutil.copyfile(root / 'network/platform_check.py', install / 'network/platform_check.py')
     for name in ('network/session.py', 'network/agent_profile.py', 'network/agent_budgets.py', 'network/policy.py',
-                 'network/revisions.py', 'agent/profile.json', 'setup/common.py', 'setup/toolchains.py', 'setup/engine.py',
+                 'network/revisions.py', 'network/mirror_policy.py', 'network/mirror.py', 'network/mirror_settings.py',
+                 'network/mirror_metadata.py', 'agent/profile.json', 'setup/common.py',
+                 'setup/toolchains.py', 'setup/mirrors.py', 'setup/engine.py',
                  'Containerfile', '.containerignore', 'network/relay.py', 'network/mux.py',
                  'launcher/core.sh', 'agent/launcher.sh'):
         (install / name).parent.mkdir(parents=True, exist_ok=True)
@@ -85,7 +87,7 @@ def synthetic_install(base, root, wrapper_name):
     (install / 'network/qualify.py').write_text('# Synthetic argument fixture only.\n')
     (install / 'network/control.py').write_text('''import pathlib,socket,sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from revisions import TLS_ENFORCEMENT
+from revisions import MUX_PROTOCOL, TLS_ENFORCEMENT
 args=sys.argv[1:]
 import json,os
 with open(os.environ['FAKE_LOG']+'.control','a') as log: log.write(json.dumps(args)+'\\n')
@@ -93,7 +95,7 @@ if args[0]=='snapshot':
  p=pathlib.Path(args[args.index('--session')+1]); (p/'transport').mkdir()
  (p/'config').mkdir(); (p/'logs').mkdir()
  s=socket.socket(socket.AF_UNIX); s.bind(str(p/'transport/proxy.sock')); s.close()
- (p/'transport/ready').write_text('fixture-policy guard='+ 'c'*64 +' mux=1 tls=' + TLS_ENFORCEMENT + '\\n')
+ (p/'transport/ready').write_text('fixture-policy guard='+ 'c'*64 +f' mux={MUX_PROTOCOL} tls=' + TLS_ENFORCEMENT + '\\n')
  print('fixture-policy')
 elif args[0]=='qualification-input':
  print('e'*32+' 0')
@@ -282,7 +284,7 @@ class LauncherTests(unittest.TestCase):
                 if mode == 'provider':
                     self.assertIn('declares no authentication method', result.stderr)
                 else:
-                    self.assertIn('must be offline or unrestricted', result.stderr)
+                    self.assertIn('must be offline, mirror or unrestricted', result.stderr)
                 self.assertNotIn('setup required:', result.stderr)
                 self.assertFalse(self.calls())
 
@@ -478,6 +480,22 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('add <recipe.json|name> | list | remove <name> | verify [<name>]', result.stdout)
         self.assertIn('add pulls pinned images and downloads pinned archives itself', result.stdout)
         self.assertFalse(any(c[0] in ('create', 'build', 'pull') for c in self.calls()))
+
+    def test_mirror_command_dispatch(self):
+        self.wrapper = synthetic_install(self.base, ROOT, 'fixture-shell.sh')
+        catalog = self.wrapper.parent / 'setup/mirror-catalog'
+        catalog.mkdir(mode=0o700)
+        for source in (ROOT / 'setup/mirror-catalog').glob('*.json'):
+            shutil.copyfile(source, catalog / source.name)
+        result = self.run_wrapper('--container-mirror', 'list')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Mirror library:', result.stdout)
+        self.assertIn('rocky9\tavailable', result.stdout)
+        self.assertIn('al2023\tavailable', result.stdout)
+        result = self.run_wrapper('--container-shell', '--container-mirror', 'list')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--container-mirror must be the first argument', result.stderr)
+        self.assertEqual(self.calls(), [])
 
     def test_toolchain_library_created_private_and_mounted_read_only(self):
         self.assertFalse(self.library.exists())
@@ -822,6 +840,31 @@ class LauncherTests(unittest.TestCase):
         return dict(FAKE_NETWORK='1', FAKE_INFO='true linux true',
                     CONTAINER_HOST='unix:///run/service.sock',
                     FIXTURE_SHELL_NETWORK='offline')
+
+    def test_offline_default_ignores_mirror_selection(self):
+        values = self.restricted_fixture() | {'FIXTURE_SHELL_NETWORK': ''}
+        (self.project / '.sandbox-mirrors.json').write_text('invalid JSON')
+        result = self.run_wrapper('-c', 'true', **values)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('network mode=offline', result.stderr)
+        self.assertNotIn('mirror profile=', result.stderr)
+
+    def test_explicit_mirror_uses_restricted_entry_without_provider_settings(self):
+        values = self.restricted_fixture()
+        runtime = self.base / 'egress'
+        runtime.mkdir(mode=0o700)
+        values.update(FIXTURE_SHELL_NETWORK='mirror', FIXTURE_SHELL_NETWORK_RUNTIME_DIR=str(runtime),
+                      FIXTURE_SHELL_EGRESS_IMAGE='sha256:' + 'e' * 64)
+        result = self.run_wrapper('-c', 'true', **values)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('network mode=mirror', result.stderr)
+        agent = next(call for call in self.calls() if call[0] == 'create' and '--cidfile' in call
+                     and any(arg.startswith('CONTAINER_NAME=') for arg in call))
+        command = self.created_command(agent)
+        self.assertIn('--mirror', command)
+        self.assertIn('--mirror-only', command)
+        self.assertNotIn('--provider', command)
+        self.assertNotIn('HTTPS_PROXY=http://127.0.0.1:18080', agent)
 
     def test_hardening_and_budgets_in_every_mode(self):
         values = self.restricted_fixture()
@@ -2166,7 +2209,7 @@ class AgentProfileSettingsTests(unittest.TestCase):
 
     def test_mode_values_follow_the_profile(self):
         result = self.run_agent(FIXTURE_AGENT_NETWORK='direct')
-        self.assertIn('must be offline, provider, or unrestricted', result.stderr)
+        self.assertIn('must be offline, mirror, provider, or unrestricted', result.stderr)
         result = self.run_agent(wrapper=WRAPPER, FIXTURE_SHELL_NETWORK='provider')
         self.assertIn('the profile declares no authentication method', result.stderr)
 
@@ -2179,7 +2222,7 @@ class AgentProfileSettingsTests(unittest.TestCase):
         self.assertIn('provider (default when unset or empty)', result.stdout)
         self.assertIn('fixture-account: api.provider.test, login.provider.test', result.stdout)
         self.assertIn('fixture-api: api.provider.test', result.stdout)
-        self.assertIn('Only offline mode removes this channel', result.stdout)
+        self.assertIn('Offline mode starts without external access', result.stdout)
         self.assertIn('FIXTURE_AGENT_EXTRA', result.stdout)
         self.assertLess(result.stdout.index('FIXTURE_AGENT_READONLY_STATE'), result.stdout.index('FIXTURE_AGENT_EXTRA'))
         shell = self.run_agent('--container-help', wrapper=WRAPPER, PATH=str(self.bin))
@@ -2405,12 +2448,28 @@ class AgentProfileSettingsTests(unittest.TestCase):
         shutil.copyfile(AGENT_ROOT / 'agent/policies/default.json', policy)
         runtime = self.base / 'runtime'
         runtime.mkdir(mode=0o700)
-        result = self.run_agent('--first', wrapper=wrapper, FIXTURE_AGENT_NETWORK='provider',
+        library = self.base / 'home/.local/share/sandbox-mirrors'
+        library.mkdir(mode=0o700, parents=True)
+        (library / 'local.json').write_text(json.dumps({
+            'schema': 1, 'name': 'local', 'revision': '1', 'default': False,
+            'upstreams': [{'id': 'rpm', 'ecosystem': 'rpm', 'base_url': 'https://packages.test/rpm/'}],
+        }))
+        toolchains = library.with_name('sandbox-toolchains')
+        toolchains.mkdir(mode=0o700)
+        base = next(line.split()[1] for line in (wrapper.parent / 'Containerfile').read_text().splitlines()
+                    if line.startswith('FROM '))
+        (toolchains / 'index.json').write_text(json.dumps({'schema': 1, 'toolchains': [{
+            'name': 'tool', 'default': True, 'verified': {'base': base}, 'path': [], 'env': {}, 'requires': [],
+            'registries': ['local'],
+        }]}))
+        launch = dict(wrapper=wrapper, FIXTURE_AGENT_NETWORK='provider',
                                 FIXTURE_AGENT_NETWORK_PROFILE='fixture-api', FIXTURE_AGENT_NETWORK_POLICY=str(policy),
                                 FIXTURE_AGENT_NETWORK_RUNTIME_DIR=str(runtime), FIXTURE_AGENT_EGRESS_IMAGE='sha256:' + 'e' * 64,
                                 FIXTURE_API_KEY='key', FIXTURE_AGENT_ENV_VARS='FIXTURE_API_KEY OTHER_KEY',
                                 FAKE_NETWORK='1', FAKE_INFO='true linux true', CONTAINER_HOST='unix:///run/service.sock')
+        result = self.run_agent('--first', **launch)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('mirror profile=local revision=1 ', result.stderr)
         calls = [json.loads(line) for line in self.engine_calls()]
         agent = next(c for c in calls if c[0] == 'create' and not any('.egress=' in a for a in c))
         env = self.environment_of(agent)
@@ -2419,6 +2478,9 @@ class AgentProfileSettingsTests(unittest.TestCase):
         self.assertIn('FIXTURE_TELEMETRY=0', env)
         self.assertTrue(any(c[0] == 'create' and any('.egress=' in a for a in c) for c in calls))
         self.assertEqual(list(runtime.iterdir()), [])
+        result = self.run_agent('--first', FIXTURE_AGENT_TOOLCHAINS='0', **launch)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('mirror profile=local', result.stderr)
 
 
 if __name__ == '__main__':

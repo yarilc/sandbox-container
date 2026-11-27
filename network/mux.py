@@ -1,11 +1,14 @@
-"""Bounded v1 data-only multiplex transport shared by proxy and confined relay."""
+"""Bounded data-only multiplex transport shared by proxy and confined relay."""
 import asyncio
 import struct
 
-MAGIC = b'SANDBOX-EGRESS\x00\x01'
+from revisions import MUX_PROTOCOL
+
+MAGIC = b'SANDBOX-EGRESS\x00' + bytes((MUX_PROTOCOL,))
 HEADER = struct.Struct('!BII')
-OPEN, OPEN_OK, OPEN_ERR, DATA, HALF_CLOSE, CLOSE, WINDOW_UPDATE = range(1, 8)
+OPEN, OPEN_OK, OPEN_ERR, DATA, HALF_CLOSE, CLOSE, WINDOW_UPDATE, MIRROR_OPEN = range(1, 9)
 MAX_STREAMS = 64
+MAX_MIRROR_STREAMS = 48
 MAX_DATA = 16 * 1024
 MAX_OPEN = 8 * 1024
 WINDOW = 256 * 1024
@@ -30,9 +33,10 @@ class StreamClosed(Exception):
 
 
 class Stream:
-    def __init__(self, channel, ident, opened=False):
+    def __init__(self, channel, ident, opened=False, kind=OPEN):
         self.channel, self.ident = channel, ident
         self.opened = opened
+        self.kind = kind
         self.ready = asyncio.Event()
         self.changed = asyncio.Condition()
         self.buffer = bytearray()
@@ -130,8 +134,10 @@ class Stream:
 
 
 class Channel:
-    def __init__(self, reader, writer, on_open=None, audit=None):
+    def __init__(self, reader, writer, on_open=None, audit=None, *, on_mirror=None):
         self.reader, self.writer, self.on_open = reader, writer, on_open
+        self.on_mirror = on_mirror
+        self.accepting = on_open is not None or on_mirror is not None
         self.audit = audit
         self.streams = {}
         self.tasks = set()
@@ -198,18 +204,23 @@ class Channel:
         except (OSError, asyncio.TimeoutError, StreamClosed):
             await self.close()
 
-    async def open(self, authority):
-        if (self.on_open or self.closed or len(self.streams) >= MAX_STREAMS or
+    def mirror_full(self):
+        return sum(stream.kind == MIRROR_OPEN for stream in self.streams.values()) >= MAX_MIRROR_STREAMS
+
+    async def open(self, authority, *, kind=OPEN):
+        if (self.accepting or self.closed or len(self.streams) >= MAX_STREAMS or
                 len(self.closers) >= MAX_STREAMS):
             raise StreamClosed()
-        if not 0 < len(authority) <= MAX_OPEN or self.next_id > 0xffffffff:
+        if kind not in (OPEN, MIRROR_OPEN) or not 0 < len(authority) <= MAX_OPEN or self.next_id > 0xffffffff:
             raise ProtocolError()
+        if kind == MIRROR_OPEN and self.mirror_full():
+            raise StreamClosed()
         ident = self.next_id
         self.next_id += 1
-        stream = Stream(self, ident)
+        stream = Stream(self, ident, kind=kind)
         self.streams[ident] = stream
         try:
-            await self.frame(OPEN, ident, authority)
+            await self.frame(kind, ident, authority)
             await stream.wait_ready()
             return stream
         except BaseException:
@@ -226,10 +237,13 @@ class Channel:
         if remove:
             self.streams.pop(stream.ident, None)
 
-    async def serve(self, stream, authority):
+    async def serve(self, stream, authority, handler):
         try:
             async with asyncio.timeout(12 * 60 * 60):
-                await self.on_open(stream, authority)
+                if handler is None:
+                    await self.frame(OPEN_ERR, stream.ident, b'denied')
+                else:
+                    await handler(stream, authority)
         except (OSError, StreamClosed, asyncio.TimeoutError):
             pass
         finally:
@@ -238,15 +252,18 @@ class Channel:
     async def dispatch(self, kind, ident, payload):
         if not ident:
             raise ProtocolError()
-        if kind == OPEN:
-            if not self.on_open or ident != self.last_id + 1 or len(self.streams) >= MAX_STREAMS:
+        if kind in (OPEN, MIRROR_OPEN):
+            if not self.accepting or ident != self.last_id + 1 or len(self.streams) >= MAX_STREAMS:
                 raise ProtocolError()
             if len(self.tasks) >= MAX_STREAMS or len(self.closers) >= MAX_STREAMS:
                 raise ProtocolError()
             self.last_id = ident
-            stream = Stream(self, ident)
+            handler = self.on_open if kind == OPEN else self.on_mirror
+            if kind == MIRROR_OPEN and self.mirror_full():
+                handler = None
+            stream = Stream(self, ident, kind=kind)
             self.streams[ident] = stream
-            task = asyncio.create_task(self.serve(stream, payload))
+            task = asyncio.create_task(self.serve(stream, payload, handler))
             stream.worker = task
             self.tasks.add(task)
             task.add_done_callback(self.tasks.discard)
@@ -255,14 +272,14 @@ class Channel:
         if stream is None:
             # CLOSE and returned credit may cross in flight. Only these two
             # idempotent terminal frames for a known retired ID are harmless.
-            retired = ident <= (self.last_id if self.on_open else self.next_id - 1)
+            retired = ident <= (self.last_id if self.accepting else self.next_id - 1)
             if retired and kind in (CLOSE, WINDOW_UPDATE):
                 return
             raise ProtocolError()
         acknowledge = False
         async with stream.changed:
             if kind in (OPEN_OK, OPEN_ERR):
-                if self.on_open or stream.response_received:
+                if self.accepting or stream.response_received:
                     raise ProtocolError()
                 stream.response_received = True
                 if kind == OPEN_OK:
@@ -327,7 +344,7 @@ class Channel:
                 async with asyncio.timeout(FRAME_TIMEOUT):
                     raw = first + await self.reader.readexactly(HEADER.size - 1)
                     kind, ident, size = HEADER.unpack(raw)
-                    limits = {OPEN: (1, MAX_OPEN), OPEN_OK: (0, 0), OPEN_ERR: (1, 11),
+                    limits = {OPEN: (1, MAX_OPEN), MIRROR_OPEN: (1, MAX_OPEN), OPEN_OK: (0, 0), OPEN_ERR: (1, 11),
                               DATA: (1, MAX_DATA), HALF_CLOSE: (0, 0), CLOSE: (0, 0), WINDOW_UPDATE: (4, 4)}
                     if kind not in limits or not limits[kind][0] <= size <= limits[kind][1]:
                         raise ProtocolError()

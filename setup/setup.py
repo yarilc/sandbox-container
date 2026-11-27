@@ -31,7 +31,6 @@ platform_rules = importlib.util.module_from_spec(platform_spec)
 platform_spec.loader.exec_module(platform_rules)
 RUNTIME_IMAGE = PROFILE.image('agent', 'latest')
 TOOLCHAIN_IMAGE = PROFILE.image('toolchain', 'development')
-PROXY_IMAGE = PROFILE.image('proxy', 'local')
 PREFIX = PROFILE.message_prefix
 NAME = PROFILE.display_name
 GUARD = 'sandbox-egress-guard'
@@ -87,18 +86,25 @@ def residual_notice():
     print('credentials from attacker-supplied ones. A prompt-injected agent can send workspace data to an allowed')
     print('host using a foreign API key or account. Allowed hosts: '
           + '; '.join(method + ': ' + ', '.join(item['hosts']) for method, item in PROFILE.auth.items()) + '.')
-    print('Only offline mode removes this channel. See docs/network-contract.md (Residual exfiltration).')
+    print('Offline mode starts without external access. See docs/network-contract.md (Residual exfiltration).')
+    print('Approved mirror upstreams also see allowed request paths and timing.')
 
 
 # Provider mode needs an authentication method; a profile without one offers
-# only offline and unrestricted networking.
-NETWORK_MODES = ('offline', 'provider', 'unrestricted') if PROFILE.auth else ('offline', 'unrestricted')
+# provider policy only when there are authentication methods.
+NETWORK_MODES = ('offline', 'mirror', *(('provider',) if PROFILE.auth else ()), 'unrestricted')
 
 
 def choose_network(default):
     """Ask for the network mode; provider mode requires an explicit acknowledgement each time."""
     while True:
         mode = ask('Network mode', default, NETWORK_MODES)
+        if mode == 'mirror':
+            print('Approved dependency upstreams can see the request paths and timing in this mode.')
+            if yes('Acknowledge that approved mirror upstreams can see request paths and timing?'):
+                return mode
+            print('Mirror mode not acknowledged; choose the network mode again.')
+            continue
         if mode != 'provider':
             return mode
         residual_notice()
@@ -141,7 +147,7 @@ def launch_service(previous):
 
 def confirm_unrestricted(saved):
     """Explain why only unrestricted networking can be prepared and require explicit consent."""
-    restricted = 'Offline and provider networking need' if PROFILE.auth else 'Offline networking needs'
+    restricted = 'Offline, mirror and provider networking need' if PROFILE.auth else 'Offline and mirror networking need'
     print('No same-host Podman launch service answers at CONTAINER_HOST, the saved endpoint or the default endpoint, '
           'and no usable systemd user manager can start one, as in a Podman machine distribution on WSL.')
     print(restricted + ' such a service, so only unrestricted networking can be prepared here: '
@@ -180,15 +186,17 @@ def questionnaire():
         confirm_unrestricted(previous['network'] if old else '')
         value['network'] = 'unrestricted'
     elif PROFILE.auth:
-        print('offline: no external network; provider: approved CONNECT hosts with initial and retried TLS SNI binding; unrestricted: ordinary network access.')
+        print('offline: no external network; mirror: read-only approved dependencies; provider: approved CONNECT hosts '
+              'with initial and retried TLS SNI binding and the dependency mirror; unrestricted: ordinary network access.')
         print('Provider mode rejects ECH/GREASE and unverifiable TLS names; encrypted Host/shared-service routing is not filtered.')
     else:
-        print('offline: no external network; unrestricted: ordinary network access. The profile declares no authentication method, so provider mode is unavailable.')
+        print('offline: no external network; mirror: read-only approved dependencies; unrestricted: ordinary network access. '
+              'The profile declares no authentication method, so provider mode is unavailable.')
     if service:
         value['network'] = choose_network(value['network'])
     default_auth = next(iter(PROFILE.auth), 'none')
     value['auth'] = 'none'
-    if value['network'] != 'offline' and PROFILE.auth:
+    if value['network'] in ('provider', 'unrestricted') and PROFILE.auth:
         print('; '.join(method + ' ' + item['description'] for method, item in PROFILE.auth.items())
               + '. No secret is requested here.')
         value['auth'] = ask('Authentication method', previous['auth'] if previous['auth'] != 'none' else default_auth, tuple(PROFILE.auth))
@@ -248,7 +256,7 @@ def questionnaire():
             break
         except SetupError as error:
             print(error)
-    if value['network'] == 'provider':
+    if value['network'] in ('mirror', 'provider'):
         value['runtime_dir'] = path_question('Private native egress runtime directory', value['runtime_dir'])
     return value, old
 
@@ -469,7 +477,7 @@ def planned_paths(value):
     env = runtime_environment(value, root, overrides=False)
     protect_mounts(value, env)
     prepare_state(env)
-    if value['network'] == 'provider':
+    if value['network'] in ('mirror', 'provider'):
         private(value['runtime_dir'])
     if value['trust_ca'] and (not Path(value['ca_bundle']).is_file() or not os.access(value['ca_bundle'], os.R_OK)):
         raise SetupError('The selected CA bundle must be a readable regular file.')
@@ -737,7 +745,7 @@ def prepare_artifacts(value, previous, release, env, images, refresh, changes, o
             maintenance | {'SANDBOX_GUARD_TOOLCHAIN': toolchain,
                            'SANDBOX_GUARD_SETUP_CIDFILE': str(release / 'network/bin' / ('.setup-guard.' + uuid.uuid4().hex))}, timeout=None)
     value['guard_sources_sha256'] = identity
-    if value['network'] == 'provider':
+    if value['network'] in ('mirror', 'provider'):
         proxy = '' if refresh else images['proxy']
         if not proxy:
             changes.append('Proxy build requested: ' + PROFILE.image('proxy', 'setup-' + release.name))
@@ -1002,8 +1010,14 @@ def main():
         if value['network'] != 'unrestricted':
             images['toolchain'] = image_identity(previous['toolchain_image'] if previous and previous['toolchain_image'] else TOOLCHAIN_IMAGE, env)
             images['guard_release'] = str(old_release) if old_release else ''
-        if value['network'] == 'provider':
-            images['proxy'] = image_identity(previous['proxy_image'] if previous and previous['proxy_image'] else PROXY_IMAGE, env)
+        if value['network'] in ('mirror', 'provider'):
+            proxy_inputs = ('network/Containerfile', 'network/policy.py', 'network/proxy.py', 'network/mux.py',
+                            'network/mirror.py', 'network/mirror_policy.py', 'network/mirror_cache.py', 'network/mirror_metadata.py',
+                            'network/revisions.py', 'network/tls_client_hello.py')
+            reusable = previous and previous['proxy_image'] and all(
+                (old_release / path).is_file() and (old_release / path).read_bytes() == (SOURCE / path).read_bytes()
+                for path in proxy_inputs)
+            images['proxy'] = image_identity(previous['proxy_image'], env) if reusable else ''
         print('\nSetup plan:')
         for key in ('network', 'auth', 'installation', 'command', 'state_dir', 'config_dir', 'endpoint',
                     'yolo', 'worktree', 'memory_limit', 'cpu_limit', 'pids_limit',
@@ -1013,6 +1027,7 @@ def main():
             print('  retire previous managed command after successful activation: ' + previous['command'])
         if value['network'] == 'provider':
             print('  protected profile: ' + PROFILE.policy_profile(value['auth']))
+        if value['network'] in ('mirror', 'provider'):
             print('  private egress runtime: ' + value['runtime_dir'])
         for name in ('runtime', 'toolchain', 'proxy'):
             if name in images:
@@ -1027,7 +1042,7 @@ def main():
                 print(f'  agent {label} budget not enforced: ' + agent_budgets.cgroup_reason(controller, manager))
         if process != 'cgroup':
             print('  ' + process_notice('agent', process, kernel, value['pids_limit'], manager))
-        if value['network'] == 'provider':
+        if value['network'] in ('mirror', 'provider'):
             if 'memory' not in enforced:
                 print('  proxy memory budget not enforced: ' + agent_budgets.cgroup_reason('memory', manager))
             if process != 'cgroup':
@@ -1056,7 +1071,7 @@ def main():
             for path, is_private in prepare_state(saved_env, create=True):
                 changes.append('Prepared or reused ' + ('private' if is_private else 'shared')
                                + ' state directory: ' + str(path))
-            if value['network'] == 'provider':
+            if value['network'] in ('mirror', 'provider'):
                 private(value['runtime_dir'], create=True)
             prepare_artifacts(value, previous, candidate, env, images, refresh, changes, owned_tags)
             validate(value)

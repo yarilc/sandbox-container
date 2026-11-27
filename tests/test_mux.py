@@ -28,7 +28,7 @@ class MuxTests(unittest.IsolatedAsyncioTestCase):
         self.client = await mux.Channel(reader, writer).start()
 
     async def accept(self, reader, writer):
-        channel = mux.Channel(reader, writer, on_open=self.echo, audit=self.audit)
+        channel = mux.Channel(reader, writer, on_open=self.echo, audit=self.audit, on_mirror=self.echo)
         self.peers.append(channel)
         try:
             await channel.start()
@@ -66,6 +66,21 @@ class MuxTests(unittest.IsolatedAsyncioTestCase):
             await stream.eof()
             self.assertEqual(await stream.read(), b'')
             await stream.close()
+
+    async def test_mirror_streams_leave_capacity_for_connect(self):
+        with patch.object(mux, 'MAX_MIRROR_STREAMS', 2):
+            first = await self.client.open(b'first', kind=mux.MIRROR_OPEN)
+            second = await self.client.open(b'second', kind=mux.MIRROR_OPEN)
+            with self.assertRaises(mux.StreamClosed):
+                await self.client.open(b'excess', kind=mux.MIRROR_OPEN)
+            connect = await self.client.open(b'allowed.test:443')
+            await connect.send(b'provider')
+            await first.send(b'package')
+            self.assertEqual(await connect.read(), b'provider')
+            self.assertEqual(await first.read(), b'package')
+            await first.close()
+            await second.close()
+            await connect.close()
         self.assertFalse(self.client.closed)
         self.assertEqual(self.client.queued, 0)
         self.assertEqual(self.client.streams, {})

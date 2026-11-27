@@ -1,5 +1,18 @@
 # Network policy contract
 
+## Dependency mirror
+
+Explicit `mirror` mode serves operator-approved read-only dependencies through
+`http://127.0.0.1:18081/mirror/`. The trusted service opens verified HTTPS
+connections to the configured repositories. Approved upstreams can see the
+requested paths, allowed read headers and timing. Provider mode also offers
+this endpoint and keeps its end-to-end CONNECT tunnels. Offline mode starts
+without either channel.
+
+A nested container or build step uses `--network=host` to join the session
+engine's network namespace and reach the confined listener. The private
+profile library and upstream trust inputs stay in the operator's installation.
+
 This contract is shared by the reference shell and the five agent wrappers.
 `sandbox-container` took over the reference role from `claude-container`; the
 status, evidence and maps below were recorded while Claude held it. The

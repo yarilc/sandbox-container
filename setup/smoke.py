@@ -116,6 +116,11 @@ def main(mode, trust_ca, home, config_env, command, memory, nano_cpus, pids, enf
             proxy.sendall(b'CONNECT setup-denied.invalid:443 HTTP/1.1\r\nHost: setup-denied.invalid:443\r\n\r\n')
             response = proxy.recv(1024)
             assert response.startswith(b'HTTP/1.1 502'), 'proxy deny-path check failed'
+    if mode == 'mirror':
+        with socket.create_connection(('127.0.0.1', 18081), timeout=5) as mirror:
+            mirror.settimeout(5)
+            mirror.sendall(b'POST /mirror/setup-denied/upstream/unused HTTP/1.1\r\nHost: 127.0.0.1:18081\r\n\r\n')
+            assert mirror.recv(1024).startswith(b'HTTP/1.1 403'), 'mirror deny-path check failed'
     print('SANDBOX_SETUP_SMOKE_OK')
 
 

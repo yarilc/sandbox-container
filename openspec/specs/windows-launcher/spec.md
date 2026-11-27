@@ -287,7 +287,7 @@ Sessions and setup that the entry starts SHALL run as the selected user in the P
 - **THEN** the wrapper receives them unchanged inside the namespaces, and no file of the transport remains
 
 ### Requirement: Network modes from setup, without delegation
-On Windows the entry SHALL pass `<P>_NETWORK` unset, `unrestricted`, `offline` or, when the profile declares authentication methods, `provider` to the launcher, and SHALL accept `--container-qualify`. It SHALL exit with status 1, before running WSL, when `<P>_PODMAN` is exactly `1`, with the launcher's message that host Podman delegation was removed and image toolchains replace it. The launcher in the distribution SHALL apply its usual checks to restricted modes.
+On Windows the entry SHALL pass `<P>_NETWORK` unset, `unrestricted`, `offline`, `mirror` or, when the profile declares authentication methods, `provider` to the launcher, and SHALL accept `--container-qualify`. It SHALL exit with status 1, before running WSL, when `<P>_PODMAN` is exactly `1`, with the launcher's message that host Podman delegation was removed and image toolchains replace it. The launcher in the distribution SHALL apply its usual checks to restricted modes.
 
 #### Scenario: Offline session
 - **WHEN** setup prepared offline networking in the machine and the user launches the entry from a project directory
@@ -295,7 +295,7 @@ On Windows the entry SHALL pass `<P>_NETWORK` unset, `unrestricted`, `offline` o
 
 #### Scenario: Provider session
 - **WHEN** an agent wrapper's setup prepared provider networking in the machine
-- **THEN** the session starts with `network mode=provider` and reaches only its policy's hosts through the egress proxy
+- **THEN** the session starts with `network mode=provider` and reaches approved provider hosts through CONNECT and active dependency repositories through the read-only mirror
 
 #### Scenario: Restricted mode without a prepared installation
 - **WHEN** `$env:<P>_NETWORK='offline'` is set but setup prepared only unrestricted networking
@@ -314,8 +314,17 @@ On Windows the entry SHALL pass `<P>_NETWORK` unset, `unrestricted`, `offline` o
 - **WHEN** the library in the machine holds an image toolchain and the user launches an offline session from Windows
 - **THEN** the session has its container engine in the machine and runs the image offline
 
+#### Scenario: Mirror session and qualification
+- **WHEN** a reference setup in the machine prepares mirror networking and the operator invokes the entry to qualify or launch it
+- **THEN** qualification runs through the machine's normal restricted path and the launched session reports `network mode=mirror`
+- **AND** `--container-mirror` arguments reach the host management command in the same machine
+
+#### Scenario: Mirror mode requested before preparation
+- **WHEN** a Windows invocation explicitly selects mirror mode without a compatible protected installation and qualification
+- **THEN** it returns the applicable setup or qualification guidance for the Windows entry before application execution
+
 ### Requirement: Saved delegation refused
-The bootstrap SHALL exit with status 1, before running the managed command, when the release's saved preferences enable Podman delegation, and SHALL ask to rerun setup from Windows, which removes the setting. Saved unrestricted, offline and provider networking SHALL be accepted.
+The bootstrap SHALL exit with status 1, before running the managed command, when the release's saved preferences enable Podman delegation, and SHALL ask to rerun setup from Windows, which removes the setting. Saved unrestricted, offline, mirror and provider networking SHALL be accepted.
 
 #### Scenario: Saved delegation
 - **WHEN** a release saved delegation, for example because setup ran from a Linux shell in the machine

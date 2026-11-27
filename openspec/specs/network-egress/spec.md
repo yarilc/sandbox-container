@@ -7,7 +7,7 @@ Constrain network egress and external IPC independently of Claude and its tools,
 ## Requirements
 
 ### Requirement: Restricted sessions have no direct external path
-Offline sessions SHALL have only their own loopback services. Provider sessions SHALL additionally reach only the trusted proxy frontend. Restricted sessions SHALL have no direct Internet route or secondary unrestricted attachment and SHALL deny host, LAN, metadata, other sessions, and proxy administration access. Unsupported enforcement SHALL stop startup before the agent runs.
+Offline sessions SHALL have only their own loopback services. Mirror-enabled sessions SHALL reach approved read-only upstreams through the trusted mirror. Provider sessions SHALL also reach approved CONNECT destinations through the trusted proxy frontend. Restricted sessions SHALL have no direct Internet route or secondary unrestricted attachment and SHALL deny host, LAN, metadata, other sessions, and proxy administration access. Unsupported enforcement SHALL stop startup before the agent runs.
 
 #### Scenario: Direct connection attempts
 - **WHEN** a restricted session tries direct IPv4/IPv6 sockets, host aliases, host gateway, private destinations, or a second session
@@ -21,6 +21,11 @@ Offline sessions SHALL have only their own loopback services. Provider sessions 
 #### Scenario: Backend cannot enforce isolation
 - **WHEN** the selected rootless backend/version or resource setup cannot establish the required boundary
 - **THEN** startup fails with a diagnostic and cleans up owned resources without starting the agent
+
+#### Scenario: Mirror session with no provider
+- **WHEN** a qualified mirror session starts with an approved upstream profile
+- **THEN** approved dependency reads are reachable through the mirror
+- **AND** provider CONNECT, direct external connections and proxy administration are unavailable
 
 ### Requirement: Mandatory inherited IPC enforcement
 Restricted sessions SHALL admit qualifying native Linux and WSL2 x86_64 installations with usable Landlock ABI >= 3, using filesystem confinement plus an additional restrictive in-process seccomp filter before session code. Restrictions SHALL survive descendants. The standard OCI seccomp profile and any active SELinux/AppArmor policy SHALL remain active. Compatibility with SELinux/AppArmor SHALL NOT be guaranteed; their enabled status alone SHALL NOT reject preparation. No ABI-9 feature or kernel upgrade SHALL be required.
@@ -46,7 +51,7 @@ Restricted sessions SHALL admit qualifying native Linux and WSL2 x86_64 installa
 - **AND** any policy denial stops preparation without disabling security modules, changing labels or adding privileges
 
 ### Requirement: External Unix endpoints are denied
-Restricted processes SHALL be unable to connect or explicitly send to unapproved external Unix endpoints through mounts or aliases, including sockets created after startup. Provider mode SHALL retain only one bootstrap-verified preconnected proxy data channel as an external Unix exception; offline SHALL retain none. A socket's presence in a permitted file mount SHALL NOT authorize its use.
+Restricted processes SHALL be unable to connect or explicitly send to unapproved external Unix endpoints through mounts or aliases, including sockets created after startup. Mirror and provider modes SHALL each retain only one bootstrap-verified preconnected proxy data channel as an external Unix exception; offline SHALL retain none. A socket's presence in a permitted file mount SHALL NOT authorize its use.
 
 #### Scenario: Host socket exists or arrives in a shared tree
 - **WHEN** a host service exposes a stream, datagram, or seqpacket Unix socket in the workspace, worktree parent, shared state or isolated home before or after startup
@@ -54,7 +59,7 @@ Restricted processes SHALL be unable to connect or explicitly send to unapproved
 - **AND** renaming, symlinking, hard-linking or using an alternate visible pathname does not authorize that service
 
 #### Scenario: Proxy exception is a preconnected channel
-- **WHEN** provider preparation connects to the verified session frontend before confinement
+- **WHEN** mirror or provider preparation connects to the verified session frontend before confinement
 - **THEN** only that connected policy-filtered data channel survives into the confined relay
 - **AND** new connections, socket replacement and channel death cannot broaden access or trigger unfiltered reconnection
 
@@ -86,12 +91,16 @@ Restricted sessions SHALL deny new Unix listeners or unconnected Unix sockets ev
 - **AND** the named daemon fails with documented compatibility guidance rather than a policy bypass
 
 ### Requirement: Trusted bootstrap and descriptor hygiene
-Restricted startup SHALL use a protected native bootstrap that establishes confinement before untrusted loaders, interpreters, environment hooks or settings execute. It SHALL close unrelated inherited descriptors and leave no unconfined agent-side supervisor. Only ordinary validated standard I/O and the provider relay's verified preconnected proxy data channel SHALL survive preparation. No other external connected socket, namespace handle or asynchronous I/O capability SHALL reach agent code.
+Restricted startup SHALL use a protected native bootstrap that establishes confinement before untrusted loaders, interpreters, environment hooks or settings execute. It SHALL close unrelated inherited descriptors and leave no unconfined agent-side supervisor. Only ordinary validated standard I/O and the confined relay's verified preconnected egress data channel SHALL survive preparation. No other external connected socket, namespace handle or asynchronous I/O capability SHALL reach agent code.
 
 #### Scenario: Early execution or descriptor injection
 - **WHEN** image/workspace/state settings attempt pre-policy execution, an unexpected descriptor is inherited, or bootstrap identity/rule installation is invalid
 - **THEN** startup rejects the condition or closes the unauthorized descriptor before any agent-controlled sentinel executes
 - **AND** connected host sockets cannot bypass the policy through inherited handles, descriptor transfer, or asynchronous I/O paths
+
+#### Scenario: Relay channel for mirror or provider mode
+- **WHEN** a restricted startup in mirror or provider mode establishes an egress relay
+- **THEN** only ordinary validated standard I/O and the confined relay's verified preconnected egress data channel survive preparation
 
 ### Requirement: Full platform support requires transport evidence
 Successful installation of both enforcement layers SHALL be necessary but insufficient for restricted startup. A protected installation gate SHALL verify IP, Unix IPC and enabled alternate host-facing transports under the actual kernel, bootstrap, engine/backend and security policy. An uncontained or unassessable path SHALL keep startup unavailable. Local qualification SHALL NOT imply an exhaustively measured platform. Socket creation or absence of a listening peer SHALL NOT prove containment.
@@ -107,7 +116,7 @@ Successful installation of both enforcement layers SHALL be necessary but insuff
 - **AND** no exhaustive distribution matrix, authenticated-provider verification or SELinux/AppArmor compatibility guarantee is claimed
 
 ### Requirement: Bounded multiplexed proxy data transport
-Provider mode SHALL carry concurrent independently authorized tunnels over its sole preconnected channel using a protected versioned protocol. Stream, frame, queue and flow-control resources SHALL be bounded. Invalid protocol/state or channel failure SHALL fail closed without policy changes or descriptor transfer. Sequential requests SHALL NOT be limited to a finite preopened socket pool. Absence of incoming frames SHALL NOT expire an established channel; incomplete frames and individual operations SHALL retain finite deadlines. Stream-local failures and recoverable control congestion SHALL preserve unrelated tunnels on a healthy channel.
+Provider mode SHALL carry concurrent independently authorized CONNECT and mirror streams over its sole preconnected channel using a protected versioned protocol. Mirror mode SHALL carry mirror streams over the same protocol and refuse CONNECT streams. Stream, frame, queue and flow-control resources SHALL be bounded. Invalid protocol/state or channel failure SHALL fail closed without policy changes or descriptor transfer. Sequential requests SHALL NOT be limited to a finite preopened socket pool. Absence of incoming frames SHALL NOT expire an established channel; incomplete frames and individual operations SHALL retain finite deadlines. Stream-local failures and recoverable control congestion SHALL preserve unrelated streams on a healthy channel.
 
 #### Scenario: Repeated and concurrent tunnels
 - **WHEN** clients open concurrent tunnels or more sequential tunnels than the active concurrency limit
@@ -145,6 +154,15 @@ Provider mode SHALL carry concurrent independently authorized tunnels over its s
 - **THEN** its application-facing operations terminate within finite lifecycle bounds
 - **AND** another authorized tunnel continues exchanging data and the original relay listener remains usable
 - **AND** a subsequent authorized tunnel succeeds on the same channel when stream capacity is available
+
+#### Scenario: Concurrent CONNECT and dependency requests
+- **WHEN** a provider session uses both stream types through the same channel
+- **THEN** each request passes the policy for its stream type
+- **AND** mirror concurrency cannot consume the reserved provider capacity and failed mirror streams release resources without disrupting healthy CONNECT streams
+
+#### Scenario: Stale transport revision
+- **WHEN** installed egress components disagree on the supported transport revision or startup identity
+- **THEN** restricted egress startup fails before the application executes
 
 ### Requirement: Bounded stream closing state
 Provider transport SHALL bound state retained for closing tunnels and validate legal late frames without delivering them to another tunnel. Missing close acknowledgement SHALL NOT alone close the shared channel. Exhausted closing-state capacity SHALL prevent further local admission without discarding validation state or disrupting established healthy tunnels.
@@ -191,7 +209,7 @@ Provider transport SHALL handle temporary control-queue saturation within fixed 
 - **AND** stream cancellation preserves a healthy shared channel while session cancellation closes it
 
 ### Requirement: Exact destination enforcement outside the agent
-A trusted proxy outside agent control SHALL allow only normalized exact policy hostnames and approved ports, normally CONNECT on 443. It SHALL reject unapproved IP literals, wildcard/suffix matches, ambiguous authorities, unsafe ports, and unsupported proxy methods. TLS SHALL remain end-to-end without decryption or disabled certificate verification. Provider tunnels SHALL additionally satisfy mandatory initial TLS server-name binding before client bytes are forwarded upstream.
+For provider CONNECT, a trusted proxy outside agent control SHALL allow only normalized exact policy hostnames and approved ports, normally 443. It SHALL reject unapproved IP literals, wildcard/suffix matches, ambiguous authorities, unsafe ports, and unsupported proxy methods. TLS SHALL remain end-to-end without decryption or disabled certificate verification. Provider tunnels SHALL additionally satisfy mandatory initial TLS server-name binding before client bytes are forwarded upstream.
 
 #### Scenario: Authority validation
 - **WHEN** a client requests an approved exact hostname on its approved port
@@ -204,8 +222,12 @@ A trusted proxy outside agent control SHALL allow only normalized exact policy h
 - **AND** a different initial TLS SNI inside an approved tunnel is rejected
 - **AND** documentation makes no claim to inspect encrypted paths, payloads, HTTP Host or HTTP/2 authority, domain fronting using matching SNI, or provider-side forwarding
 
+#### Scenario: Verified upstream for mirror requests
+- **WHEN** a restricted session makes a dependency mirror request
+- **THEN** the trusted mirror enforces the verified HTTPS upstream requirements of the dependency mirror capability
+
 ### Requirement: Trusted DNS and connection-time address validation
-Only trusted infrastructure SHALL resolve approved upstream names. Each connection SHALL use an address validated against denied IPv4/IPv6 special, private, loopback, link-local, and metadata ranges without a second unchecked resolution. Restricted agents SHALL have no external DNS, UDP/QUIC, or alternate direct transport path.
+Only trusted infrastructure SHALL resolve approved upstream names. Each connection SHALL use an address validated against denied IPv4/IPv6 special, private, loopback, link-local, and metadata ranges without a second unchecked resolution. An approved mirror LAN exception SHALL apply only to its exact upstream scope. Restricted agents SHALL have no external DNS, UDP/QUIC, or alternate direct transport path.
 
 #### Scenario: Rebinding and mixed address records
 - **WHEN** an approved name resolves or changes to a forbidden IPv4/IPv6 address, including mapped IPv4 or a mixed public/private answer
@@ -261,11 +283,11 @@ Proxy resources, bootstrap/setup channels, transport endpoints, configuration, a
 - **THEN** no agent code runs, the failure status is preserved, and only owned proxy/setup resources are removed within the shared shutdown budget
 
 #### Scenario: Proxy failure
-- **WHEN** the proxy becomes unavailable during a provider session
+- **WHEN** the proxy becomes unavailable during a mirror or provider session
 - **THEN** subsequent outbound attempts fail and the agent receives no alternate network attachment
 
 ### Requirement: Redacted actionable diagnostics
-Startup SHALL report mode, selected profile, and policy revision. Protected logs SHALL distinguish proxy unavailability, DNS failure, destination rejection, and provider authentication failure when observable. Denial records SHALL contain only bounded sanitized destination/port, session identity, and reason; credentials, token URLs, headers, bodies, and prompts SHALL NOT be logged.
+Startup SHALL report mode, selected provider policy profile and revision when applicable, and the active mirror profile names and revisions in mirror-enabled modes. Protected logs SHALL distinguish proxy unavailability, DNS failure, destination rejection, and provider authentication failure when observable. Denial records SHALL contain only bounded sanitized destination/port, session identity, and reason; credentials, token URLs, headers, bodies, and prompts SHALL NOT be logged.
 
 #### Scenario: Malicious diagnostic input
 - **WHEN** a rejected request includes userinfo, control characters, authorization data, or a token-bearing URL
@@ -402,7 +424,7 @@ Restricted preparation SHALL require Linux x86_64, rootless Podman server >= 4.9
 Each restricted installation SHALL pass a bounded credential-free gate through its production launch and guard path before ordinary use. The qualified code identity SHALL include the shared launcher core and the agent launcher part, so a change to either invalidates the report. Required denial checks SHALL have controlled positive controls or demonstrate explicit enforcing syscall rejection. Missing fixtures, unrelated connectivity failure, skipped required checks and unavailable transport evidence SHALL fail qualification.
 
 #### Scenario: Mandatory IP and IPC controls
-- **WHEN** offline or provider mode is qualified
+- **WHEN** offline, mirror or provider mode is qualified
 - **THEN** the gate verifies direct IPv4/IPv6 denial, no external DNS/UDP path, denial of existing and late external Unix endpoints and host-bind socket publication, and denial of alternate socket families and pair retargeting
 - **AND** actual loopback and permitted connected-pair data exchange, descendant enforcement and ordinary caller-owned file persistence succeed
 - **AND** controlled host endpoints are reachable by an unconfined positive control when the denial depends on a listening peer
@@ -434,6 +456,12 @@ Each restricted installation SHALL pass a bounded credential-free gate through i
 #### Scenario: Launcher core changed after qualification
 - **WHEN** `launcher/core.sh` or `agent/launcher.sh` differs from the one recorded in the report
 - **THEN** ordinary restricted startup requires requalification
+
+#### Scenario: Mirror boundary qualification
+- **WHEN** mirror or provider mode is qualified
+- **THEN** a protected fixture independently demonstrates an approved read through the production guard, relay and trusted service, and denial of writes, disallowed routes and client credentials at the upstream
+- **AND** fixture policy and trust inputs remain isolated from production inputs, mirror and offline modes deny provider CONNECT, and loss of the trusted peer fails closed
+- **AND** reports bind the installed mirror implementation, protocol and fixture revisions
 
 ### Requirement: Session proxies have enforced resource budgets
 Each Internet-facing session proxy SHALL have a limit of 128 processes and 256 MiB memory, enforced by the engine and host cgroups, for each budget whose cgroup v2 controller (`pids`, `memory`) the verified rootless engine delegates. Startup SHALL fail before agent execution if an enforced limit is not applied, or if an unenforced limit is unexpectedly present. These budgets SHALL coexist with existing multiplex, TLS inspection and lifecycle bounds without broadening runtime access.
@@ -509,7 +537,7 @@ The shared network sandbox, setup and launcher components, the shared tests and 
 Restricted-session preparation, proxy lifecycle, restricted container arguments and proxy cleanup SHALL be provided by one shared, profile-driven component. Wrappers SHALL invoke it through fixed operations with explicit inputs and outputs. They SHALL NOT re-implement these steps. Its cleanup SHALL use only the remaining launcher shutdown budget and SHALL NOT change the primary exit status.
 
 #### Scenario: Wrapper integration
-- **WHEN** a wrapper starts an offline or provider session
+- **WHEN** a wrapper starts an offline, mirror or provider session
 - **THEN** preflight, the guard probe, proxy creation, readiness, hardening verification, guard and relay arguments, and proxy cleanup come from the shared component
 - **AND** the wrapper adds only agent-specific command, environment, state and credential options
 
@@ -581,7 +609,7 @@ For every profile that declares authentication methods, provider help, setup gui
 #### Scenario: Operator reads the provider limits
 - **WHEN** an operator reads the provider help, README or network contract of a wrapper whose profile declares authentication methods
 - **THEN** the foreign-credential channel is described for every allowed host of the selected profile
-- **AND** the text states that only offline mode removes the channel
+- **AND** the text identifies offline mode as starting without any external channel
 
 #### Scenario: Reference without provider mode
 - **WHEN** an operator reads the reference README or network contract
@@ -642,7 +670,7 @@ Every container that local enforcement qualification starts from the runtime ima
 - **THEN** they reach their fixtures by absolute paths and produce the same evidence as before
 
 ### Requirement: Runtime modes with an offline default
-The wrapper SHALL accept `SANDBOX_CONTAINER_NETWORK=offline|unrestricted` and apply `offline` when it is unset or empty. `provider` SHALL be accepted only for a profile that declares authentication methods. Other values SHALL fail before image operations. Only explicit `unrestricted` SHALL remove the destination boundary; session-writable configuration SHALL NOT select or broaden it.
+The reference wrapper SHALL accept `SANDBOX_CONTAINER_NETWORK=offline|mirror|unrestricted` and apply `offline` when it is unset or empty. `mirror` SHALL require explicit selection or a validated saved operator choice. `provider` SHALL be accepted only for a profile that declares authentication methods. Other values SHALL fail before image operations. Only explicit `unrestricted` SHALL remove the destination boundary; session-writable configuration SHALL NOT select or broaden it.
 
 #### Scenario: Default and invalid selection
 - **WHEN** an ordinary invocation leaves the effective mode unset or empty
@@ -668,12 +696,16 @@ The wrapper SHALL accept `SANDBOX_CONTAINER_NETWORK=offline|unrestricted` and ap
 - **THEN** its existing offline qualification default and protected-fixture checks remain available
 - **AND** neither that operation nor its internal probe admits an arbitrary application command or bypasses enforcement
 
+#### Scenario: Toolchains or workspace request mirror profiles in offline mode
+- **WHEN** the effective mode is offline and a workspace or toolchain names mirror profiles
+- **THEN** the session starts without the mirror, relay egress descriptor or external access
+
 ### Requirement: Profiles without authentication methods
 The profile loader SHALL accept a profile with no authentication method and without an approval-bypass variable. Its policy file SHALL then declare no policy profiles. For such a profile, the shared session helper, setup and qualification SHALL refuse provider mode before any image, proxy or container operation, naming the absence of authentication methods.
 
 #### Scenario: Reference profile loads
 - **WHEN** the reference profile declares `"auth": {}` and no `approval_bypass_env`, with a policy whose `profiles` is empty
-- **THEN** the profile and policy load and offline and unrestricted sessions can start
+- **THEN** the profile and policy load and offline, mirror and unrestricted sessions can start
 
 #### Scenario: Provider requested without methods
 - **WHEN** provider mode reaches the session helper, setup or qualification with such a profile
@@ -728,3 +760,10 @@ After confinement, the guard SHALL run the application as its child in a new pro
 #### Scenario: Confined supervisor
 - **WHEN** the application runs
 - **THEN** the waiting guard runs under the same Landlock and seccomp restrictions and holds neither the provider's proxy channel nor standard input and output
+
+### Requirement: Mirror request visibility disclosure
+Shared help, setup guidance and the network contract SHALL disclose that approved upstreams can observe allowed request paths and timing. They SHALL describe HTTP on the confined loopback endpoint and verified HTTPS from the trusted mirror to each upstream. Documentation SHALL identify offline mode as the option with no external channel.
+
+#### Scenario: Operator reads the mirror network contract
+- **WHEN** the operator inspects help or the network contract for a mode using the mirror
+- **THEN** the text explains the residual channel through approved requests and preserves the separate description of provider end-to-end TLS when provider mode is available

@@ -1,5 +1,64 @@
 # Validation record
 
+## Dependency mirror (`add-read-only-dependency-mirror`): 2026-11-27
+
+The working agent session runs in Windows Podman Machine with Podman server
+6.2.0 and client 4.3.1. Component tests use the registered DocGen image with
+private native temporary storage. The PowerShell harness could not fetch
+PSScriptAnalyzer 1.24.0 because the session's HTTPS proxy returned 502.
+PowerShell verification is pending after closure.
+ShellCheck's pinned container image is absent and its registry could not be
+resolved. Bash syntax and repository line-ending checks passed locally.
+
+The installed qualification runner could not start because
+`localhost/sandbox-container:latest` is absent from the session image store.
+The guard build toolchain image is also absent. The component suite exercised
+the trusted proxy and confined relay over one channel with an HTTP response
+larger than the flow-control window, a denied write, credential stripping and
+peer loss. Installed-path qualification remains pending after closure.
+
+Both public catalog profiles installed into a disposable native library. The
+`verify` command reported `dns-failure` for AL2023 Core and Rocky BaseOS,
+AppStream and Extras in the session. A separate request for AL2023's release
+mirror list returned HTTP 502 from the session proxy. The existing AL2023
+toolchain image's successful build logs established the release-specific
+metadata URL and relative links to the CDN's separate RPM prefix. Live public
+catalog checks are pending after closure.
+
+`python3 -B -I tests/mirror_rpm_runtime.py` passed with Rocky Linux 9 init
+and `localhost/al2023-systemd:1.0.0`. Each nested systemd container and
+build `RUN` refreshed DNF metadata through the controlled TLS upstream over
+the mirror relay, and the `--network=none` controls failed to reach it.
+Temporary containers and images were removed. The session lacks a signed
+RPM fixture and the tools to build one. Package installation, service start
+and signature verification with that fixture remain pending after closure.
+All six Molecule YAML files parsed and the scenario declares both targets
+and idempotence. `ansible-playbook` and `molecule` are unavailable in the
+working session, so the scenario run remains pending after closure.
+
+The language fixture suite exercised Maven artifact and plugin paths, PyPI
+HTML and JSON hash retention, npm tarball rewriting and integrity, Cargo
+sparse index and crate routes, and Go module and checksum policy. npm 10.9.9
+installed a scoped fixture package with a fresh cache through the relay.
+Maven, pip, Cargo and Go executables are unavailable in the working session.
+Their client-level runs remain pending after closure.
+
+Release inputs include both public catalog profiles and the shared mirror
+modules. The qualification identity includes the new enforcement and settings
+modules. The propagation inventory covers the two shared mirror test suites.
+
+| Check in the working session | Result |
+| --- | --- |
+| Mirror HTTP, adapters and controlled relay | 21 tests passed, including npm with a fresh cache |
+| Private profile library and catalog | 12 tests passed |
+| Mux v2, provider TLS and network policy | 27, 12 and 15 tests passed |
+| Session lifecycle and hardened proxy budgets | 20 tests passed |
+| Setup, toolchains and session engine | 93, 68 and 20 tests passed in the registered DocGen image |
+| Qualification contract and image pins | 28 contract tests and 7 pin checks passed. The 8 installed-path checks need the runtime images |
+| Shared launcher | 115 tests passed across four groups and a focused rerun of the catalog dispatch fixture. The corrected fixture copies catalog files into private native storage, matching the protected setup path |
+| Reference wrapper and shared alignment | 6 and 21 tests passed |
+| RPM controlled runtime on Podman Machine | Both target containers and nested builds refreshed DNF metadata. Their isolated controls failed as expected |
+
 ## Changes close in the working session (`close-changes-in-working-session`): 2026-11-26
 
 A started change is verified and closed only in its working session. Other

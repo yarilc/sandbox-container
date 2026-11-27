@@ -78,6 +78,8 @@ Container options:
   --container-toolchain  manage the shared read-only toolchain library; must be first:
                          add <recipe.json|name> | list | remove <name> | verify [<name>];
                          add pulls pinned images and downloads pinned archives itself
+  --container-mirror     manage dependency mirror profiles; must be first:
+                         add <profile.json|name> | list | remove <name> | verify [<name>]
   --container-help       show this wrapper help
 
 All other arguments are passed to @COMMAND@ (or to Bash in shell mode) unchanged.
@@ -182,7 +184,7 @@ release-measured acceptance records.
 EOF
     local network provider='' item hosts agent_text=''
     if ((${#AGENT_CREDENTIALS[@]})); then
-        network="  @P@_NETWORK offline, provider (default when unset or empty), or
+        network="  @P@_NETWORK offline, mirror, provider (default when unset or empty), or
                            unrestricted
 "
         provider="  @P@_NETWORK_PROFILE protected provider policy profile name
@@ -193,7 +195,7 @@ EOF
 Provider mode allows only the hosts of the selected policy profile. Destination
 and SNI binding cannot tell your credentials from attacker-supplied ones, so
 each allowed host can receive workspace data sent with a foreign key or
-account. Only offline mode removes this channel. Allowed hosts:
+account. Offline mode starts without external access. Allowed hosts:
 "
         for item in "${AGENT_POLICY_HOSTS[@]}"; do
             hosts=${item#*=}
@@ -201,7 +203,7 @@ account. Only offline mode removes this channel. Allowed hosts:
 "
         done
     else
-        network="  @P@_NETWORK offline (default when unset or empty) or unrestricted;
+        network="  @P@_NETWORK offline (default when unset or empty), mirror or unrestricted;
                            provider is unavailable: the profile declares no
                            authentication method
 "
@@ -222,6 +224,7 @@ account. Only offline mode removes this channel. Allowed hosts:
     text=${text//@COMMAND@/$AGENT_COMMAND}
     text=${text//@DEFAULT_MODE@/$(default_mode)}
     printf '%s' "$text"
+    printf '\nMirror access uses confined HTTP and verified upstream HTTPS. Approved upstreams see allowed request paths and timing.\n'
 }
 
 # A profile with authentication methods defaults to provider mode (U1); the
@@ -243,6 +246,11 @@ core_arguments() {
         command -v python3 >/dev/null || die 'host Python 3 is required for the toolchain library'
         # shellcheck disable=SC2154 # wrapper_dir is set by the entry script.
         exec python3 -I "$wrapper_dir/setup/toolchains.py" "${@:2}"
+    fi
+    if [[ "${1:-}" == --container-mirror ]]; then
+        [[ "${2:-}" != snapshot ]] || die 'use --container-mirror add, list, remove, or verify'
+        command -v python3 >/dev/null || die 'host Python 3 is required for the mirror profile library'
+        exec python3 -I "$wrapper_dir/setup/mirrors.py" "${@:2}"
     fi
     for arg in "$@"; do
         if [[ "$arg" == --container-qualify ]]; then
@@ -277,6 +285,7 @@ core_arguments() {
             --container-shell) shell_mode=1 ;;
             --container-git-worktree) git_worktree=1 ;;
             --container-toolchain) die '--container-toolchain must be the first argument' ;;
+            --container-mirror) die '--container-mirror must be the first argument' ;;
             *) args+=("$arg") ;;
         esac
     done
@@ -292,14 +301,14 @@ core_settings() {
     network_mode=${cfg_NETWORK:-$(default_mode)}
     if ((${#AGENT_CREDENTIALS[@]})); then
         case "$network_mode" in
-            offline|provider|unrestricted) ;;
-            *) die "${P}_NETWORK must be offline, provider, or unrestricted" ;;
+            offline|mirror|provider|unrestricted) ;;
+            *) die "${P}_NETWORK must be offline, mirror, provider, or unrestricted" ;;
         esac
     else
         case "$network_mode" in
-            offline|unrestricted) ;;
-            provider) die "${P}_NETWORK=provider is unavailable: the profile declares no authentication method; use offline or unrestricted" ;;
-            *) die "${P}_NETWORK must be offline or unrestricted" ;;
+            offline|mirror|unrestricted) ;;
+            provider) die "${P}_NETWORK=provider is unavailable: the profile declares no authentication method; use offline, mirror or unrestricted" ;;
+            *) die "${P}_NETWORK must be offline, mirror or unrestricted" ;;
         esac
     fi
     restricted=0
@@ -326,6 +335,13 @@ core_settings() {
     # Provider mode needs the settings setup saves; a default provider launch
     # without them is a missing setup, an explicit one a configuration error.
     network_profile=''
+    egress_enabled=0
+    if [[ "$network_mode" == mirror || "$network_mode" == provider ]]; then
+        egress_enabled=1
+    fi
+    if [[ "$network_mode" == mirror ]] && [[ -z "${cfg_NETWORK_RUNTIME_DIR:-}" || -z "${cfg_EGRESS_IMAGE:-}" ]]; then
+        die "setup required: mirror sessions need a private egress runtime and immutable image; $setup_step"
+    fi
     if [[ "$network_mode" == provider ]]; then
         if [[ -z "${cfg_NETWORK:-}" ]] && [[ -z "${cfg_NETWORK_PROFILE:-}" || -z "${cfg_NETWORK_POLICY:-}" \
             || -z "${cfg_NETWORK_RUNTIME_DIR:-}" || -z "${cfg_EGRESS_IMAGE:-}" ]]; then
@@ -1029,6 +1045,7 @@ core_mounts_image() {
     toolchain_library=''
     toolchain_path=''
     toolchain_env=()
+    toolchain_registries=()
     engine_store=''
     if ((toolchains_enabled && ! qualification_probe)); then
         command -v python3 >/dev/null \
@@ -1044,6 +1061,7 @@ core_mounts_image() {
                 library) toolchain_library=$toolchain_first ;;
                 path) toolchain_path+=":$toolchain_first" ;;
                 env) toolchain_env+=(--env "$toolchain_first=$toolchain_second") ;;
+                registry) toolchain_registries+=(--toolchain "$toolchain_first") ;;
                 store) engine_store=$toolchain_first ;;
                 *) die 'unexpected toolchain library output' ;;
             esac
@@ -1079,9 +1097,12 @@ core_mounts_image() {
         for core_path in "${writable_state[@]}"; do
             network_inputs+=(--writable "$core_path")
         done
-        if [[ "$network_mode" == provider ]]; then
-            network_inputs+=(--policy "$cfg_NETWORK_POLICY" --profile "$cfg_NETWORK_PROFILE"
-                --proxy-image "$cfg_EGRESS_IMAGE" --runtime "$cfg_NETWORK_RUNTIME_DIR")
+        if ((egress_enabled)); then
+            network_inputs+=(--proxy-image "$cfg_EGRESS_IMAGE" --runtime "$cfg_NETWORK_RUNTIME_DIR")
+            if [[ "$network_mode" == provider ]]; then
+                network_inputs+=(--policy "$cfg_NETWORK_POLICY" --profile "$cfg_NETWORK_PROFILE")
+            fi
+            ((trust_host_ca == 0)) || network_inputs+=(--ca-bundle "$ca_bundle")
         fi
         # shellcheck disable=SC2154 # set by capture_response
         prepare_inputs=(--mode "$network_mode" --server-version "${network_version%$'\n'}"
@@ -1101,7 +1122,7 @@ core_mounts_image() {
     fi
 
     core_build_image
-    if [[ "$network_mode" == provider ]]; then
+    if ((egress_enabled)); then
         # The proxy image is an immutable artifact: present, or pulled by digest
         # only under explicit maintenance.
         if engine image exists "$cfg_EGRESS_IMAGE"; then
@@ -1398,7 +1419,7 @@ shutdown() {
                 cleanup_warning 'creation outcome unresolved: no verified owned container ID'
             fi
         fi
-        if [[ "$network_mode" == provider ]]; then
+        if ((egress_enabled)); then
             # Owned proxy recovery/removal and diagnostics share the remaining budget.
             "${session_helper[@]}" stop --session "$session_dir" --deadline "$((shutdown_deadline - SECONDS))" \
                 --container "${container_id:-unknown}" || true
@@ -1578,7 +1599,7 @@ core_create_start() {
     trap 'shutdown 143 TERM' TERM
     trap 'shutdown 130 INT' INT
     trap 'shutdown 129 HUP' HUP
-    if [[ "$network_mode" == provider ]]; then
+    if ((egress_enabled)); then
         session_dir=$(umask 077; mktemp -d -- "$cfg_NETWORK_RUNTIME_DIR/session.XXXXXXXXXXXX") \
             || die "cannot create a private session directory in ${P}_NETWORK_RUNTIME_DIR"
     else
@@ -1600,9 +1621,17 @@ core_create_start() {
             exit "$qualification_status"
         fi
     fi
-    if [[ "$network_mode" == provider ]]; then
+    if ((egress_enabled)); then
+        if ((qualification_probe == 0)); then
+            mirror_selection=(--workspace "$workspace" --writable "$workspace_mount")
+            for core_path in "${writable_state[@]}"; do
+                mirror_selection+=(--writable "$core_path")
+            done
+            python3 -I "$script_dir/setup/mirrors.py" snapshot "${mirror_selection[@]}" "${toolchain_registries[@]}" \
+                >"$session_dir/mirror.json"
+        fi
         # The helper starts the session's proxy in its own process group.
-        "${session_helper[@]}" start "${network_inputs[@]}" "${qualification_inputs[@]}" --session "$session_dir" \
+        "${session_helper[@]}" start --mode "$network_mode" "${network_inputs[@]}" "${qualification_inputs[@]}" --session "$session_dir" \
             --guard-digest "$guard_digest" >"$session_dir/policy.identity" &
         session_start_pid=$!
         wait "$session_start_pid"

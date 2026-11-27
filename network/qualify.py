@@ -232,6 +232,8 @@ class Gate:
                       ipv6=identity['security']['ipv6'] == 'present',
                       provider=identity['mode'] == 'provider', tls=tls, agent=PROFILE.command,
                       budgets=identity['hardening']['agent'])
+        if tls:
+            config['mirror'] = True
         input_path = phase / 'input.json'
         input_path.write_bytes(canonical(config)); input_path.chmod(0o600)
         name = PROFILE.env
@@ -244,22 +246,24 @@ class Gate:
                     name('NETWORK_RUNTIME_DIR'): str(runtime)})
         if isolated:
             env[name('STATE_DIR')] = str(phase / 'state')
+        if identity['mode'] in ('mirror', 'provider'):
+            env[name('EGRESS_IMAGE')] = identity['proxy']
         if identity['mode'] == 'provider':
             env.update({name('NETWORK_PROFILE'): self.env[name('NETWORK_PROFILE')],
-                        name('NETWORK_POLICY'): self.env[name('NETWORK_POLICY')],
-                        name('EGRESS_IMAGE'): identity['proxy']})
+                        name('NETWORK_POLICY'): self.env[name('NETWORK_POLICY')]})
         if tls:
             self.engine('run', '--rm', *self.common(identity['runtime']), '--volume', f'{phase}:/qualification:rw',
                 '--entrypoint', 'openssl', identity['runtime'], 'req', '-x509', '-newkey', 'rsa:2048',
                 '-nodes', '-days', '1', '-subj', '/CN=qualification.invalid', '-addext',
                 'subjectAltName=DNS:qualification.invalid,DNS:alternate.invalid',
                 '-keyout', '/qualification/key.pem', '-out', '/qualification/cert.pem')
-            policy = load(self.env[name('NETWORK_POLICY')], PROFILE.policy_rules())
-            policy['profiles']['qualification-fixture'] = dict(authentication='custom', disable_optional_traffic=True,
-                destinations=[dict(host='qualification.invalid', port=8443, addresses=['127.0.0.1'])])
-            policy_path = phase / 'policy.json'; policy_path.write_bytes(canonical(policy)); policy_path.chmod(0o600)
-            env.update({name('NETWORK_PROFILE'): 'qualification-fixture',
-                        name('NETWORK_POLICY'): str(policy_path)})
+            if identity['mode'] == 'provider':
+                policy = load(self.env[name('NETWORK_POLICY')], PROFILE.policy_rules())
+                policy['profiles']['qualification-fixture'] = dict(authentication='custom', disable_optional_traffic=True,
+                    destinations=[dict(host='qualification.invalid', port=8443, addresses=['127.0.0.1'])])
+                policy_path = phase / 'policy.json'; policy_path.write_bytes(canonical(policy)); policy_path.chmod(0o600)
+                env.update({name('NETWORK_PROFILE'): 'qualification-fixture',
+                            name('NETWORK_POLICY'): str(policy_path)})
         control = ['podman', 'run', '--rm', *self.common(identity['runtime'], network),
             '--volume', f'{project}:/workspace:rw',
             '--volume', f'{input_path}:/opt/sandbox-egress/qualification.json:ro',
@@ -296,15 +300,21 @@ class Gate:
                     sessions = list(runtime.glob('session.*'))
                     if len(sessions) != 1:
                         raise GateError('ambiguous fixture proxy ownership')
-                    counts = sessions[0] / 'logs/qualification-counts.json'
-                    deadline = time.monotonic() + 3
-                    while time.monotonic() < deadline:
-                        values = json.loads(counts.read_text()) if counts.exists() else []
-                        if len(values) == 2:
-                            break
-                        time.sleep(.02)
-                    if len(values) != 2 or values[0] <= 0 or values[1] != 0:
-                        raise GateError('TLS mismatch zero-byte evidence missing')
+                    logs = sessions[0] / 'logs'
+                    if identity['mode'] == 'provider':
+                        counts = logs / 'qualification-counts.json'
+                        deadline = time.monotonic() + 3
+                        values = []
+                        while time.monotonic() < deadline:
+                            values = json.loads(counts.read_text()) if counts.exists() else []
+                            if len(values) == 2:
+                                break
+                            time.sleep(.02)
+                        if len(values) != 2 or values[0] <= 0 or values[1] != 0:
+                            raise GateError('TLS mismatch zero-byte evidence missing')
+                    evidence = logs / 'qualification-mirror.json'
+                    if not evidence.is_file() or json.loads(evidence.read_text()) != [['GET', '/rpm/repodata/repomd.xml', False]]:
+                        raise GateError('mirror upstream evidence is missing or contains an unauthorized request')
                     proxy = self.engine('ps', '--no-trunc', '--filter',
                         'label=' + PROFILE.label('egress') + '=' + sessions[0].name, '--format', '{{.ID}}')
                     owner = self.engine('inspect', '--format',
@@ -430,7 +440,7 @@ class Gate:
             addresses = addresses if ipv6 else addresses[:1]
             for isolated in (False, True):
                 self.case(work, identity, network, addresses, isolated=isolated)
-            if identity['mode'] == 'provider':
+            if identity['mode'] in ('mirror', 'provider'):
                 self.case(work, identity, network, addresses, isolated=True, tls=True)
             if identity['engine']:
                 self.engine_case(work, identity)
@@ -463,9 +473,10 @@ def main():
     if (env.get('CONTAINER_CONNECTION') or not endpoint.startswith('unix:///') or
             not endpoint[7:].strip('/')):
         raise platform.PlatformError('qualification requires an explicit same-host Unix endpoint, without named connections')
-    if records.selected_mode(PROFILE, env) not in ('offline', 'provider'):
-        raise GateError('qualification requires offline or provider mode')
-    if records.selected_mode(PROFILE, env) == 'provider' and not PROFILE.auth:
+    mode = records.selected_mode(PROFILE, env)
+    if mode not in ('offline', 'mirror', 'provider'):
+        raise GateError('qualification requires offline, mirror or provider mode')
+    if mode == 'provider' and not PROFILE.auth:
         raise GateError(agent_profile.NO_METHODS)
     if env.get(name('PODMAN')) == '1':
         raise GateError('qualification rejects Podman delegation')
@@ -480,11 +491,11 @@ def main():
     preflight = ['python3', '-I', str(ROOT / 'network/control.py'), 'preflight', '--installation', str(ROOT)]
     for path in paths:
         preflight.extend(('--writable', path))
-    if records.selected_mode(PROFILE, env) == 'provider':
-        preflight.extend(('--policy', env.get(name('NETWORK_POLICY'), ''),
-            '--profile', env.get(name('NETWORK_PROFILE'), ''),
-            '--proxy-image', env.get(name('EGRESS_IMAGE'), ''),
-            '--runtime', env.get(name('NETWORK_RUNTIME_DIR'), '')))
+    if mode in ('mirror', 'provider'):
+        preflight.extend(('--mode', mode, '--proxy-image', env.get(name('EGRESS_IMAGE'), ''),
+                          '--runtime', env.get(name('NETWORK_RUNTIME_DIR'), '')))
+    if mode == 'provider':
+        preflight.extend(('--policy', env.get(name('NETWORK_POLICY'), ''), '--profile', env.get(name('NETWORK_PROFILE'), '')))
     try:
         gate.run(preflight)
         identity, reusable = records.fingerprint(ROOT, env, gate.run, platform, gate.token)

@@ -1,8 +1,6 @@
 # Proposal
 
-> Status: roadmap. Only this proposal exists; design, specs and tasks will
-> follow when the open questions below are answered. It builds on
-> `simplify-toolchain-provisioning` and
+> This change builds on `simplify-toolchain-provisioning` and
 > `replace-podman-delegation-with-session-engine`. The Ansible use case below
 > also needs `support-nested-systemd-containers`.
 
@@ -36,13 +34,14 @@ attacker either.
   (`Authorization`, `Cookie` and similar headers are dropped; only a fixed
   header allowlist passes). It verifies upstream TLS itself, with the host CA
   bundle saved by setup.
-- Upstreams are URL prefixes, not hosts. An upstream is an identifier, an
-  ecosystem and a base URL. The mirror forwards only paths below that base URL
-  that belong to the ecosystem's protocol, so other services on the same host
-  stay unreachable.
+- An upstream has an identifier, an ecosystem and a base URL prefix. A
+  repository with split metadata and package storage can explicitly approve
+  additional artifact prefixes. Each prefix has its own connection policy and
+  typed routes. The mirror forwards only matching protocol paths.
 - An `rpm` ecosystem for `dnf` clients, with Rocky Linux 9 and Amazon Linux
   2023 as the reference distributions. The mirror never follows a client's
-  mirror list or metalink. Package signature checks stay in the client.
+  mirror list or metalink. Package signature checks stay in the client. RPM
+  validates the shared path first, followed by Maven, PyPI, npm, Cargo and Go.
 - Upstream profiles: named sets of upstreams.
   - A catalog of reviewed public profiles ships in the protected release, for
     example `rocky9`, `epel9` and `al2023`.
@@ -52,13 +51,14 @@ attacker either.
     `list`, `remove` and `verify [<name>]`. `add` refuses a profile file inside
     a writable session mount. `verify` fetches each upstream's repository
     index and reports the result per upstream.
-- Local-network upstreams: an operator profile declares the exact address
-  scope of each such upstream. The mirror resolves the name itself and
-  connects only to addresses inside that scope, as a versioned, operator-approved
-  local exception.
+- Local-network upstreams: the first release supports read-only access without
+  upstream authentication. An operator profile declares the approved URL prefix
+  and exact address scope for each upstream. The mirror resolves the name itself
+  and connects only to addresses inside that scope, as a versioned,
+  operator-approved local exception.
 - Profile selection: profiles marked as default are active in every session
-  with the mirror. A project activates other profiles only by naming them in a
-  workspace file, which the launcher reads strictly (names only, bounded
+  with the mirror. A project activates other profiles by naming them in
+  `.sandbox-mirrors.json`, which the launcher reads strictly (names only, bounded
   size). An unknown name yields a clear notice. The workspace never defines an
   upstream. The active profiles are fixed at launch, and startup reports them
   with their revision.
@@ -70,11 +70,13 @@ attacker either.
     clients through the network namespace they share with the session. `rpm`
     targets point their `baseurl` at the mirror, typically through the
     repository variables of the test scenario.
-- Recipes name the profiles they need (`"registries": ["rocky9"]`), not hosts.
-- Offline stays offline: an offline session has neither the mirror nor any
-  other channel. The mirror is available in provider mode and in a new
-  restricted mode for profiles without authentication methods, such as the
-  reference shell.
+- Recipes name the profiles they need (`"registries": ["rocky9"]`). The
+  launcher can activate installed profiles named by default toolchains that
+  are eligible for the current session.
+- The explicit `mirror` mode enables dependency access without provider
+  tunnels. Provider mode also supports the mirror. Existing mode defaults
+  apply, including `offline` for the reference shell. An offline session
+  starts without an external channel.
 - Contract update: the mirror keeps the no-decryption guarantee (clients
   speak HTTP to the mirror over the existing session channel, and the mirror
   opens its own verified TLS connection). The network contract states its
@@ -102,8 +104,8 @@ Decisions already taken during exploration:
   modelled on `--container-toolchain`, shared by every wrapper.
 - **No interim path:** test containers get packages only through the mirror,
   not through unrestricted sessions or prepared images that carry them.
-- **Windows is in scope:** the Ansible use case must work on the Windows
-  Podman machine as on native Linux.
+- The Ansible use case must work on both Windows Podman Machine and native
+  Linux.
 
 ## Capabilities
 
@@ -121,7 +123,13 @@ Decisions already taken during exploration:
   profiles, and the residual channel disclosure.
 - `toolchain-library`: the `registries` recipe field naming profiles.
 - `session-container-engine`: nested containers and image builds reach the
-  mirror, and nothing else, inside the session's network boundary.
+  mirror within the session's network boundary.
+- `container-launcher`: the reference launcher accepts the explicit `mirror`
+  mode and keeps its offline default.
+- `container-setup`: mode selection, protected preparation, and acknowledgement
+  of the residual request channel.
+- `windows-launcher`: managed entry and qualification for `mirror` inside
+  Podman Machine.
 
 ## Impact
 
@@ -140,29 +148,18 @@ Decisions already taken during exploration:
 - Windows: the Podman machine needs the same mode, nested clients included;
   its cache lives in the machine.
 
-## Open Questions
+## Validation
 
-- **Credentials for local-network upstreams:** whether any repository needs
-  them; if so, the mirror holds them outside the sandbox, and where they are
-  stored and qualified.
-- **Nested client path:** how nested containers and build steps reach the
-  mirror from the engine's network namespace. A fixed loopback address keeps
-  repository URLs stable in test scenarios; to verify with a spike on native
-  Linux and on the Windows Podman machine.
-- **rpm repository layouts:** replacing Rocky's mirror list and Amazon Linux
-  2023's `mirror.list` with base URLs, the release-locked paths of Amazon Linux
-  2023, and which public profiles the catalog ships.
-- **Project selection file:** its name, location and format.
-- **Go:** module paths through `proxy.golang.org` need an allowlist of module
-  domains, or vendoring, because the proxy fetches arbitrary domains.
-- **Mode naming and defaults:** the name of the new restricted mode, and
-  whether it becomes the default when installed toolchains declare
-  registries.
-- **Clients that ignore standard settings:** the mirror configuration of
-  Maven 3.9's native transport and of Gradle (init script), to confirm with a
-  spike.
-- **Performance** of large installs (npm, Maven, `dnf`) through the Python
-  mirror and the single multiplexed channel, to measure before fixing budgets.
-- **Ecosystem order:** `rpm` now has a driving use case and, like Maven, a
-  static layout without link rewriting. Either can validate the architecture
-  first; then PyPI, npm and crates.io, with Go last.
+Validate and close this change in the development session running on Windows
+Podman Machine. Run the checks available there, including mirror access from
+nested containers and image builds and the Ansible/Molecule `dnf` workflow.
+Record checks unavailable in the session and their reasons in
+`docs/validation.md`. Runtime verification on other environments, including
+native Linux, follows closure. File any defects found there as new changes.
+
+## Roadmap
+
+- Add authentication for local-network upstreams. Define how the trusted mirror
+  stores and uses operator-managed credentials outside the sandbox.
+- Qualify Gradle-specific repository configuration and additional RPM catalogs
+  against the same boundary.

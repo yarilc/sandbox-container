@@ -112,10 +112,10 @@ $bypassEnv = Get-ProfileText $native.Value 'approval_bypass_env' $envName -Optio
 $entryName = $name + '.ps1'
 # Provider networking exists only for a profile with authentication methods.
 $authProperty = $wrapperProfile.PSObject.Properties['auth']
-$modeList = 'unrestricted or offline'
+$modeList = 'unrestricted, offline or mirror'
 if ($null -ne $authProperty -and $null -ne $authProperty.Value -and
     @($authProperty.Value.PSObject.Properties).Count -gt 0) {
-    $modeList = 'unrestricted, offline or provider'
+    $modeList = 'unrestricted, offline, mirror or provider'
 }
 # The key variables of the authentication methods. On Linux they are in the
 # launcher's environment; the core passes only the selected method's key.

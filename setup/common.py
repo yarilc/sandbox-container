@@ -33,18 +33,21 @@ DRIVE_MOUNT = re.compile(r'/mnt/[A-Za-z](?:/|$)')
 # Reviewed toolchain recipes that every release installs (`--container-toolchain add <name>`).
 TOOLCHAIN_CATALOG = tuple('setup/toolchain-catalog/' + name + '.json'
                           for name in ('go', 'java21', 'maven3.9', 'node24', 'python3.13', 'rust'))
+MIRROR_CATALOG = ('setup/mirror-catalog/rocky9.json', 'setup/mirror-catalog/al2023.json')
 MANIFEST = (
     PROFILE.wrapper, 'launcher/core.sh', 'launcher/windows/bootstrap.sh', 'launcher/windows/enter.sh',
     'agent/launcher.sh', 'Containerfile', '.containerignore', agent_profile.PROFILE, agent_profile.POLICY,
     'setup/common.py', 'setup/setup.py', 'setup/launch.py', 'setup/smoke.py', 'setup/diagnostics.py',
-    'setup/toolchains.py', 'setup/engine.py', *TOOLCHAIN_CATALOG,
+    'setup/toolchains.py', 'setup/mirrors.py', 'setup/engine.py', *TOOLCHAIN_CATALOG, *MIRROR_CATALOG,
     'network/Containerfile', 'network/.containerignore',
     'launcher/engine/Containerfile', 'launcher/engine/.containerignore', 'launcher/engine/cgroup.sh',
     'launcher/engine/containers.conf', 'launcher/engine/entrypoint.sh', 'launcher/engine/resolv.conf',
     'launcher/engine/start.sh', 'launcher/engine/storage.conf',
     'network/guard-build.Containerfile', 'network/build-guard.sh',
     'network/guard.c', 'network/guard_landlock.h', 'network/guard_seccomp.h',
-    'network/control.py', 'network/policy.py', 'network/agent_profile.py', 'network/session.py',
+    'network/control.py', 'network/policy.py', 'network/mirror_policy.py', 'network/mirror.py',
+    'network/mirror_cache.py', 'network/mirror_metadata.py',
+    'network/agent_profile.py', 'network/session.py', 'network/mirror_settings.py',
     'network/proxy.py', 'network/proxy_hardening.py', 'network/agent_budgets.py',
     'network/tls_client_hello.py', 'network/revisions.py', 'network/relay.py', 'network/mux.py', 'network/resolv.conf',
     'network/platform_check.py', 'network/qualify.py', 'network/qualification_records.py',
@@ -188,7 +191,7 @@ def validate(value):
             absolute(value[name])
     if not value['installation'] or not value['command']:
         raise SetupError('Installation and command paths are required.')
-    if value['network'] not in ('offline', 'provider', 'unrestricted') or value['auth'] not in ('none', *PROFILE.auth):
+    if value['network'] not in ('offline', 'mirror', 'provider', 'unrestricted') or value['auth'] not in ('none', *PROFILE.auth):
         raise SetupError('Invalid network/authentication choice.')
     if value['network'] == 'provider' and value['auth'] == 'none':
         raise SetupError('Provider mode requires an authentication profile.')
@@ -204,8 +207,8 @@ def validate(value):
     for name in ('image_id', 'proxy_image', 'toolchain_image', 'guard_sources_sha256', *ENGINE_FIELDS):
         if value[name] and not IMAGE_ID.fullmatch(value[name]):
             raise SetupError('Invalid immutable image or source identity.')
-    if value['network'] == 'provider' and (not value['runtime_dir'] or not value['proxy_image']):
-        raise SetupError('Provider preferences require a runtime directory and immutable proxy image.')
+    if value['network'] in ('mirror', 'provider') and (not value['runtime_dir'] or not value['proxy_image']):
+        raise SetupError('Egress preferences require a runtime directory and immutable proxy image.')
     for name, suffix in BUDGETS.items():
         try:
             if agent_budgets.canonical(suffix, value[name]) != value[name]:
@@ -297,13 +300,13 @@ def runtime_environment(value, release, *, overrides=True):
     }
     if PROFILE.approval_bypass_env:
         selected[PROFILE.approval_bypass_env] = '1' if value['yolo'] else '0'
-    # Provider inputs exist only for a profile with authentication methods.
+    if PROFILE.auth or value['network'] == 'mirror':
+        selected.update({name('NETWORK_RUNTIME_DIR'): value['runtime_dir'], name('EGRESS_IMAGE'): value['proxy_image']})
+    # Provider policy inputs exist only for a profile with authentication methods.
     if PROFILE.auth:
         selected.update({
-            name('NETWORK_RUNTIME_DIR'): value['runtime_dir'],
             name('NETWORK_PROFILE'): PROFILE.policy_profile(value['auth']) if value['auth'] != 'none' else '',
             name('NETWORK_POLICY'): str(release / agent_profile.POLICY),
-            name('EGRESS_IMAGE'): value['proxy_image'],
         })
     if not overrides:
         # Setup and smoke never inherit the launch-only forwarding and read-only switches.
@@ -409,11 +412,14 @@ def protect_mounts(value, env, args=(), *, launcher=None, workspace=None):
         if any(overlap(path, mount) or lexical == mount or mount in lexical.parents
                or lexical in mount.parents for mount in mounts):
             raise SetupError('Managed installation/command overlaps a writable workspace or state mount; relocate it or choose another workspace.')
-    if (env.get(PROFILE.env('NETWORK')) or PROFILE.default_mode) == 'provider':
-        for name in (PROFILE.env('NETWORK_POLICY'), PROFILE.env('NETWORK_RUNTIME_DIR')):
+    mode = env.get(PROFILE.env('NETWORK')) or PROFILE.default_mode
+    if mode in ('mirror', 'provider'):
+        names = ('NETWORK_POLICY', 'NETWORK_RUNTIME_DIR') if mode == 'provider' else ('NETWORK_RUNTIME_DIR',)
+        for suffix in names:
+            name = PROFILE.env(suffix)
             path = env.get(name, '')
             if not path or any(overlap(path, mount) for mount in mounts):
-                raise SetupError('Protected provider policy/runtime overlaps a writable mount or is missing.')
+                raise SetupError('Protected egress policy/runtime overlaps a writable mount or is missing.')
     return mounts
 
 

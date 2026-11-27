@@ -1,0 +1,24 @@
+---
+- name: Verify package identity and service output
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files: [targets.yml]
+  tasks:
+    - name: Query the installed package
+      ansible.builtin.command:
+        argv: [podman, exec, "{{ item.name }}", rpm, -q, "{{ package }}"]
+      changed_when: false
+      loop: "{{ targets }}"
+    - name: Check the fixture service is active
+      ansible.builtin.command:
+        argv: [podman, exec, "{{ item.name }}", systemctl, is-active, "{{ unit }}"]
+      changed_when: false
+      loop: "{{ targets }}"
+    - name: Check the unit's journal marker
+      ansible.builtin.command:
+        argv: [podman, exec, "{{ item.name }}", journalctl, --no-pager, -u, "{{ unit }}"]
+      register: journal
+      failed_when: "journal.rc != 0 or 'sandbox-mirror-fixture' not in journal.stdout"
+      changed_when: false
+      loop: "{{ targets }}"

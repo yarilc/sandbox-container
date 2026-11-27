@@ -14,7 +14,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox_profile import AGENT_COMMAND, AGENT_HOME, AGENT_IMAGE, PROFILE, ROOT, env as profile_env
-from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, TLS_ENFORCEMENT
+from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, MUX_PROTOCOL, TLS_ENFORCEMENT
 from qualification_records import ipv6_state
 from guard_terminal_probe import terminal_skip_reason
 ENABLED = os.environ.get('SANDBOX_GUARD_TESTS') == '1'
@@ -512,7 +512,7 @@ class GuardTests(unittest.TestCase):
         from policy import revision
         manifest = {'sha256': hashlib.sha256(self.binary.read_bytes()).hexdigest(),
                     'revision': GUARD_REVISION, 'required_abi': GUARD_REQUIRED_ABI,
-                    'filter': 'native-x86_64-v1', 'protocol': 1,
+                    'filter': 'native-x86_64-v1', 'protocol': MUX_PROTOCOL,
                     'tls_enforcement': TLS_ENFORCEMENT,
                     'policy': revision(json.loads((config / 'policy.json').read_text())),
                     'profile': 'controlled-test', 'session': 'guarded-synthetic'}
@@ -551,6 +551,7 @@ class GuardTests(unittest.TestCase):
         extra = ['--volume', f'{selected_transport}:/run/sandbox-egress:ro',
                  '--volume', f'{ROOT / "network/relay.py"}:/opt/sandbox-egress/relay.py:ro',
                  '--volume', f'{ROOT / "network/mux.py"}:/opt/sandbox-egress/mux.py:ro',
+                 '--volume', f'{ROOT / "network/revisions.py"}:/opt/sandbox-egress/revisions.py:ro',
                  '--env', 'HTTPS_PROXY=http://127.0.0.1:18080',
                  '--env', 'https_proxy=http://127.0.0.1:18080']
         result = self.production_container('', mode='provider', extra=extra, program=[

@@ -45,7 +45,8 @@ The session SHALL reach its engine only through a loopback TCP endpoint in the s
 ### Requirement: Engine shares the session network boundary
 The engine and every container it runs SHALL have no network path other than the session's:
 - an offline session's engine SHALL reach no external service;
-- a provider session's engine SHALL reach only what the session's proxy policy allows, through that proxy;
+- a mirror session's engine SHALL reach only the dependency mirror within the session's network boundary;
+- a provider session's engine SHALL reach the dependency mirror and the approved CONNECT destinations through their respective trusted frontends;
 - an unrestricted session's engine SHALL have the session's network.
 
 #### Scenario: Offline nested container
@@ -59,6 +60,15 @@ The engine and every container it runs SHALL have no network path other than the
 #### Scenario: Unrestricted pull
 - **WHEN** an unrestricted session's engine pulls an image that is not in the library
 - **THEN** the pull uses the session's network and the image stays in the session's storage
+
+#### Scenario: Dependency download from a nested container or build
+- **WHEN** a nested container or a build `RUN` joins the engine's network namespace with `--network=host` in a restricted session with an active mirror profile
+- **THEN** the child can fetch an approved dependency from the session's loopback mirror
+- **AND** access uses the same approved routes as the session and gives the child no host networking, external DNS or direct upstream connection
+
+#### Scenario: Networking disabled for a nested operation
+- **WHEN** a nested container or build step runs with `--network=none`
+- **THEN** it cannot reach the session's mirror endpoint
 
 ### Requirement: Engine mounts only the workspace and the image store
 The engine container SHALL mount these host paths and no other:

@@ -30,6 +30,7 @@ SHARED_TESTS = (
     'tests/guard_terminal_probe.py', 'tests/guard_syscall_mock.c', 'tests/idle_mux_fixture.py', 'tests/mux_failure_fixture.py',
     'tests/mux_fault_boundary.py', 'tests/network_fixture.py', 'tests/proxy_budget_fixture.py',
     'tests/tls_binding_fixture.py', 'tests/test_session.py', 'tests/test_toolchains.py', 'tests/test_engine.py',
+    'tests/test_mirror_profiles.py', 'tests/test_dependency_mirror.py',
     'tests/fixtures/agent/profile.json', 'tests/fixtures/agent/policies/default.json',
     'tests/fixtures/shell-agent/profile.json', 'tests/fixtures/shell-agent/policies/default.json',
     'tests/fixtures/agent/launcher.sh', 'tests/fixtures/shell-agent/launcher.sh', 'tests/fake_podman.py',

@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sandbox_profile import NETWORK, PROFILE, ROOT, SHELL_FIXTURE, fixture_root, test_setting
 import agent_profile
 from agent_profile import NO_METHODS
-from revisions import TLS_ENFORCEMENT
+from revisions import MUX_PROTOCOL, TLS_ENFORCEMENT
 
 DIGEST = 'c' * 64
 PROXY = 'b' * 64
@@ -119,7 +119,8 @@ class SessionHelper(unittest.TestCase):
         self.install = self.base / 'installed'
         (self.install / 'network/bin').mkdir(parents=True)
         (self.install / 'agent').mkdir()
-        for name in ('session.py', 'revisions.py', 'agent_profile.py', 'agent_budgets.py', 'policy.py', 'proxy_hardening.py', 'platform_check.py',
+        for name in ('session.py', 'revisions.py', 'agent_profile.py', 'agent_budgets.py', 'policy.py',
+                     'mirror_policy.py', 'mirror_settings.py', 'proxy_hardening.py', 'platform_check.py',
                      'relay.py', 'mux.py', 'resolv.conf', 'qualification_proxy.py',
                      'qualification_probe.py', 'qualification_runtime.py'):
             shutil.copyfile(NETWORK / name, self.install / 'network' / name)
@@ -267,7 +268,7 @@ class SessionHelper(unittest.TestCase):
     def ready_env(self, ready=None):
         if not unix_sockets_available():
             self.skipTest('AF_UNIX unavailable; run on the host')
-        return {'FAKE_READY': ready or f'{POLICY_IDENTITY} guard={DIGEST} mux=1 tls=' + TLS_ENFORCEMENT}
+        return {'FAKE_READY': ready or f'{POLICY_IDENTITY} guard={DIGEST} mux={MUX_PROTOCOL} tls=' + TLS_ENFORCEMENT}
 
     def test_start_creates_verifies_and_records_the_owned_proxy(self):
         result = self.start(env=self.ready_env(), text=True)
@@ -366,6 +367,7 @@ class SessionHelper(unittest.TestCase):
         shutil.rmtree(self.session); self.session.mkdir(mode=0o700)
         Path(str(self.log)).unlink(missing_ok=True)
         (self.base / 'qualification').mkdir()
+        (self.base / 'qualification/input.json').write_text('{"mirror": false}\n')
         result = self.start('--probe', '--token', TOKEN, '--tls', '--workspace', str(self.base / 'workspace'),
                             '--qualification-input', str(self.base / 'qualification/input.json'),
                             env=env, text=True)
@@ -505,9 +507,9 @@ class SessionHelper(unittest.TestCase):
                 hardening.verify(config, effective, enforced)
 
     def test_start_fails_closed_on_identity_hardening_and_invalid_results(self):
-        cases = [({'FAKE_READY': 'wrong-policy guard=' + DIGEST + ' mux=1 tls=' + TLS_ENFORCEMENT},
+        cases = [({'FAKE_READY': 'wrong-policy guard=' + DIGEST + f' mux={MUX_PROTOCOL} tls=' + TLS_ENFORCEMENT},
                   'identity mismatch'),
-                 ({'FAKE_READY': f'{POLICY_IDENTITY} guard={DIGEST} mux=1 tls=tls-clienthello-sni-v1'},
+                 ({'FAKE_READY': f'{POLICY_IDENTITY} guard={DIGEST} mux={MUX_PROTOCOL} tls=tls-clienthello-sni-v1'},
                   'identity mismatch'),
                  ({'FAKE_CONFIG': '{"PidsLimit":0,"Memory":268435456}'}, 'proxy hardening unavailable'),
                  ({'FAKE_EFFECTIVE': '{"pids":129}'}, 'proxy hardening unavailable'),
@@ -633,7 +635,7 @@ class SessionHelper(unittest.TestCase):
         command = ('/usr/local/bin/agent', '-p', 'hello world', '', 'line\nbreak', '--help', '--')
         options, args, stderr = self.agent_args('offline', command=command)
         self.assertEqual(args, ['--offline', '--', *command])
-        self.assertIn(f'guard={DIGEST} abi-min=3 filter=native-x86_64-v1 mux=1', stderr)
+        self.assertIn(f'guard={DIGEST} abi-min=3 filter=native-x86_64-v1 mux={MUX_PROTOCOL}', stderr)
         for option in ('--network=none', '--pid=private', '--ipc=private', '--cap-drop=all',
                        '--security-opt=no-new-privileges',
                        f'{self.install}/network/bin/sandbox-egress-guard:/opt/sandbox-egress/guard:ro',

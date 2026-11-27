@@ -115,7 +115,7 @@ class SetupRuntime(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(result.stdout.strip(), marker)
             self.assertIn('network mode=offline', result.stderr)
-            self.assertIn('enforced revision=abi3-seccomp-mux-v1', result.stderr)
+            self.assertIn('enforced revision=abi3-seccomp-mux-v2', result.stderr)
         history = self.base / 'state/.config/sandbox-container/bash_history'
         self.assertEqual(history.read_text().split(), ['first', 'second'])
         code, output = self.setup_run('offline')

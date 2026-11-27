@@ -22,11 +22,13 @@ import time
 
 NETWORK = Path(__file__).resolve().parent
 sys.path.insert(0, str(NETWORK))
-from policy import PolicyError  # noqa: E402
+from policy import PolicyError, trusted_path  # noqa: E402
 import agent_budgets  # noqa: E402
 import agent_profile  # noqa: E402
+import mirror_policy  # noqa: E402
+import mirror_settings  # noqa: E402
 from proxy_hardening import PIDS_LIMIT as PROXY_PIDS_LIMIT  # noqa: E402
-from revisions import TLS_ENFORCEMENT as TLS  # noqa: E402
+from revisions import MUX_PROTOCOL, TLS_ENFORCEMENT as TLS  # noqa: E402
 
 GUARD = 'sandbox-egress-guard'
 EGRESS = '/opt/sandbox-egress'
@@ -103,9 +105,12 @@ def control_command(installation, operation, args, *extra):
         command += ['--writable', path]
     for target in args.mount_target:
         command += ['--mount-target', target]
+    if args.mode in ('mirror', 'provider'):
+        command += ['--mode', args.mode, '--proxy-image', args.proxy_image, '--runtime', args.runtime]
     if args.policy:
-        command += ['--policy', args.policy, '--profile', args.profile,
-                    '--proxy-image', args.proxy_image, '--runtime', args.runtime]
+        command += ['--policy', args.policy, '--profile', args.profile]
+    if args.ca_bundle:
+        command += ['--ca-bundle', args.ca_bundle]
     return command + list(extra)
 
 
@@ -174,7 +179,23 @@ def start(args):
     os.setpgrp()
     session = Path(args.session)
     token = session.name
-    policy_identity = run(control_command(args.installation, 'snapshot', args, '--session', session),
+    if args.probe:
+        profiles = {}
+        qualification = trusted_path(args.qualification_input, args.writable) if args.tls else None
+        mirror_probe = qualification is not None and json.loads(qualification.read_text()).get('mirror') is True
+        if mirror_probe:
+            profiles['qualification'] = {
+                'schema': 1, 'name': 'qualification', 'revision': '1', 'default': False,
+                'upstreams': [{'id': 'repo', 'ecosystem': 'rpm', 'base_url': 'https://qualification.invalid:8443/rpm/'}],
+            }
+            args.ca_bundle = str(qualification.parent / 'cert.pem')
+        if args.mode == 'mirror' or mirror_probe:
+            with (session / 'mirror.json').open('x') as handle:
+                json.dump({'schema': 1, 'profiles': profiles}, handle)
+    snapshot = ['--session', session]
+    if (session / 'mirror.json').is_file():
+        snapshot += ['--mirror-config', session / 'mirror.json']
+    policy_identity = run(control_command(args.installation, 'snapshot', args, *snapshot),
                           stdout=subprocess.PIPE, text=True).stdout.rstrip('\n')
     note(f'network profile={args.profile} policy={policy_identity}')
     note(f'egress session={token} diagnostics={session}/logs/denials.jsonl')
@@ -235,6 +256,7 @@ def start(args):
              '--volume', f'{session}/transport:/transport:rw',
              '--volume', f'{session}/logs:/logs:rw',
              '--env', 'EGRESS_PROFILE=' + args.profile, '--env', 'EGRESS_SESSION=' + token,
+             '--env', 'EGRESS_MODE=' + args.mode,
              *fixture, *entry, args.proxy_image, *command], stdout=output)
     proxy_id = read(session / 'proxy.stdout')
     if not IDENTITY.fullmatch(proxy_id):
@@ -248,7 +270,7 @@ def start(args):
         if time.monotonic() >= deadline:
             die('egress proxy unavailable: readiness deadline expired; check immutable image and policy')
         time.sleep(0.05)
-    if read(session / 'transport/ready') != f'{policy_identity} guard={args.guard_digest} mux=1 tls={TLS}':
+    if read(session / 'transport/ready') != f'{policy_identity} guard={args.guard_digest} mux={MUX_PROTOCOL} tls={TLS}':
         die('egress proxy policy/bootstrap/protocol identity mismatch')
     # Bounded checks in the actual proxy cgroup; engine flags alone do not
     # prove that rootless controllers applied their limits.
@@ -295,18 +317,36 @@ def agent_args(args):
     application = PROBE if args.probe else args.command
     if not application:
         die('restricted sessions require an application command')
-    if args.mode == 'provider':
+    if args.mode in ('mirror', 'provider'):
         options += ['--volume', f'{args.session}/transport:{TRANSPORT}:ro',
                     '--volume', f'{installation / "network/relay.py"}:{EGRESS}/relay.py:ro',
-                    '--volume', f'{installation / "network/mux.py"}:{EGRESS}/mux.py:ro']
-        for variable in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
-            options += ['--env', f'{variable}={PROXY_URL}']
-        options += ['--env', 'NO_PROXY=' + LOCAL, '--env', 'no_proxy=' + LOCAL]
-        command = ['--provider', '--', *RELAY, *application]
+                    '--volume', f'{installation / "network/mux.py"}:{EGRESS}/mux.py:ro',
+                    '--volume', f'{installation / "network/revisions.py"}:{EGRESS}/revisions.py:ro']
+        switch = []
+        if args.mode == 'mirror':
+            switch = ['--mirror-only']
+        else:
+            for variable in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
+                options += ['--env', f'{variable}={PROXY_URL}']
+            options += ['--env', 'NO_PROXY=' + LOCAL, '--env', 'no_proxy=' + LOCAL]
+            if (Path(args.session) / 'mirror.json').is_file():
+                switch = ['--mirror-with-provider']
+        if switch:
+            path = Path(args.session) / 'mirror.json'
+            limit = mirror_policy.MAX_PROFILE * mirror_policy.MAX_NAMES
+            with path.open('rb') as handle:
+                value = mirror_policy.snapshot(mirror_policy.decode(handle.read(limit + 1), limit))
+            directory = Path(args.session) / 'client-settings'
+            values = mirror_settings.settings(directory, value['profiles'])
+            if directory.is_dir():
+                options += ['--volume', f'{directory}:{mirror_settings.GUEST}:ro']
+            for key, value in values.items():
+                options += ['--env', f'{key}={value}']
+        command = ['--' + args.mode, '--', *RELAY, *switch, *application]
     else:
         command = ['--offline', '--', *application]
     options += ['--entrypoint', EGRESS + '/guard']
-    note(f'guard={args.guard_digest} abi-min=3 filter=native-x86_64-v1 mux=1')
+    note(f'guard={args.guard_digest} abi-min=3 filter=native-x86_64-v1 mux={MUX_PROTOCOL}')
     records = [str(len(options)), *options, *command]
     if any('\0' in record for record in records):
         die('restricted arguments cannot contain NUL bytes')
@@ -401,6 +441,7 @@ def parser():
         command.add_argument('--profile', default='')
         command.add_argument('--proxy-image', default='')
         command.add_argument('--runtime', default='')
+        command.add_argument('--ca-bundle', default='')
 
     def probe(command):
         command.add_argument('--probe', action='store_true')
@@ -412,20 +453,21 @@ def parser():
     command = operations.add_parser('prepare', add_help=False)
     network(command)
     probe(command)
-    command.add_argument('--mode', required=True, choices=('offline', 'provider'))
+    command.add_argument('--mode', required=True, choices=('offline', 'mirror', 'provider'))
     for name in ('--server-version', '--backend', '--endpoint', '--engine'):
         command.add_argument(name, required=True)
 
     command = operations.add_parser('start', add_help=False)
     network(command)
     probe(command)
+    command.add_argument('--mode', choices=('mirror', 'provider'), default='provider')
     command.add_argument('--session', required=True)
     command.add_argument('--guard-digest', required=True)
 
     command = operations.add_parser('agent-args', add_help=False)
     probe(command)
     command.add_argument('--installation', required=True)
-    command.add_argument('--mode', required=True, choices=('offline', 'provider'))
+    command.add_argument('--mode', required=True, choices=('offline', 'mirror', 'provider'))
     command.add_argument('--session', required=True)
     command.add_argument('--guard-digest', required=True)
 
@@ -437,14 +479,15 @@ def parser():
 
 
 def validate(args):
-    if not PROFILE.auth and (getattr(args, 'mode', None) == 'provider' or args.operation == 'start'
-                             or getattr(args, 'policy', None)):
+    if not PROFILE.auth and (getattr(args, 'mode', None) == 'provider' or getattr(args, 'policy', None)):
         die(agent_profile.NO_METHODS)
     if getattr(args, 'guard_digest', None) is not None and not IDENTITY.fullmatch(args.guard_digest):
         die('invalid guard identity')
-    if args.operation in ('prepare', 'start') and (args.policy or args.operation == 'start'):
-        if not all((args.policy, args.profile, args.proxy_image, args.runtime)):
+    if args.operation in ('prepare', 'start'):
+        if args.mode == 'provider' and not all((args.policy, args.profile, args.proxy_image, args.runtime)):
             die('provider mode requires the policy, profile, proxy image and runtime directory')
+        if args.mode == 'mirror' and (args.policy or args.profile or not args.proxy_image or not args.runtime):
+            die('mirror mode requires a runtime directory and immutable egress image without provider policy')
     if getattr(args, 'probe', False) and args.operation != 'prepare' and not re.fullmatch(r'[a-f0-9]{32}', args.token):
         die('invalid fixed qualification input')
     if getattr(args, 'tls', False) and not args.probe:

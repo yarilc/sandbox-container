@@ -4,7 +4,8 @@
 ``GUARD_REVISION`` and ``GUARD_REQUIRED_ABI`` defines so that the static guard build stays self-contained; tests/test_guard.py fails if
 they differ from these values.
 """
-GUARD_REVISION = 'abi3-seccomp-mux-v1'
+GUARD_REVISION = 'abi3-seccomp-mux-v2'
 GUARD_REQUIRED_ABI = 3
+MUX_PROTOCOL = 2
 # Bumped whenever destination-binding behavior changes, so older proxies fail readiness.
 TLS_ENFORCEMENT = 'tls-clienthello-sni-v2'

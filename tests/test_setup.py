@@ -2077,14 +2077,14 @@ class ProfileWithoutMethodsSetupTests(unittest.TestCase):
         answers = [str(self.root / 'installed'), 'provider', '', 'shared', '', 'no', '', '', '', '', 'no',
                    str(self.root / 'bin/command'), 'default']
         result = self.run_harness(answers)
-        self.assertEqual(result['modes'], ['offline', 'unrestricted'])
+        self.assertEqual(result['modes'], ['offline', 'mirror', 'unrestricted'])
         self.assertEqual((result['defaults']['network'], result['defaults']['auth']), ('offline', 'none'))
         self.assertEqual(result['chosen']['network'], 'offline')
         self.assertEqual(result['chosen']['auth'], 'none')
         self.assertIs(result['chosen']['yolo'], False)
         prompts = '\n'.join(result['prompts'])
         self.assertEqual(prompts.count('Network mode [offline]'), 2)
-        self.assertIn('Choose one of: offline, unrestricted', result['printed'])
+        self.assertIn('Choose one of: offline, mirror, unrestricted', result['printed'])
         for absent in ('Authentication method', 'permission bypass', 'Acknowledge', 'provider/'):
             self.assertNotIn(absent, prompts)
         self.assertTrue(any('provider mode is unavailable' in line for line in result['printed']))

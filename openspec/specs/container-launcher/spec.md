@@ -378,7 +378,7 @@ The attached engine client SHALL NOT proxy signals to the container. The wrapper
 - **THEN** the attach command disables signal proxying
 
 ### Requirement: Offline is the default runtime mode
-An ordinary launch with an unset or empty `SANDBOX_CONTAINER_NETWORK` SHALL run in `offline` mode. `unrestricted` SHALL apply only when set explicitly. `provider` and any other value SHALL fail with status 1 before engine queries, state creation or image operations, naming the accepted values `offline` and `unrestricted`.
+An ordinary launch with an unset or empty `SANDBOX_CONTAINER_NETWORK` SHALL run in `offline` mode. `mirror` and `unrestricted` SHALL apply only when selected explicitly or supplied by validated managed preferences. `provider` and any other value SHALL fail with status 1 before engine queries, state creation or image operations, naming the accepted values `offline`, `mirror` and `unrestricted`.
 
 #### Scenario: No mode selected
 - **WHEN** the wrapper is invoked from a protected installation without `SANDBOX_CONTAINER_NETWORK`
@@ -391,6 +391,11 @@ An ordinary launch with an unset or empty `SANDBOX_CONTAINER_NETWORK` SHALL run 
 #### Scenario: Provider mode requested
 - **WHEN** `SANDBOX_CONTAINER_NETWORK=provider` is set
 - **THEN** the wrapper exits with status 1, states that the reference profile declares no authentication method, and performs no engine or image operation
+
+#### Scenario: Explicit mirror mode
+- **WHEN** `SANDBOX_CONTAINER_NETWORK=mirror` is selected for a qualified installation
+- **THEN** the session reports `network mode=mirror` and reaches approved dependency profiles through the confined mirror
+- **AND** the launch uses the restricted guard and no provider policy or authentication method
 
 ### Requirement: Missing offline installation directs to setup
 When an ordinary offline launch, including the default mode, runs from a location without a protected installation, the wrapper SHALL exit with status 1 and an English stderr message naming `--container-setup` and the explicit `unrestricted` alternative. This refusal SHALL precede engine queries, state creation and image/resource operations, and SHALL NOT prompt or run setup.

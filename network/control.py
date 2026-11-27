@@ -14,7 +14,8 @@ import ipaddress
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from policy import PolicyError, canonical, load, overlaps, revision, selected, trusted_path
 import agent_profile
-from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, TLS_ENFORCEMENT
+import mirror_policy
+from revisions import GUARD_REQUIRED_ABI, GUARD_REVISION, MUX_PROTOCOL, TLS_ENFORCEMENT
 
 GUARD = 'sandbox-egress-guard'
 
@@ -24,7 +25,7 @@ def fixed_qualification_input(value, command, mode, workspace):
     try:
         budgets = value.get('budgets') if isinstance(value, dict) else None
         return not (not isinstance(value, dict) or
-                set(value) != {'schema', 'token', 'addresses', 'ipv6', 'workspace', 'provider', 'tls', 'agent', 'budgets'} or
+                set(value) - {'mirror'} != {'schema', 'token', 'addresses', 'ipv6', 'workspace', 'provider', 'tls', 'agent', 'budgets'} or
                 value['agent'] != command or not isinstance(budgets, dict) or
                 set(budgets) != {'capabilities', 'no_new_privs', 'enforced', 'process', 'memory', 'nano_cpus', 'pids',
                                  'timeout'} or
@@ -40,7 +41,8 @@ def fixed_qualification_input(value, command, mode, workspace):
                 type(value['schema']) is not int or value['schema'] != 1 or
                 not isinstance(value['token'], str) or not re.fullmatch(r'[a-f0-9]{32}', value['token']) or
                 type(value['provider']) is not bool or type(value['tls']) is not bool or type(value['ipv6']) is not bool or
-                value['provider'] != (mode == 'provider') or (value['tls'] and not value['provider']) or
+                value['provider'] != (mode == 'provider') or (value['tls'] and mode not in ('mirror', 'provider')) or
+                type(value.get('mirror', False)) is not bool or (value.get('mirror', False) and not value['tls']) or
                 value['workspace'] != workspace or not Path(workspace).is_absolute() or
                 # One IPv4 fixture address, plus one IPv6 address only when the host has IPv6.
                 not isinstance(value['addresses'], list) or len(value['addresses']) != (2 if value['ipv6'] else 1) or
@@ -64,6 +66,8 @@ def main():
     parser.add_argument('--input')
     parser.add_argument('--workspace')
     parser.add_argument('--mode')
+    parser.add_argument('--mirror-config')
+    parser.add_argument('--ca-bundle')
     args = parser.parse_args()
     for writable in args.writable:
         resolved = Path(writable).resolve()
@@ -72,12 +76,14 @@ def main():
     installation = trusted_path(args.installation, args.writable, directory=True)
     profile = agent_profile.load(installation / agent_profile.PROFILE, writable=args.writable)
     for name in (profile.wrapper, 'launcher/core.sh', 'agent/launcher.sh', 'network/control.py', 'network/policy.py', 'network/agent_profile.py', 'network/session.py',
-                 'network/revisions.py', 'network/relay.py', 'network/mux.py', 'network/resolv.conf', agent_profile.POLICY):
+                 'network/revisions.py', 'network/relay.py', 'network/mux.py', 'network/resolv.conf',
+                 'network/mirror_policy.py', 'network/mirror.py', 'network/mirror_cache.py',
+                 'network/mirror_settings.py', 'network/mirror_metadata.py', agent_profile.POLICY):
         try:
             trusted_path(installation / name, args.writable)
         except PolicyError as error:
             raise PolicyError(f'{name}: {error}') from None
-    for optional in ('setup/diagnostics.py', 'setup/toolchains.py'):
+    for optional in ('setup/diagnostics.py', 'setup/toolchains.py', 'setup/mirrors.py'):
         if (installation / optional).exists() or (installation / optional).is_symlink():
             trusted_path(installation / optional, args.writable)
     for target in args.mount_target:
@@ -105,7 +111,7 @@ def main():
     if any(struct.unpack_from('<I', data, offset + i * size)[0] in (2, 3) for i in range(count)):
         raise PolicyError('native bootstrap must not have dynamic loading or an interpreter')
     guard_identity = {'sha256': identity, 'revision': GUARD_REVISION,
-                      'required_abi': GUARD_REQUIRED_ABI, 'filter': 'native-x86_64-v1', 'protocol': 1,
+                      'required_abi': GUARD_REQUIRED_ABI, 'filter': 'native-x86_64-v1', 'protocol': MUX_PROTOCOL,
                       'tls_enforcement': TLS_ENFORCEMENT}
     for name in ('platform_check.py', 'qualify.py', 'qualification_records.py', 'qualification_probe.py',
                  'qualification_runtime.py', 'qualification_peer.py', 'qualification_proxy.py'):
@@ -124,12 +130,18 @@ def main():
             trusted_path(input_path.parent / 'key.pem', args.writable)
         print(value['token'], int(value['tls']))
         return
-    if not args.policy:
+    mode = args.mode or ('provider' if args.policy else 'offline')
+    if mode not in ('provider', 'mirror'):
         return
     trusted_path(installation / 'network/proxy_hardening.py', args.writable)
-    policy_path = trusted_path(args.policy, args.writable)
-    value = load(policy_path, profile.policy_rules())
-    selected(value, args.profile)
+    value = None
+    policy_identity = 'mirror'
+    if mode == 'provider':
+        policy_path = trusted_path(args.policy or '', args.writable)
+        value = load(policy_path, profile.policy_rules())
+        selected(value, args.profile)
+        policy_identity = revision(value)
+    ca_path = trusted_path(args.ca_bundle, args.writable) if args.ca_bundle else None
     if not re.fullmatch(r'(?:(?:sha256:)?[a-f0-9]{64}|[A-Za-z0-9./:_-]+@sha256:[a-f0-9]{64})', args.proxy_image or ''):
         raise PolicyError(profile.env('EGRESS_IMAGE') + ' must be an immutable image ID or digest')
     runtime = trusted_path(args.runtime or '', args.writable, directory=True)
@@ -142,13 +154,37 @@ def main():
             raise PolicyError('invalid private network session directory')
         for name in ('config', 'transport', 'logs'):
             (session / name).mkdir(mode=0o700)
-        with (session / 'config/policy.json').open('xb') as output:
-            output.write(canonical(value))
-        (session / 'config/policy.json').chmod(0o400)
-        (session / 'config/manifest.json').write_text(json.dumps(guard_identity | {
-            'policy': revision(value), 'profile': args.profile, 'session': session.name}, sort_keys=True) + '\n')
+        identity = {'policy': policy_identity, 'profile': args.profile or '', 'session': session.name}
+        if value is not None:
+            (session / 'config/policy.json').write_bytes(canonical(value))
+            (session / 'config/policy.json').chmod(0o400)
+        if args.mirror_config:
+            path = trusted_path(args.mirror_config, args.writable)
+            if path != session / 'mirror.json':
+                raise PolicyError('invalid mirror snapshot location')
+            limit = mirror_policy.MAX_PROFILE * mirror_policy.MAX_NAMES
+            with path.open('rb') as handle:
+                mirrors = mirror_policy.snapshot(mirror_policy.decode(handle.read(limit + 1), limit))
+            content = canonical(mirrors)
+            (session / 'config/mirror.json').write_bytes(content)
+            (session / 'config/mirror.json').chmod(0o400)
+            identity['mirror'] = hashlib.sha256(content).hexdigest()
+            identity['mode'] = mode
+            identity['ca'] = ''
+            if ca_path is not None:
+                with ca_path.open('rb') as handle:
+                    data = handle.read(4 * 1024 * 1024 + 1)
+                if not data or len(data) > 4 * 1024 * 1024:
+                    raise PolicyError('invalid CA bundle size')
+                (session / 'config/ca.pem').write_bytes(data)
+                (session / 'config/ca.pem').chmod(0o400)
+                identity['ca'] = hashlib.sha256(data).hexdigest()
+            policy_identity += ' mirror=' + identity['mirror'] + ' mode=' + mode + ' ca=' + identity['ca']
+        elif mode == 'mirror':
+            raise PolicyError('missing mirror snapshot')
+        (session / 'config/manifest.json').write_text(json.dumps(guard_identity | identity, sort_keys=True) + '\n')
         (session / 'config/manifest.json').chmod(0o400)
-        print(revision(value))
+        print(policy_identity)
 
 
 if __name__ == '__main__':

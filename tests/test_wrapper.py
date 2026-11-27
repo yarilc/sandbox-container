@@ -210,7 +210,7 @@ class WrapperTests(unittest.TestCase):
         (install / 'network/qualify.py').write_text('# Synthetic argument fixture only.\n')
         (install / 'network/control.py').write_text('''import pathlib,socket,sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from revisions import TLS_ENFORCEMENT
+from revisions import MUX_PROTOCOL, TLS_ENFORCEMENT
 args=sys.argv[1:]
 import json,os
 with open(os.environ['FAKE_LOG']+'.control','a') as log: log.write(json.dumps(args)+'\\n')
@@ -218,7 +218,7 @@ if args[0]=='snapshot':
  p=pathlib.Path(args[args.index('--session')+1]); (p/'transport').mkdir()
  (p/'config').mkdir(); (p/'logs').mkdir()
  s=socket.socket(socket.AF_UNIX); s.bind(str(p/'transport/proxy.sock')); s.close()
- (p/'transport/ready').write_text('fixture-policy guard='+ 'c'*64 +' mux=1 tls=' + TLS_ENFORCEMENT + '\\n')
+ (p/'transport/ready').write_text('fixture-policy guard='+ 'c'*64 +f' mux={MUX_PROTOCOL} tls=' + TLS_ENFORCEMENT + '\\n')
  print('fixture-policy')
 ''')
         return dict(FAKE_NETWORK='1', FAKE_INFO='true linux true',

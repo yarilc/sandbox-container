@@ -190,6 +190,7 @@ See also the official
 | --- | --- |
 | unset or empty | `offline` |
 | `offline` | `--network=none` and the protected bootstrap; own loopback only |
+| `mirror` | Explicit restricted networking for operator-approved dependency reads |
 | `unrestricted` | Explicit ordinary runtime networking |
 | `provider` or any other value | Refused before any engine operation |
 
@@ -201,7 +202,7 @@ relay and policy code is still shared and is exercised by the shared tests with
 a synthetic fixture profile; each agent wrapper documents its own provider hosts
 and the residual exfiltration channel they leave open.
 
-Offline sessions use a protected static bootstrap combining Landlock ABI 3
+Offline and mirror sessions use a protected static bootstrap combining Landlock ABI 3
 filesystem rules, an additional restrictive seccomp filter and private network,
 PID and IPC namespaces. Native Linux and WSL2 x86_64 are eligible with usable
 Landlock ABI >= 3 and successful local enforcement qualification. Kernel release
@@ -219,7 +220,7 @@ bypasses are denied. Ordinary file persistence and Git/worktree operations remai
 available. A private XDG_RUNTIME_DIR holds ordinary runtime files; HOME and
 configuration persistence stay unchanged.
 
-Offline sessions require a protected installation outside every writable
+Restricted sessions require a protected installation outside every writable
 workspace/worktree-parent and state mount: files and all ancestor directories
 must belong to the caller or root and deny group/other writes. A
 session-writable launcher cannot enforce its own future invocation. Use native
@@ -236,7 +237,7 @@ actual guard enforcement. SELinux/AppArmor may remain enabled; compatibility is
 not guaranteed and any policy denial stops startup without relabeling, policy
 disablement or privileges.
 
-Offline launches require a protected matching local qualification report.
+Restricted launches require a protected matching local qualification report.
 Rerun `--container-setup`, or run `--container-qualify` alone from a protected,
 manually prepared installation. Qualification uses disposable credential-free
 controls and the production guard path; it never grants image maintenance.

@@ -23,12 +23,12 @@ Provide an interactive, repeatable host-side procedure that prepares a usable sa
 - **THEN** help succeeds without loading managed preferences, prompting or requiring Podman
 
 ### Requirement: Workflow questionnaire with explicit defaults
-Setup SHALL explain and collect network mode, state sharing, installation paths, host CA trust and workspace scope. It SHALL offer `provider` and ask for an authentication method only when the profile declares authentication methods, and ask about permission bypass only when the profile declares an approval-bypass variable. First-run defaults SHALL select provider networking with the first method when methods exist, otherwise `offline`, with shared state and disabled optional authority. Saved choices SHALL be offered on rerun. When no same-host launch service is available, the network choice SHALL follow the rule for setup without a launch service instead.
+Setup SHALL explain and collect network mode, state sharing, installation paths, host CA trust and workspace scope. When a same-host launch service is reachable or startable, setup SHALL offer explicit `mirror` networking. It SHALL offer `provider` and ask for an authentication method only when the profile declares authentication methods, and ask about permission bypass only when the profile declares an approval-bypass variable. First-run defaults SHALL select provider networking with the first method when methods exist, otherwise `offline`, with shared state and disabled optional authority. Saved choices SHALL be offered on rerun. When no same-host launch service is available, the network choice SHALL follow the rule for setup without a launch service instead.
 
 #### Scenario: First setup choices
 - **WHEN** the user reviews first-run defaults with the reference profile, which declares no authentication method and no approval-bypass variable, on a host where a same-host launch service is reachable or can be started
-- **THEN** network options are only offline and unrestricted, and offline is proposed
-- **AND** no authentication, residual-exfiltration or permission-bypass question is asked
+- **THEN** network options are offline, mirror and unrestricted, and offline is proposed
+- **AND** the default offline choice asks no authentication, residual-exfiltration or permission-bypass question
 - **AND** shared host state, isolated fresh state and worktree-parent exposure are explained before selection
 
 #### Scenario: Provider selected
@@ -111,7 +111,7 @@ Setup SHALL prepare all files needed for the selected workflow in a native insta
 - **THEN** the release contains `launcher/core.sh` and `agent/launcher.sh` as protected files, and a managed launch refuses a release where either is writable by others
 
 ### Requirement: Mode-specific image and guard preparation
-Setup SHALL inspect or prepare the runtime image and the additional components required by the selected mode. The runtime image SHALL be built through the wrapper's build-only operation, for every profile. Every mode SHALL also receive the session engine image, built from its digest-pinned base, and the engine seccomp profile derived from the engine host's default profile. Restricted modes SHALL receive a validated static guard and digest manifest; provider mode, available only for profiles with authentication methods, SHALL also receive a valid selected policy, private runtime directory and immutable proxy image identity. Existing suitable artifacts SHALL be reused unless refresh is approved.
+Setup SHALL inspect or prepare the runtime image and the additional components required by the selected mode. The runtime image SHALL be built through the wrapper's build-only operation, for every profile. Every mode SHALL also receive the session engine image, built from its digest-pinned base, and the engine seccomp profile derived from the engine host's default profile. Restricted modes SHALL receive a validated static guard and digest manifest; provider mode, available only for profiles with authentication methods, SHALL also receive a valid selected policy, private runtime directory and immutable proxy image identity. Mirror and provider setup SHALL prepare an immutable egress service with the matching protected mirror catalog, trust configuration and qualification inputs. Existing suitable artifacts SHALL be reused unless refresh is approved.
 
 #### Scenario: Fresh provider setup
 - **WHEN** provider setup is approved with no prepared artifacts for a profile with authentication methods
@@ -132,8 +132,13 @@ Setup SHALL inspect or prepare the runtime image and the additional components r
 - **WHEN** setup prepares any mode
 - **THEN** the installation records the engine image identity and the engine seccomp profile, and a later setup reuses them unless their inputs or the engine host's default profile changed
 
+#### Scenario: Fresh mirror setup
+- **WHEN** mirror setup is approved on a reference installation with no prepared assets
+- **THEN** setup prepares the guard and trusted mirror service and qualifies them through the selected runtime path
+- **AND** setup prepares the private profile library and reports authentication as not applicable
+
 ### Requirement: Persistent non-secret managed launch preferences
-Setup SHALL save versioned non-secret preferences and provide a managed launcher usable from another workspace without repeated exports. Preferences and launcher code SHALL remain outside application-writable mounts and be validated before use. The launcher SHALL preserve arguments, stdin, terminal handling and current-directory semantics. Direct wrapper invocation SHALL support explicit environment-based runtime modes; an unset or empty effective network mode SHALL follow the wrapper's admission rule, which in the reference is the offline default. The saved workspace scope SHALL apply only to session launches: host management commands such as `--container-toolchain` SHALL reach the wrapper with their arguments unchanged.
+Setup SHALL save versioned non-secret preferences and provide a managed launcher usable from another workspace without repeated exports. Preferences and launcher code SHALL remain outside application-writable mounts and be validated before use. The launcher SHALL preserve arguments, stdin, terminal handling and current-directory semantics. Direct wrapper invocation SHALL support explicit environment-based runtime modes; an unset or empty effective network mode SHALL follow the wrapper's admission rule, which in the reference is the offline default. The saved workspace scope SHALL apply only to session launches: host management commands such as `--container-toolchain` and `--container-mirror` SHALL reach the wrapper with their arguments unchanged.
 
 #### Scenario: New terminal and workspace
 - **WHEN** the user invokes the managed launcher in a new terminal from a separate workspace
@@ -160,7 +165,7 @@ Setup SHALL save versioned non-secret preferences and provide a managed launcher
 - **AND** setup atomically upgrades the recognized dispatcher without overwriting unrelated command files
 
 #### Scenario: Saved mode supplies launch configuration
-- **WHEN** a validated managed launcher supplies saved offline or unrestricted mode and there is no network environment override
+- **WHEN** a validated managed launcher supplies saved offline, mirror or unrestricted mode and there is no network environment override
 - **THEN** the wrapper uses that mode instead of its default
 - **AND** existing mode-specific readiness and qualification checks still determine whether an application can start
 
@@ -179,8 +184,12 @@ Setup SHALL save versioned non-secret preferences and provide a managed launcher
 - **THEN** the toolchain command lists the library and no session starts
 - **AND** a session started by the same launcher still mounts the parent of the current directory
 
+#### Scenario: Mirror command with the saved worktree scope
+- **WHEN** setup saved the worktree scope and the operator invokes `--container-mirror add` through the managed launcher
+- **THEN** the management command runs on the host and validates the import against the effective widened workspace and state mounts
+
 ### Requirement: Credential-preserving authentication assistance
-When the profile declares authentication methods, setup SHALL support reusing selected shared account state or offering an explicit fresh login in isolated state; a profile without methods SHALL skip authentication entirely. It SHALL NOT copy credentials, collect or persist API keys/tokens in setup preferences, or require an API key for account use. Authentication SHALL use the chosen installed sandbox and preserve its selected network and CA policies.
+For profiles with authentication methods in modes using provider authentication, setup SHALL support reusing selected shared account state or offering an explicit fresh login in isolated state; a profile without methods SHALL skip authentication entirely. It SHALL NOT copy credentials, collect or persist API keys/tokens in setup preferences, or require an API key for account use. Authentication SHALL use the chosen installed sandbox and preserve its selected network and CA policies.
 
 #### Scenario: Fresh account login
 - **WHEN** an account user chooses fresh isolated state and accepts login after sandbox validation
@@ -195,6 +204,10 @@ When the profile declares authentication methods, setup SHALL support reusing se
 #### Scenario: Reference profile has nothing to authenticate
 - **WHEN** setup completes with the reference profile
 - **THEN** it offers no login, asks for no key and reports authentication as not applicable
+
+#### Scenario: Mirror mode skips authentication assistance
+- **WHEN** setup runs in mirror mode with a profile that declares authentication methods
+- **THEN** it offers no login and asks for no key
 
 ### Requirement: Verified readiness with separate authentication status
 Setup SHALL declare the selected sandbox ready only after installed-path checks, engine verification, artifact validation and a smoke launch succeed through the actual selected runtime path. Restricted candidates SHALL additionally pass the installation enforcement gate and publish its protected matching report before activation. Completion output SHALL separately report authentication as verified, pending or not applicable, provide the launch/rerun commands and identify PATH requirements.
@@ -301,6 +314,15 @@ When provider mode is selected, setup SHALL show a residual-exfiltration notice 
 - **WHEN** setup is rerun with saved provider mode, or offline or unrestricted mode is selected
 - **THEN** a provider selection asks for the acknowledgement again
 - **AND** offline and unrestricted selections do not show the provider notice
+
+#### Scenario: Operator declines the mirror notice
+- **WHEN** the operator selects mirror mode and declines its acknowledgement
+- **THEN** setup offers the network choices again before mutating installation, image or state resources
+
+#### Scenario: Operator acknowledges the mirror notice
+- **WHEN** the operator selects mirror mode
+- **THEN** setup explains that permitted request paths and timing are visible to mirror upstreams
+- **AND** setup requires an explicit acknowledgement before preparation
 
 ### Requirement: Setup collects agent resource budgets and session lifetime
 Setup SHALL ask for the agent memory, CPU and process budgets and the optional session lifetime. It SHALL validate each answer with the same rules as the wrapper and repeat the question after an invalid answer. First-run defaults SHALL be `4g`, `2`, `512` and `0` (disabled). On rerun, the saved values SHALL be proposed. The setup plan SHALL list the selected values before confirmation.
@@ -434,7 +456,7 @@ Before asking for the network mode, setup SHALL check, read-only, whether a same
 
 #### Scenario: Host without systemd user manager or service
 - **WHEN** setup runs where no launch service answers and `systemctl --user` is missing or fails, as in a Podman machine distribution on WSL
-- **THEN** setup states that offline and provider networking need a same-host service and that none is available or startable
+- **THEN** setup states that offline, mirror and provider networking need a same-host service and that none is available or startable
 - **AND** it asks for explicit confirmation of unrestricted networking and saves the local engine as the launch endpoint
 
 #### Scenario: Local endpoint leaves CONTAINER_HOST unset
