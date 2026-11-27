@@ -19,12 +19,13 @@ A change needs a new tag when it modifies, adds or removes a file under
 `network/`, `setup/` or `launcher/`, or a test listed in `SHARED_TESTS`. Changes to the
 wrapper, the agent profile, documentation, `tools/` or per-agent tests do not.
 
-Before tagging, run in this repository at least every runner mode that
-`tools/propagate.py` will print for the wrappers (`checklist()`), for the
-shared files changed since the previous tag. Run each mode in full, without
-the `-k` selections a wrapper's checklist may use, on WSL and on the native
-Linux host: the wrappers validate an adoption on one host, and rely on these
-runs for the rest.
+Before tagging, run in this repository's working session at least every
+runner mode that `tools/propagate.py` will print for the wrappers
+(`checklist()`), for the shared files changed since the previous tag. Run each
+mode in full, without the `-k` selections a wrapper's checklist may use. A mode
+the session cannot run, such as a runtime mode in a session without a container
+engine, is recorded as unavailable in the session with its reason, and does not
+block the tag. A mode that ran and fails because of the change does.
 
 | Changed shared files | Checklist entries |
 | --- | --- |
@@ -44,10 +45,10 @@ always, and the guard toolchain for `--qualification`, `--guard` and
 `--network`. `SHARED_CODE` is read from the new tag: qualification digests
 those files, and the shared runtime fixtures must install them.
 
-Record every mode and its result on each host in `docs/validation.md`, under a
-section that names the new tag. A mode or a host that cannot run is recorded as
-unavailable. Do not
-tag while a listed mode fails. Merge into `main`, then create an annotated tag on the merge commit:
+Record every mode and its result in `docs/validation.md`, under a section that
+names the new tag. Do not tag while a mode that ran fails because of the change.
+When the change closes, merge it into `main`, then create an annotated tag on the
+merge commit:
 
 ```bash
 git tag -a sandbox-ref-N -m "Reference sandbox: <one-line summary>"
@@ -60,6 +61,13 @@ wrapper has adopted (`Adopted sandbox-ref-N: ...`). In a wrapper, `--apply`
 moves only two cells of the "Contract adoption" column: the wrapper's own and
 the reference row's. The "Real enforcement" cells name the tag each result ran
 at, and keep it.
+
+After the tag, as follow-up, run the same modes in full on WSL and on the native
+Linux host. The tag's section lists them as pending until each result per host
+is added there. The wrappers do not wait for these runs: they validate an
+adoption in their own working session (step 3) and cite the tag's record. A
+failure caused by shared code is fixed by a new change here, under a new tag,
+which the wrappers adopt instead.
 
 ## 2. Adopt the tag in each wrapper
 
@@ -93,10 +101,14 @@ The dry run prints:
   a shared file of a directory where the tag adds or removes files;
 - the reference's OpenSpec changes touched between the tags, under
   `reference changes:`;
-- the commands to execute, by changed component (step 1), with the images
-  they need and any manual step, and the runner line for one host
-  (step 3);
-- a validation-record template and a commit message.
+- the commands to run in the working session, by changed component (step 1):
+  `Prepare in the session:` and `Run in the session:`, then the images they
+  need under `Images needed:`;
+- `Follow-up after closure:`, plain bullets with the runner line for WSL or the
+  native Linux host and each manual step (step 5), ready to paste into the
+  adoption's `tasks.md`;
+- a validation-record template, whose table holds the session commands and whose
+  follow-up list marks each entry as pending (step 3), and a commit message.
 
 "Not adopted" files are expected while a wrapper has adopted only part of the
 shared set, for example `setup/` before its guided-setup change. They are left
@@ -122,10 +134,13 @@ reference changes: 2
 
 The wrapper's adoption change takes its spec deltas from these files, with the
 wrapper's names. `[not in target]` means the wrapper has no main spec for the
-capability: either it is reference-only, such as `reference-propagation`, and
-the adoption skips it, or the adoption brings it to the wrapper, as
-`session-container-engine` came with the session engine. An active change may
-or may not be part of the tag; check its tasks before taking its deltas.
+capability: either it is reference-only, such as `reference-propagation` and
+`change-validation`, and the adoption skips it, or the adoption brings it to the
+wrapper, as
+`session-container-engine` came with the session engine. The wrappers carry the
+rule of `change-validation` in their `AGENTS.md`, not in a spec. An active
+change may or may not be part of the tag; check its tasks before taking its
+deltas.
 
 When the plan is right, apply it:
 
@@ -172,15 +187,59 @@ When a tag introduces or changes them, copy them by hand on the same branch:
 
 ## 3. Verify and record
 
-Review `git diff` in the wrapper, and the `review:` lines of the plan. Commit
-the adoption on its branch and push it, so that the operator's native clone can
-take it.
+Review `git diff` in the wrapper, and the `review:` lines of the plan.
 
-An adoption is validated on one native host: the one where the wrapper is
-used. The reference ran the modes in full on both hosts before tagging (step
-1), and the copied files are byte-identical to the tag. On that host, in the
-reference checkout beside the wrapper's native clone on the adoption branch,
-run one line:
+An adoption is validated in the wrapper's working session: the environment
+where the adoption change is carried out. The copied files are byte-identical
+to the tag, and the reference's record of the tag holds its own runs (step 1).
+In the session, run the commands the plan prints under `Run in the session:`,
+after the ones under `Prepare in the session:` when it prints them. Host unit
+tests use `SANDBOX_TEST_TMPDIR` on a new private directory; in a session where
+`$HOME` and `/tmp` are `noexec`, put it on the workspace mount. A command the
+session cannot run, or one that fails because of the session's environment, is
+recorded as unavailable in the session with its reason, and does not block the
+adoption. When the adoption also changes the wrapper's own files, run the mode
+that runs them, or its cases that exercise the change (`-k`), and record which.
+
+Fill in the validation-record template in the wrapper's `docs/validation.md`.
+Its table holds one row per session command, and its `Follow-up after closure:`
+list keeps each follow-up entry as pending: `tools/adoption-run.sh` on WSL or
+the native Linux host and the manual steps, which run after closure (step 5).
+List the checks not run, citing the reference's record of the tag as their
+evidence. Paste the plan's follow-up bullets under "Follow-up after closure" in
+the adoption's `tasks.md`, as plain bullets.
+
+If a session command fails because of shared code, stop: fix it here (step 1)
+under a new tag and adopt that tag instead. Discard the adoption branch first:
+
+```bash
+git -C ../codex-container switch main
+git -C ../codex-container branch -D adopt-sandbox-ref-N
+```
+
+A failure caused by the wrapper itself, such as a literal message that a shared
+test checks, is fixed in the wrapper on the same branch.
+
+## 4. Commit, merge and update parity
+
+Commit in each wrapper with the printed message and the co-author trailer, then
+merge `adopt-sandbox-ref-N` into `main`. The tool already moved the "Contract
+adoption" cells of that wrapper's row and of the reference row. Before the
+merge, update the parity table in the wrapper's `docs/network-contract.md`:
+- add the adoption's results to the wrapper's "Real enforcement" cell, beside
+  the earlier entries, which keep their tags;
+- copy the reference row from `sandbox-container`.
+
+Then copy the wrapper's row into `sandbox-container` and the other wrappers,
+so that the reference row and the five wrapper rows are identical across the
+repositories. The user pushes the branches and the tag.
+
+## 5. Follow-up after closure
+
+After the adoption is merged, the runner runs its checklist on WSL or on the
+native Linux host where the wrapper is used. The user pushes `main`, so that the
+operator's native clone can take it. On that host, in the reference checkout
+beside the wrapper's native clone, run one line:
 
 ```bash
 bash tools/adoption-run.sh ../codex-container sandbox-ref-M sandbox-ref-N
@@ -206,45 +265,19 @@ refuses a checkout that has not adopted `sandbox-ref-N`. It:
 - packs everything into `~/sbx-logs-<wrapper>-<tag>-<host>-<time>.tar.gz`, a new
   archive for each run.
 
-It never commits, switches branches, fetches, pushes or removes images. After a
-fix on the adoption branch, rerun only the affected entries, into a new
-archive:
+It never commits, switches branches, fetches, pushes or removes images. To rerun
+only some entries, for example after a failure caused by the host, write them
+into a new archive:
 
 ```bash
 bash tools/adoption-run.sh --only unit,network-engine ../codex-container sandbox-ref-M sandbox-ref-N
 ```
 
-Fill in the validation-record template in the wrapper's `docs/validation.md`
-with every entry's result, and list the checks not run, citing the reference's
-record of the tag as their evidence. When the adoption also changes the
-wrapper's own files, run the mode that runs them, or its cases that exercise
-the change (`-k`), and record which. Manual steps, such as the Windows
-validation script, are run and recorded separately.
-
-If a suite fails because of shared code, stop: fix it here (step 1) under a new
-tag and adopt that tag instead. Discard the adoption branch first:
-
-```bash
-git -C ../codex-container switch main
-git -C ../codex-container branch -D adopt-sandbox-ref-N
-```
-
-A failure caused by the wrapper itself, such as a literal message that a shared
-test checks, is fixed in the wrapper on the same branch.
-
-## 4. Commit, merge and update parity
-
-Commit in each wrapper with the printed message and the co-author trailer, then
-merge `adopt-sandbox-ref-N` into `main`. The tool already moved the "Contract
-adoption" cells of that wrapper's row and of the reference row. Before the
-merge, update the parity table in the wrapper's `docs/network-contract.md`:
-- add the adoption's results to the wrapper's "Real enforcement" cell, beside
-  the earlier entries, which keep their tags;
-- copy the reference row from `sandbox-container`.
-
-Then copy the wrapper's row into `sandbox-container` and the other wrappers,
-so that the reference row and the five wrapper rows are identical across the
-repositories. The user pushes the branches and the tag.
+Manual steps, such as the Windows validation script, are follow-up too. Add
+each result to the adoption's section of `docs/validation.md`, in place of its
+pending entry. A failure caused by shared code is fixed by a new change here,
+under a new tag that the wrapper adopts in a new adoption. A failure caused by
+the wrapper's own files opens a new change in the wrapper.
 
 ## Keeping the tool in step
 

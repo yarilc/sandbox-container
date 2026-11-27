@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Run a wrapper adoption's validation on one host in one step: the commands the propagation tool selects for the tag, with full logs, a summary and one archive for the maintainer.
+Run a wrapper adoption's follow-up verification on WSL or a native Linux host in one step, after the adoption closes in its working session: the commands the propagation tool selects for the tag, with full logs, a summary and one archive for the maintainer.
 
 ## Requirements
 
