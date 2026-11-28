@@ -1288,6 +1288,17 @@ exec python3 -c 'import json,os; print(json.dumps(sorted(k for k in os.environ i
             with self.assertRaises(common.SetupError):
                 setup.prepare_artifacts(self.value.copy(), None, release, self.env, {'runtime': ''}, False, [])
 
+    def test_proxy_reuse_invalidates_when_network_containerignore_changes(self):
+        _, old = self.release()
+        previous = self.value | {'network': 'mirror', 'proxy_image': 'c' * 64}
+        self.assertIn('network/.containerignore', setup.PROXY_INPUTS)
+        self.assertTrue(setup.proxy_reusable(previous, old, source=setup.SOURCE))
+        ignore = old / 'network/.containerignore'
+        ignore.write_text(ignore.read_text() + '\n# changed\n')
+        self.assertFalse(setup.proxy_reusable(previous, old, source=setup.SOURCE))
+        ignore.unlink()
+        self.assertFalse(setup.proxy_reusable(previous, old, source=setup.SOURCE))
+
     def test_guard_reuse_requires_preflight_and_matching_source_identity(self):
         root, old = self.release()
         (old / 'network/bin').mkdir(mode=0o700)

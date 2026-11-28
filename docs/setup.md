@@ -238,9 +238,13 @@ a Boolean `default` and an `upstreams` array. Each upstream has an `id`, an
 lists its approved IP `addresses`. A Go upstream names its approved
 `module_prefixes`. A split repository can also list `artifact_bases`. Each
 entry names one HTTPS `base_url` and can declare its own LAN `addresses`.
-Keep these files in native protected storage outside the
-workspace and state mounts, including the parent workspace when worktree
-scope is selected. A profile contains only routing information.
+On native Linux and standalone WSL, keep these files in native protected
+storage outside the workspace and state mounts, including the parent workspace
+when worktree scope is selected. Through the Windows entry, operator profile
+files may also live on a local Windows drive outside the workspace, widened
+worktree, state and Windows entry directories; the installed library itself
+always stays in protected native storage inside the Podman machine. A profile
+contains only routing information.
 
 In a mirror-enabled session, installed profiles marked as defaults are
 selected in name order. A project can select other installed profiles in

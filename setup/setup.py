@@ -989,6 +989,18 @@ def next_steps(command):
     path_guidance(command)
 
 
+PROXY_INPUTS = ('network/Containerfile', 'network/.containerignore', 'network/policy.py', 'network/proxy.py',
+                'network/mux.py', 'network/mirror.py', 'network/mirror_policy.py', 'network/mirror_cache.py',
+                'network/mirror_metadata.py', 'network/revisions.py', 'network/tls_client_hello.py')
+
+
+def proxy_reusable(previous, old_release, source=None):
+    source = SOURCE if source is None else source
+    return bool(previous and previous['proxy_image'] and old_release and all(
+        (old_release / path).is_file() and (old_release / path).read_bytes() == (source / path).read_bytes()
+        for path in PROXY_INPUTS))
+
+
 def main():
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise SetupError('--container-setup requires an interactive terminal.')
@@ -1011,12 +1023,7 @@ def main():
             images['toolchain'] = image_identity(previous['toolchain_image'] if previous and previous['toolchain_image'] else TOOLCHAIN_IMAGE, env)
             images['guard_release'] = str(old_release) if old_release else ''
         if value['network'] in ('mirror', 'provider'):
-            proxy_inputs = ('network/Containerfile', 'network/policy.py', 'network/proxy.py', 'network/mux.py',
-                            'network/mirror.py', 'network/mirror_policy.py', 'network/mirror_cache.py', 'network/mirror_metadata.py',
-                            'network/revisions.py', 'network/tls_client_hello.py')
-            reusable = previous and previous['proxy_image'] and all(
-                (old_release / path).is_file() and (old_release / path).read_bytes() == (SOURCE / path).read_bytes()
-                for path in proxy_inputs)
+            reusable = proxy_reusable(previous, old_release)
             images['proxy'] = image_identity(previous['proxy_image'], env) if reusable else ''
         print('\nSetup plan:')
         for key in ('network', 'auth', 'installation', 'command', 'state_dir', 'config_dir', 'endpoint',

@@ -4,6 +4,10 @@
 !policy.py
 !proxy.py
 !mux.py
+!mirror.py
+!mirror_policy.py
+!mirror_cache.py
+!mirror_metadata.py
 !tls_client_hello.py
 !revisions.py
 # Remote Podman clients ship --secret files inside the build context under this

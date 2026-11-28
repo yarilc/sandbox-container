@@ -1,4 +1,6 @@
 """Credential-free checks that the reference image inputs are pinned (B05)."""
+import ast
+import fnmatch
 from pathlib import Path
 import re
 import unittest
@@ -256,6 +258,131 @@ class SystemdSampleRecipeTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertNotEqual(mutated, recipe)
                 self.assertTrue(systemd_sample_violations(mutated))
+
+
+def copied_sources(recipe):
+    """Return local source paths copied by COPY instructions (excluding --from stages)."""
+    sources = []
+    for raw in recipe.replace('\\\n', ' ').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        tokens = line.split()
+        if tokens[0].upper() != 'COPY':
+            continue
+        flags = [tok for tok in tokens[1:] if tok.startswith('--')]
+        if any(flag.startswith('--from=') for flag in flags):
+            continue
+        operands = [tok for tok in tokens[1:] if not tok.startswith('--')]
+        if len(operands) >= 2:
+            sources.extend(op.removeprefix('./').removeprefix('/') for op in operands[:-1])
+    return sources
+
+
+def _ignore_rule_matches(pattern, path):
+    if pattern == '**':
+        return True
+    if pattern.endswith('/**'):
+        prefix = pattern[:-3]
+        return path.startswith(prefix + '/')
+    return fnmatch.fnmatchcase(path, pattern)
+
+
+def _ignore_path_admitted(rules, path):
+    admitted = True
+    for negated, pattern in rules:
+        if _ignore_rule_matches(pattern, path):
+            admitted = negated
+    return admitted
+
+
+def containerignore_admits(ignore_text, relative_path):
+    """Evaluate a .containerignore allowlist for relative_path and its parent directories."""
+    rules = []
+    for raw in ignore_text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        negated = line.startswith('!')
+        pattern = (line[1:] if negated else line).removeprefix('./').removeprefix('/')
+        rules.append((negated, pattern))
+    parts = relative_path.strip('/').split('/')
+    for depth in range(1, len(parts) + 1):
+        candidate = '/'.join(parts[:depth])
+        if not _ignore_path_admitted(rules, candidate):
+            return False
+    return True
+
+
+def build_context_violations(context_dir, recipe_text=None, ignore_text=None):
+    """Verify Containerfile COPY inputs exist and are admitted by the sibling .containerignore."""
+    recipe_text = (context_dir / 'Containerfile').read_text() if recipe_text is None else recipe_text
+    ignore_text = (context_dir / '.containerignore').read_text() if ignore_text is None else ignore_text
+    found = []
+    for meta in ('Containerfile', '.containerignore'):
+        if not containerignore_admits(ignore_text, meta):
+            found.append(f'build context excludes {meta}')
+    for source in copied_sources(recipe_text):
+        if not (context_dir / source).is_file():
+            found.append(f'missing COPY source: {source}')
+        elif not containerignore_admits(ignore_text, source):
+            found.append(f'COPY source excluded by .containerignore: {source}')
+    return found
+
+
+def copied_python_import_violations(context_dir, recipe_text, module_dir):
+    """Verify every local Python module imported by copied .py files is also copied into the image."""
+    py_sources = [source for source in copied_sources(recipe_text) if source.endswith('.py')]
+    copied_modules = {Path(source).stem for source in py_sources}
+    local_modules = {path.stem for path in module_dir.glob('*.py')}
+    found = []
+    for source in py_sources:
+        path = context_dir / source
+        if not path.is_file():
+            continue
+        tree = ast.parse(path.read_text(), filename=str(path))
+        imports = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.update(alias.name.split('.')[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imports.add(node.module.split('.')[0])
+        for missing in sorted((imports & local_modules) - copied_modules):
+            found.append(f'{source} imports uncopied local module {missing}')
+    return found
+
+
+class BuildContextTests(unittest.TestCase):
+    def test_shipped_containerfiles_match_containerignore_and_local_imports(self):
+        for relative in ('.', 'network', 'launcher/engine'):
+            context_dir = ROOT if relative == '.' else ROOT / relative
+            with self.subTest(context=relative):
+                self.assertEqual(build_context_violations(context_dir), [])
+        self.assertEqual(
+            copied_python_import_violations(ROOT / 'network', (ROOT / 'network/Containerfile').read_text(), ROOT / 'network'),
+            [],
+        )
+        self.assertEqual(
+            copied_python_import_violations(ROOT, (ROOT / 'Containerfile').read_text(), ROOT / 'network'),
+            [],
+        )
+
+    def test_missing_containerignore_entry_or_copied_import_is_detected(self):
+        net_ignore = (ROOT / 'network/.containerignore').read_text()
+        self.assertTrue(build_context_violations(ROOT / 'network', ignore_text=net_ignore.replace('!mirror.py\n', '')))
+
+        root_ignore = (ROOT / '.containerignore').read_text()
+        self.assertTrue(build_context_violations(ROOT, ignore_text=root_ignore.replace('!network/revisions.py\n', '')))
+        self.assertTrue(build_context_violations(ROOT, ignore_text=root_ignore.replace('!network\n', '')))
+
+        engine_ignore = (ROOT / 'launcher/engine/.containerignore').read_text()
+        self.assertTrue(build_context_violations(ROOT / 'launcher/engine', ignore_text=engine_ignore.replace('!entrypoint.sh\n', '')))
+
+        root_recipe = (ROOT / 'Containerfile').read_text()
+        self.assertTrue(copied_python_import_violations(ROOT, root_recipe.replace(' network/revisions.py', ''), ROOT / 'network'))
+
+        net_recipe = (ROOT / 'network/Containerfile').read_text()
+        self.assertTrue(copied_python_import_violations(ROOT / 'network', net_recipe.replace(' mirror_metadata.py', ''), ROOT / 'network'))
 
 
 if __name__ == '__main__':
