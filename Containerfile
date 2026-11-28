@@ -62,5 +62,5 @@ RUN --mount=type=secret,id=build-ca,required=false \
     && chmod 1777 /sandbox-home
 
 WORKDIR /workspace
-COPY network/relay.py network/mux.py /opt/sandbox-egress/
+COPY network/relay.py network/mux.py network/revisions.py /opt/sandbox-egress/
 ENTRYPOINT ["bash"]

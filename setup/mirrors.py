@@ -11,8 +11,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (PROFILE, WINDOWS_ENTRY, SetupError, launcher_paths, private,  # noqa: E402
                     same_or_inside, trusted, writable_mounts)
-from toolchains import (WINDOWS_DRIVE, catalog_name, host_ca_bundle, locked, saved_worktree_scope,  # noqa: E402
-                        windows_path, write_atomic)
+import toolchains  # noqa: E402
+from toolchains import (WINDOWS_DRIVE, catalog_name, host_ca_bundle, locked,  # noqa: E402
+                        saved_worktree_scope, windows_path, write_atomic)
 import mirror_policy  # noqa: E402
 from mirror import Client, Rejected  # noqa: E402
 from policy import PolicyError, fields, revision  # noqa: E402
@@ -31,14 +32,25 @@ def library_path(env):
     return data / LIBRARY
 
 
-def outside_mounts(path, mounts):
+def check_outside_mounts(path, mounts):
     physical, links = launcher_paths(path)
     for candidate in (Path(os.path.abspath(path)), physical, *links):
         if any(same_or_inside(candidate, mount) or same_or_inside(mount, candidate) for mount in mounts):
             raise SetupError(f'Mirror path {candidate} overlaps a writable workspace or state mount.')
+    return physical, links
+
+
+def outside_mounts(path, mounts):
+    physical, links = check_outside_mounts(path, mounts)
     for link in links:
         trusted(link)
     return physical
+
+
+def windows_drive_input(path, env):
+    if not env.get(WINDOWS_ENTRY):
+        return False
+    return any(same_or_inside(path, Path(mount)) for mount in toolchains.drive_mounts().values())
 
 
 def read_json(path, limit, *, protected=False):
@@ -50,8 +62,9 @@ def read_json(path, limit, *, protected=False):
         return mirror_policy.decode(handle.read(limit + 1), limit)
 
 
-def load_profile(path, *, catalog=False):
-    path = trusted(path)
+def load_profile(path, *, catalog=False, verify_trusted=True):
+    if verify_trusted:
+        path = trusted(path)
     data = read_json(path, mirror_policy.MAX_PROFILE, protected=True)
     return mirror_policy.profile(data, catalog=catalog)
 
@@ -79,7 +92,20 @@ def resolve_profile(argument, env, mounts):
             raise SetupError('No catalog mirror profile with that name. Available: ' + (', '.join(available) or 'none'))
         return available[argument]
     path = Path(argument).absolute()
-    return load_profile(outside_mounts(path, mounts))
+    protected_mounts = list(mounts)
+    if env.get(WINDOWS_ENTRY):
+        entry = env[WINDOWS_ENTRY]
+        if not entry.startswith('/'):
+            raise SetupError(WINDOWS_ENTRY + ' must be an absolute path.')
+        protected_mounts.append(Path(entry).resolve())
+    physical, links = check_outside_mounts(path, protected_mounts)
+    if windows_drive_input(physical, env):
+        if links:
+            raise SetupError('Mirror input must be a regular file with a protected path.')
+        return load_profile(physical, verify_trusted=False)
+    for link in links:
+        trusted(link)
+    return load_profile(physical)
 
 
 def open_library(env, mounts, *, create=False):

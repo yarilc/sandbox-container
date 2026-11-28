@@ -353,11 +353,11 @@ try {
     # Modes: as setup prepared them; delegation stays refused.
     Test-Outcome 'Delegation requested' (Invoke-Case ('$env:' + $P + '_PODMAN = ''1''; & $E')) 1 ($P + '_PODMAN=1: host Podman delegation was removed')
     Test-Outcome 'Explicit unrestricted networking' (Invoke-Case ('$env:' + $P + '_NETWORK = ''unrestricted''; & $E @C -c ''printf ok''')) 0 'ok'
-    if ($savedMode -eq 'offline' -or $savedMode -eq 'provider') {
+    if ($savedMode -eq 'offline' -or $savedMode -eq 'mirror' -or $savedMode -eq 'provider') {
         $connect = 'if (exec 3<>/dev/tcp/1.1.1.1/443) 2>/dev/null; then echo reached; else echo blocked; fi'
-        if ($savedMode -eq 'provider') {
+        if ($savedMode -eq 'mirror' -or $savedMode -eq 'provider') {
             # Qualification reports are per network mode, and setup qualified
-            # provider only: an offline session needs its own qualification.
+            # mirror or provider only: an offline session needs its own qualification.
             Test-Outcome 'Offline qualification' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E --container-qualify')) 0 'status='
         }
         Test-Outcome 'Offline session (no network access)' (Invoke-Case ('$env:' + $P + '_NETWORK = ''offline''; & $E @C -c ' +
@@ -501,7 +501,7 @@ try {
                 '"check": ["podman", "run", "--rm", "--network=none", "' + $image + '", "true"]}'))
             Test-Outcome 'Image toolchain' (Invoke-Case ($useLibrary + '& $E --container-toolchain add ' +
                 (ConvertTo-Literal $imageRecipe))) 0 'Added toolchain validate-image'
-            if ($savedMode -eq 'offline' -or $savedMode -eq 'provider') {
+            if ($savedMode -eq 'offline' -or $savedMode -eq 'mirror' -or $savedMode -eq 'provider') {
                 $nested = 'printf "engine=%s\n" "$CONTAINER_HOST"; podman run --rm --pull=never ' + $image +
                     ' sh -c ''if wget -q -T 3 -O /dev/null http://1.1.1.1/ 2>/dev/null; then echo reached; ' +
                     'else echo nested-blocked; fi'''

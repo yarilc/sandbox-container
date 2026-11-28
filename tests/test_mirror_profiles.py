@@ -187,3 +187,71 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn('local base verified', output.getvalue())
         self.assertIn('local other failed unsafe-address', output.getvalue())
+
+    def test_windows_drive_operator_profiles_and_boundaries(self):
+        drive = self.base / 'win-c'
+        entry = drive / 'entry'
+        win_worktree = drive / 'worktree'
+        win_project = win_worktree / 'project'
+        profiles_dir = drive / 'profiles'
+        for directory in (drive, entry, win_worktree, win_project, profiles_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+            directory.chmod(0o777)
+
+        explicit = self.write(profiles_dir / 'explicit.json', sample('explicit'))
+        relative = self.write(profiles_dir / 'relative.json', sample('relative'))
+        inside_ws = self.write(win_project / 'inside.json', sample('inside'))
+        sibling_wt = self.write(win_worktree / 'sibling.json', sample('sibling'))
+        inside_entry = self.write(entry / 'inside-entry.json', sample('inside-entry'))
+        for file_path in (explicit, relative, inside_ws, sibling_wt, inside_entry):
+            file_path.chmod(0o777)
+
+        win_link = profiles_dir / 'alias.json'
+        win_link.symlink_to(explicit)
+        native_link = self.base / 'native-alias.json'
+        native_link.symlink_to(explicit)
+
+        unmounted = self.base / 'world-writable'
+        unmounted.mkdir()
+        unmounted.chmod(0o777)
+        unmounted_file = self.write(unmounted / 'other.json', sample('other'))
+        unmounted_file.chmod(0o777)
+
+        win_env = self.env | {mirrors.WINDOWS_ENTRY: str(entry)}
+        previous_cwd = Path.cwd()
+        os.chdir(win_project)
+        self.addCleanup(os.chdir, previous_cwd)
+
+        with patch.object(mirrors.toolchains, 'drive_mounts', return_value={'c': str(drive)}):
+            # (a) Explicit Windows drive path and relative path on drvfs succeed into the 0o700 native library.
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(mirrors.main(['add', r'C:\profiles\explicit.json'], win_env), 0)
+                self.assertEqual(mirrors.main(['add', '../../profiles/relative.json'], win_env), 0)
+            self.assertEqual(self.library.stat().st_mode & 0o777, 0o700)
+            self.assertTrue((self.library / 'explicit.json').is_file())
+            self.assertTrue((self.library / 'relative.json').is_file())
+            self.assertFalse(list(self.library.glob('.write-*')))
+
+            # (b) Overlaps with workspace, widened worktree, state, or Windows entry are refused.
+            with patch.object(mirrors, 'saved_worktree_scope', return_value=True):
+                for bad in (r'C:\worktree\project\inside.json', r'C:\worktree\sibling.json',
+                            r'C:\entry\inside-entry.json', str(self.write(self.state / 'st.json', sample('st')))):
+                    with self.subTest(overlap=bad), self.assertRaisesRegex(SetupError, 'writable workspace or state'):
+                        mirrors.main(['add', bad], win_env)
+
+            # (b) Symlinks on the Windows drive or pointing into it are refused.
+            for link_arg in (r'C:\profiles\alias.json', str(native_link)):
+                with self.subTest(symlink=link_arg), self.assertRaisesRegex(SetupError, 'regular file with a protected path'):
+                    mirrors.main(['add', link_arg], win_env)
+
+            # (c) Without WINDOWS_ENTRY, or outside mounted Windows drives, 0o777 inputs stay refused.
+            with self.assertRaisesRegex(SetupError, 'Unsafe protected path'):
+                mirrors.main(['add', str(explicit)], self.env)
+            with self.assertRaisesRegex(SetupError, 'Unsafe protected path'):
+                mirrors.main(['add', str(unmounted_file)], win_env)
+
+            # (d) The mirror library itself still requires protected native storage.
+            bad_lib_env = win_env | {'XDG_DATA_HOME': str(drive / 'lib')}
+            with self.assertRaisesRegex(SetupError, 'Unsafe protected path'):
+                mirrors.main(['add', r'C:\profiles\explicit.json'], bad_lib_env)
+            self.assertFalse((drive / 'lib').exists())

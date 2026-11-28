@@ -1,5 +1,44 @@
 # Validation record
 
+## Mirror build context and Windows operator profiles (`fix-mirror-build-context-and-windows-profiles`): 2026-11-27
+
+Verified in the guarded Linux/WSL2 working session (`CONTAINER_HOST=tcp://127.0.0.1:2375`,
+rootless `cgroupfs`, kernel `6.6.87.2-microsoft-standard-WSL2`, drvfs `/mnt/d/`).
+Tests requiring private POSIX permissions ran as UID `1000:1000` inside offline
+`localhost/docgen:1.0.0` on private `0700` tmpfs storage (`/work`, `/sandbox-test-tmp`).
+
+| Check in the working session | Result |
+| --- | --- |
+| `python3 -B -m unittest tests.test_image_pins tests.test_alignment -v` (host) | 30 passed (9 image/build-context + 21 alignment), 0 skipped |
+| `PYTHONPATH=tests python3 -B -m unittest test_dependency_mirror -v` (host, with `npm`) | 21 passed, 0 skipped |
+| `SANDBOX_TEST_TMPDIR=<private> python3 -B -m unittest tests.test_propagate tests.test_adoption_run` (host) | 38 passed, 0 skipped |
+| `test_setup` (offline `localhost/docgen:1.0.0`, non-root private tmpfs) | 94 passed, 0 skipped (including `network/.containerignore` reuse invalidation) |
+| `test_mirror_profiles` (offline `localhost/docgen:1.0.0`, non-root private tmpfs) | 13 passed, 0 skipped (including simulated `0o777` Windows drive explicit/relative inputs, overlaps, symlinks, non-Windows `0o777` refusal, and `0o777` library refusal) |
+| `test_qualification` (offline `localhost/docgen:1.0.0`, non-root private tmpfs) | 36 ran: 28 passed, 8 opt-in runtime skips (`requires disposable native rootless harness`) |
+| `test_launcher` (offline `localhost/docgen:1.0.0`, non-root private tmpfs) | 115 ran: 114 passed, 1 skipped (`no single-letter drive root under /mnt`) |
+| Real Buildah `.containerignore` + `COPY` + Python import check (`podman build --pull=never --network=none` on `localhost/docgen:1.0.0` using exact `network/.containerignore` + `network/Containerfile` `COPY`, and root `.containerignore` + `Containerfile` `COPY`) | Passed: `PROXY_IMPORTS_OK 2` (all 9 modules imported) and `RUNTIME_IMPORTS_OK b'SANDBOX-EGRESS\x00\x02'` (`relay`, `mux`, `revisions` imported); temporary images removed |
+| Static checks: `py_compile`, `bash -n` on all tracked `*.sh`, `git diff --check`, `openspec validate fix-mirror-build-context-and-windows-profiles --strict` | Passed |
+| `tools/windows-validate.ps1` ASCII/LF check and `tests.test_alignment.LineEndings` | Passed (2/2 OK) |
+
+Real-host Windows Podman Machine validation (`PowerShell 7.7.0 Core`, WSL `2.5.10.0`,
+kernel `6.6.87.2-1`, `podman-machine-default`, 2026-11-27 to 2026-11-28):
+
+| Real-host Windows check | Result |
+| --- | --- |
+| `.\sandbox-container.ps1 --container-install` in `mirror` mode with full refresh | Passed (exit 0; built `network/Containerfile`, runtime, guard, engine, and passed installed qualification) |
+| `sandbox-container --container-mirror add rocky9`, `add al2023`, `list`, `verify` | Passed (exit 0; `al2023 core`, `rocky9 baseos/appstream/extras` all `verified` live) |
+| `sandbox-container --container-mirror add` negative workspace overlap and positive Windows-drive `langs-public.json` + `verify langs-public` | Passed (workspace overlap rejected with exit 1; Windows-drive profile installed into `/home/user/.local/share/sandbox-mirrors`; all 5 live upstreams `maven`, `pypi`, `npm`, `cargo`, `go` `verified`, exit 0) |
+| Live `mirror` session (`D:\tmp-sandbox-mirror-test`, `.sandbox-mirrors.json`) | Hardening (`CapEff=0`, `NoNewPrivs=1`, `/toolchains` `ro,nosuid,nodev`), all 9 client env vars + `/opt/sandbox-egress/client/{cargo.toml,maven-settings.xml}`, negative controls (direct egress blocked; `POST`/`PUT`/`DELETE`, traversal, query, unknown profile, `npm` audit `POST` all HTTP `403`), positive `HTTP 200` for Rocky 9 and AL2023 `repomd.xml`, and fresh-cache `npm install ms` (`ms("2h") -> 7200000`) all passed |
+| Nested `systemd` + DNF `gpgcheck=1` install (`tree`, verified absent before install) and nested `podman build` | Passed on Rocky Linux 9 (`c7307cfbcff9`, BaseOS + AppStream, `tree-1.8.0-10.el9`) and Amazon Linux 2023 (`localhost/al2023-systemd:1.0.0`, 91 MB metadata + split CDN `blobstore/`, `tree-1.8.0-6.amzn2023.0.2`); `--network=none` control failed (`Connection refused`); nested `podman build --pull=never --network=host` succeeded and cleaned up |
+| Offline regression (`SANDBOX_CONTAINER_NETWORK=offline --container-qualify` and session) | Passed: `127.0.0.1:18081` unreachable, `/toolchains` mounted, rootless engine active |
+| `.\tools\windows-validate.ps1 -Checkout D:\Workspace\sandboxes\sandbox-container` (PowerShell 7.7.0 Core, after `mirror`-mode script fix) | All 50 applicable checks verified across the pre-reboot and post-reboot runs: `Offline qualification`, `Offline session`, `Qualification`, `Toolchain by name`, `Recipe path from PowerShell`, `Image toolchain`, `Session with library images (engine)` / `(offline)`, and `Image toolchain removed` all passed; post-reboot early launch failures confirmed fail-closed `status=qualification-required` on new kernel `boot_id` before mid-script requalification |
+
+Remaining follow-up after closure:
+
+- Single-run clean `.\tools\windows-validate.ps1` on Windows PowerShell 5.1 (and 7 after requalification).
+- Native Linux / WSL host runner suites (`bash tests/run-runtime.sh --qualification`, `--network`, `--setup-runtime`), `bash tools/shellcheck.sh .`, and `bash tools/powershell.sh .`.
+- Optional client-level live runs with Maven, pip, Cargo, and Go toolchains (only `npm` ran live above; all 5 upstreams passed `--container-mirror verify`).
+
 ## Dependency mirror (`add-read-only-dependency-mirror`): 2026-11-27
 
 The working agent session runs in Windows Podman Machine with Podman server
